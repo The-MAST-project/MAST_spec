@@ -1,3 +1,4 @@
+import zaber_motion
 import zaber_motion.ascii
 import utils
 from utils import Component, Activities, init_log
@@ -5,6 +6,7 @@ import logging
 from enum import Flag, auto, Enum
 from utils import Config, PrettyJSONResponse
 from fastapi import APIRouter
+from typing import Dict
 
 cfg = Config()
 logger = logging.getLogger('mast.spec.stage')
@@ -57,7 +59,6 @@ if controller is None:
 class StageActivities(Flag):
     Homing = auto()
     Moving = auto()
-    Parking = auto()
     StartingUp = auto()
     ShuttingDown = auto()
     Aborting = auto()
@@ -66,10 +67,12 @@ class StageActivities(Flag):
 class StageStatus:
     activities: Flag
     position: float
+    preset: str | None
 
-    def __init__(self, activities: Flag, position: float):
+    def __init__(self, activities: Flag, position: float, preset: str | None):
         self.activities = activities
         self.position = position
+        self.preset = preset
 
 
 class Stage(Component, Activities):
@@ -77,8 +80,10 @@ class Stage(Component, Activities):
     axis: zaber_motion.ascii.Axis | None
     logger: logging.Logger
     target: float | None = None
-    target_units: zaber_motion.Units
-    presets_microns: dict
+    target_units: zaber_motion.Units | None
+    presets: Dict[str, float]
+    startup_position: float | None = None
+    shutdown_position: float | None = None
 
     def __init__(self, stage_name: str):
         super().__init__()
@@ -90,13 +95,21 @@ class Stage(Component, Activities):
         self.logger = logging.getLogger(f"mast.spec.stage.{self.name}")
         init_log(self.logger)
 
-        self.axis_id = cfg.toml['stages']['controller'][self.name]
-        if self.axis_id is None:
-            raise f"Missing configuration item '[stages.controller].{self.name}"
+        my_conf = cfg.toml['stages'][self.name]
+        try:
+            self.axis_id = int(my_conf['axis_id'])
+        except ValueError:
+            raise f"Bad or missing configuration item '[stages.{self.name}] -> axis_id"
 
-        self.presets_microns = dict()
-        for key in cfg.toml['stages'][self.name]['presets'].keys():
-            self.presets_microns[key] = cfg.toml['stages'][self.name]['presets'][key]
+        self.presets = dict()
+        for key in my_conf['presets'].keys():
+            self.presets[key] = my_conf['presets'][key]
+
+        if 'startup' in my_conf:
+            self.startup_position = float(my_conf['startup'])
+
+        if 'shutdown' in my_conf:
+            self.startup_position = float(my_conf['shutdown'])
 
         try:
             self.axis = controller.get_axis(self.axis_id)
@@ -112,24 +125,52 @@ class Stage(Component, Activities):
                 self.axis.unpark()
             elif not self.axis.is_homed():
                 self.start_activity(StageActivities.Homing)
-                self.axis.home()
+                self.axis.home(wait_until_idle=False)
 
         except Exception as ex:
             self.logger.critical(f"Could not get a Zaber controller handle to unit")
 
+    def close_enough(self, microns: float) -> bool:
+        """
+        Checks if the current position is close enough to the supplied position
+        :param microns:
+        :return:
+        """
+        current = self.axis.get_position(unit=zaber_motion.Units.LENGTH_MICROMETRES)
+        return abs(current - microns) <= 1
+
+    def at_preset(self) -> str | None:
+        if self.axis.is_busy():
+            return None
+        for key, val in self.presets.items():
+            if self.close_enough(val):
+                return key
+        return None
+
     def on_event(self, e: zaber_motion.ascii.AlertEvent):
         if e.status == 'IDLE':
-            if self.is_active(StageActivities.Parking):
-                self.end_activity(StageActivities.Parking)
-            if self.is_active(StageActivities.ShuttingDown):
-                self.end_activity(StageActivities.ShuttingDown)
-            if self.is_active(StageActivities.Aborting):
-                self.end_activity(StageActivities.Aborting)
-            if self.is_active(StageActivities.Homing):
-                self.end_activity(StageActivities.Homing)
             if self.is_active(StageActivities.Moving):
                 self.end_activity(StageActivities.Moving)
                 self.target = None
+                self.target_units = None
+
+            if self.is_active(StageActivities.ShuttingDown):
+                if self.shutdown_position is not None:
+                    if self.close_enough(self.shutdown_position):
+                        self.end_activity(StageActivities.ShuttingDown)
+                self.end_activity(StageActivities.ShuttingDown)
+
+            if self.is_active(StageActivities.StartingUp):
+                if self.startup_position is not None:
+                    if self.close_enough(self.startup_position):
+                        self.end_activity(StageActivities.StartingUp)
+                self.end_activity(StageActivities.StartingUp)
+
+            if self.is_active(StageActivities.Aborting):
+                self.end_activity(StageActivities.Aborting)
+
+            if self.is_active(StageActivities.Homing) and self.close_enough(0):
+                self.end_activity(StageActivities.Homing)
         else:
             self.logger.error(f"Got unknown event: {e}")
 
@@ -148,10 +189,10 @@ class Stage(Component, Activities):
     def move_to_preset(self, preset: str):
         if self.axis is None:
             return
-        if preset not in self.presets_microns:
-            raise ValueError(f"Bad preset '{preset}. Valid presets are; {",".join(self.presets_microns.keys())}")
+        if preset not in self.presets:
+            raise ValueError(f"Bad preset '{preset}. Valid presets are; {",".join(self.presets.keys())}")
 
-        self.target = self.presets_microns[preset]
+        self.target = self.presets[preset]
         self.target_units = zaber_motion.Units.LENGTH_MICROMETRES
         self.start_activity(StageActivities.Moving)
         self.axis.move_absolute(self.target, self.target_units)
@@ -160,8 +201,8 @@ class Stage(Component, Activities):
         if self.axis is None:
             return
         self.start_activity(StageActivities.ShuttingDown)
-        self.start_activity(StageActivities.Parking)
-        self.axis.park()
+        if self.shutdown_position is not None:
+            self.move_absolute(self.shutdown_position, unit=zaber_motion.Units.LENGTH_MICROMETRES)
 
     def startup(self):
         if self.axis is None:
@@ -172,6 +213,9 @@ class Stage(Component, Activities):
         elif not self.axis.is_homed():
             self.start_activity(StageActivities.Homing)
             self.axis.home(wait_until_idle=False)
+
+        if self.startup_position is not None:
+            self.move_absolute(self.startup_position, unit=zaber_motion.Units.LENGTH_MICROMETRES)
 
     def abort(self):
         if self.axis is None:
@@ -186,7 +230,7 @@ class Stage(Component, Activities):
         return self.axis.get_position()
 
     def status(self) -> StageStatus:
-        return StageStatus(self.activities, self.position)
+        return StageStatus(self.activities, self.position, self.at_preset())
 
 
 stages = {}
@@ -283,6 +327,36 @@ def move_to_preset(stage: StageNames, preset: PresetNames):
         }
 
 
+def startup(stage: StageNames):
+    s = stage.value
+    if s in stage_names and stages[s].axis is not None:
+        stages[s].startup()
+    else:
+        return {
+            'Error': f"No physical stage for '{s}'"
+        }
+
+
+def shutdown(stage: StageNames):
+    s = stage.value
+    if s in stage_names and stages[s].axis is not None:
+        stages[s].shutdown()
+    else:
+        return {
+            'Error': f"No physical stage for '{s}'"
+        }
+
+
+def abort(stage: StageNames):
+    s = stage.value
+    if s in stage_names and stages[s].axis is not None:
+        stages[s].abort()
+    else:
+        return {
+            'Error': f"No physical stage for '{s}'"
+        }
+
+
 base_path = utils.BASE_SPEC_PATH + 'stages'
 tag = 'stages'
 router = APIRouter()
@@ -296,3 +370,6 @@ router.add_api_route(base_path + '/move_relative', tags=[tag], endpoint=move_rel
                      response_class=PrettyJSONResponse)
 router.add_api_route(base_path + '/move_to_preset', tags=[tag], endpoint=move_to_preset,
                      response_class=PrettyJSONResponse)
+router.add_api_route(base_path + '/startup', tags=[tag], endpoint=startup, response_class=PrettyJSONResponse)
+router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=shutdown, response_class=PrettyJSONResponse)
+router.add_api_route(base_path + '/abort', tags=[tag], endpoint=abort, response_class=PrettyJSONResponse)

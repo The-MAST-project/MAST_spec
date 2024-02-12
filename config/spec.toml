@@ -13,19 +13,19 @@
     camera=2                    # axis id of the camera stage
     fiber=3                     # axis id of the fiber stage
 
-[stages.grating.presets]        # micrometers
-    Ca      = 1000
-    Halpha  = 2000
-    Mg      = 3000
+[stages.grating]
+    axis_id = 1
+    # startup = ...
+    # shutdown = ...
+    presets = { Ca = 1000, Halpha  = 2000, Mg = 3000 }
 
-[stages.camera.presets]        # micrometers
-    Ca      = 10000
-    Halpha  = 15000
-    Mg      = 20000
+[stages.camera]
+    axis_id = 2
+    presets = { Ca = 10000, Halpha = 15000, Mg = 20000 }
 
-[stages.fiber.presets]        # micrometers
-    DeepSpec = 1000
-    HighSpec = 2000
+[stages.fiber]
+    axis_id = 2
+    presets = { DeepSpec = 1000, HighSpec = 2000 }
 
 [fw.1]
     Pos1 = "Empty"
