@@ -8,9 +8,14 @@ import os
 import io
 from tomlkit import TOMLDocument
 import tomlkit
-import socket
+import json
+from starlette.responses import Response
+from typing import Any
 
 default_log_level = logging.DEBUG
+default_encoding = "utf-8"
+
+BASE_SPEC_PATH = '/spec/'
 
 
 class Component(ABC):
@@ -72,27 +77,33 @@ class classproperty(property):
 class Activities:
     activities: Flag
     timings: dict
-    _idle = Flag(0)
+    Idle = 0
 
-    @classproperty
-    def Idle(cls):
-        return cls._idle
+    # @classproperty
+    # def Idle(cls):
+    #     return cls._idle
 
     def __init__(self):
         self.activities = Activities.Idle
+        self.timings = dict()
 
     def start_activity(self, activity: Flag):
-        _only_one_bit_is_set(activity)
-        self.activities |= activity
+        _only_one_bit_is_set(activity.value)
+        self.activities |= activity.value
         self.timings[activity] = Timing()
+        self.logger.info(f"started activity {activity}")
 
     def end_activity(self, activity: Flag):
-        _only_one_bit_is_set(activity)
-        self.activities &= ~activity
+        _only_one_bit_is_set(activity.value)
+        self.activities &= ~activity.value
         self.timings[activity].end()
+        self.logger.info(f"ended activity {activity}, duration={self.timings[activity].duration}")
 
     def is_active(self, activity):
-        return activity in self.activities
+        return (self.activities & activity.value) != 0
+
+    def is_idle(self):
+        return self.activities == Activities.Idle
 
 
 class RepeatTimer(Timer):
@@ -120,226 +131,80 @@ class SingletonFactory:
         return SingletonFactory._instances[class_type]
 
 
-class PathMaker:
-    top_folder: str
-
-    def __init__(self):
-        self.top_folder = config.get('global', 'TopFolder')
-        pass
-
-    @staticmethod
-    def make_seq(path: str):
-        seq_file = os.path.join(path, '.seq')
-
-        os.makedirs(os.path.dirname(seq_file), exist_ok=True)
-        if os.path.exists(seq_file):
-            with open(seq_file) as f:
-                seq = int(f.readline())
-        else:
-            seq = 0
-        seq += 1
-        with open(seq_file, 'w') as file:
-            file.write(f'{seq}\n')
-
-        return seq
-
-    def make_daily_folder_name(self):
-        d = os.path.join(self.top_folder, datetime.datetime.now().strftime('%Y-%m-%d'))
-        os.makedirs(d, exist_ok=True)
-        return d
-
-    def make_exposure_file_name(self):
-        exposures_folder = os.path.join(self.make_daily_folder_name(), 'Exposures')
-        os.makedirs(exposures_folder, exist_ok=True)
-        return os.path.join(exposures_folder, f'exposure-{path_maker.make_seq(exposures_folder):04d}')
-
-    def make_acquisition_folder_name(self):
-        acquisitions_folder = os.path.join(self.make_daily_folder_name(), 'Acquisitions')
-        os.makedirs(acquisitions_folder, exist_ok=True)
-        return os.path.join(acquisitions_folder, f'acquisition-{PathMaker.make_seq(acquisitions_folder)}')
-
-    def make_guiding_folder_name(self):
-        guiding_folder = os.path.join(self.make_daily_folder_name(), 'Guidings')
-        os.makedirs(guiding_folder, exist_ok=True)
-        return os.path.join(guiding_folder, f'guiding-{PathMaker.make_seq(guiding_folder)}')
-
-    def make_logfile_name(self):
-        daily_folder = os.path.join(self.make_daily_folder_name())
-        os.makedirs(daily_folder)
-        return os.path.join(daily_folder, 'log.txt')
-
-
-# Singletons
-path_maker = SingletonFactory.get_instance(PathMaker)
-
-
-class ConfigTier:
-    """
-    Configuration tier.
-
-    We use TOML files and TOMLDocuments to manage our configuration.
-    The package we use is tomlkit (https://tomlkit.readthedocs.io/en/latest/) because:
-    - TOML is a more rigorously defined .ini format
-    - tomlkit supports keeping the order of the lines in the files AND comments.
-
-    The actual configuration object (see Config below) uses three tiers which get merged into one configuration
-    """
-    mtime: float = None
-    file: str | None = None
-    defaults: TOMLDocument
-    data: TOMLDocument
-
-    def __init__(self, defaults: TOMLDocument = None, file=None):
-        """
-
-        Parameters
-        ----------
-        defaults
-        file
-        """
-        self.file = file
-        self.data = tomlkit.TOMLDocument()
-        self.defaults = TOMLDocument()
-        if defaults:
-            self.defaults = defaults
-            self.data = self.defaults
-
-        if self.file and os.path.exists(self.file):
-            self.load_file()
-            self.mtime = os.path.getmtime(self.file)
-
-    def load_file(self):
-        if os.path.exists(self.file):
-            with open(self.file, 'r') as f:
-                file_values = tomlkit.load(f)
-                self.data.clear()
-                self.data.update(self.defaults)
-                self.data.update(file_values)
-                self.mtime = os.path.getmtime(self.file)
-
-    def check_and_reload(self):
-        current_mtime = os.path.getmtime(self.file) if os.path.exists(self.file) else None
-        if current_mtime != self.mtime:
-            self.load_file()
-
-
-config_defaults = """
-    [global]
-        TopFolder = "C:/MAST"
-
-    # stage positions
-    [stage.grating]
-        Ca = 1000
-        H = 2000
-        Mg = 3000
-    
-    [stage.camera]
-        Ca = 1000
-        H = 2000
-        Mg = 3000
-    
-    [stage.fiber]
-        DeepSpec = 1000
-        HighSpec = 2000
-        
-    [fw.1]
-        Pos1 = Empty
-        Pos2 = ND1000
-        Pos3 = ND2000
-        Pos4 = ND3000
-        Pos5 = ND4000
-        Pos6 = ND5000
-        Default = Pos1
-        
-    [fw.2]
-        Pos1 = Empty
-        Pos2 = ND1000
-        Pos3 = ND2000
-        Pos4 = ND3000
-        Pos5 = ND4000
-        Pos6 = ND5000
-        Default = Pos1
-"""
-
-
 class Config:
-    """
-    Multi-tiered configuration for the MAST system.  It is based on a hierarchy ConfigTiers (see above)
+    file: str
+    toml: TOMLDocument = None
+    _instance = None
+    _initialized: bool = False
 
-    The tiers are merged in the following order:
-    - first some hardcoded default values
-    - next, global values loaded from the TopDir/config/mast.ini TOML file (if existent)
-    - last (highest priority) host-specific values loaded from the TopDir/config/<hostname>.ini file (if existent)
-
-    The configuration can be saved, the saved values go into the host-specific file.
-    """
-    data: TOMLDocument
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(Config, cls).__new__(cls)
+        return cls._instance
 
     def __init__(self):
-        self.default_config: ConfigTier = ConfigTier(defaults=tomlkit.parse(config_defaults))
-        main_config_file = os.path.join('C:\\', 'MAST', 'config', 'spec.ini')  # cannot change
-        self.global_config: ConfigTier = ConfigTier(file=main_config_file)
-
-        top_folder = self.global_config.data['global']['TopFolder'] or os.path.join('C:\\', 'MAST')
-        self.host_config: ConfigTier = ConfigTier(file=os.path.join(top_folder, 'config', socket.gethostname()))
-
-        self.data = TOMLDocument()
+        if self._initialized:
+            return
+        self.file = os.path.join('C:\\Users\\User\\PycharmProjects\\MAST_spec', 'config', 'spec.toml')
+        self.toml = TOMLDocument()
         self.reload()
+        self._initialized = True
 
     def reload(self):
-        self.data.clear()
-        self.data.update(self.default_config.data)
-        for tier in self.global_config, self.host_config:
-            tier.check_and_reload()
-            self.data.update(tier.data)
+        self.toml.clear()
+        with open(self.file, 'r') as f:
+            self.toml = tomlkit.load(f)
 
-    def get(self, section: str, item: str):
+    def get(self, section: str, item: str | None = None):
         self.reload()
-        if section in self.data:
-            if item in self.data[section]:
-                return self.data[section][item]
+
+        if item is None:
+            return self.toml[section] if section in self.toml else None
+
+        if section in self.toml:
+            if item in self.toml[section]:
+                return self.toml[section][item]
             else:
                 raise KeyError(f"No item '{item} in section '{section}' in the configuration")
         else:
             raise KeyError(f"No section '{section} in the configuration")
 
-    def set(self, section: str, item: str, value, comment=None):
-        """
-        Configuration changes are saved in the host-configuration tier
+    # def set(self, section: str, item: str, value, comment=None):
+    #     """
+    #     Configuration changes are saved in the host-configuration tier
+    #
+    #     Parameters
+    #     ----------
+    #     section
+    #        The configuration section
+    #     item
+    #        The configuration item withing the specified section
+    #     value
+    #        The item's value
+    #     comment
+    #        Optional comment
+    #
+    #     Returns
+    #     -------
+    #
+    #     """
+    #     if section not in config.host_config.toml:
+    #         config.host_config.toml[section] = tomlkit.table(True)
+    #     self.host_config.toml[section][item] = value
+    #     if comment:
+    #         self.host_config.toml[section][item].comment(comment)
+    #
+    # def save(self):
+    #     """
+    #     TBD
+    #     Returns
+    #     -------
+    #
+    #     """
+    #     with open(self.host_config.file, 'w') as f:
+    #         tomlkit.dump(self.host_config.toml, f)
 
-        Parameters
-        ----------
-        section
-           The configuration section
-        item
-           The configuration item withing the specified section
-        value
-           The item's value
-        comment
-           Optional comment
 
-        Returns
-        -------
-
-        """
-        if section not in config.host_config.data:
-            config.host_config.data[section] = tomlkit.table(True)
-        self.host_config.data[section][item] = value
-        if comment:
-            self.host_config.data[section][item].comment(comment)
-
-    def save(self):
-        """
-        TBD
-        Returns
-        -------
-
-        """
-        with open(self.host_config.file, 'w') as f:
-            tomlkit.dump(self.host_config.data, f)
-
-
-config: Config = SingletonFactory.get_instance(Config)
 
 
 class DailyFileHandler(logging.FileHandler):
@@ -401,6 +266,61 @@ class DailyFileHandler(logging.FileHandler):
         logging.FileHandler.__init__(self, filename='', delay=True, mode=mode, encoding=encoding, errors=errors)
 
 
+config: Config = Config()
+
+
+class PathMaker:
+    top_folder: str
+
+    def __init__(self):
+        self.top_folder = config.get('global', 'TopFolder')
+        pass
+
+    @staticmethod
+    def make_seq(path: str):
+        seq_file = os.path.join(path, '.seq')
+
+        os.makedirs(os.path.dirname(seq_file), exist_ok=True)
+        if os.path.exists(seq_file):
+            with open(seq_file) as f:
+                seq = int(f.readline())
+        else:
+            seq = 0
+        seq += 1
+        with open(seq_file, 'w') as file:
+            file.write(f'{seq}\n')
+
+        return seq
+
+    def make_daily_folder_name(self):
+        d = os.path.join(self.top_folder, datetime.datetime.now().strftime('%Y-%m-%d'))
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def make_exposure_file_name(self):
+        exposures_folder = os.path.join(self.make_daily_folder_name(), 'Exposures')
+        os.makedirs(exposures_folder, exist_ok=True)
+        return os.path.join(exposures_folder, f'exposure-{path_maker.make_seq(exposures_folder):04d}')
+
+    def make_acquisition_folder_name(self):
+        acquisitions_folder = os.path.join(self.make_daily_folder_name(), 'Acquisitions')
+        os.makedirs(acquisitions_folder, exist_ok=True)
+        return os.path.join(acquisitions_folder, f'acquisition-{PathMaker.make_seq(acquisitions_folder)}')
+
+    def make_guiding_folder_name(self):
+        guiding_folder = os.path.join(self.make_daily_folder_name(), 'Guidings')
+        os.makedirs(guiding_folder, exist_ok=True)
+        return os.path.join(guiding_folder, f'guiding-{PathMaker.make_seq(guiding_folder)}')
+
+    def make_logfile_name(self):
+        daily_folder = os.path.join(self.make_daily_folder_name())
+        os.makedirs(daily_folder)
+        return os.path.join(daily_folder, 'log.txt')
+
+
+path_maker = SingletonFactory.get_instance(PathMaker)
+
+
 def init_log(logger: logging.Logger):
     logger.propagate = False
     logger.setLevel(default_log_level)
@@ -416,3 +336,16 @@ def init_log(logger: logging.Logger):
     handler.setLevel(default_log_level)
     handler.setFormatter(formatter)
     logger.addHandler(handler)
+
+
+class PrettyJSONResponse(Response):
+    media_type = "application/json"
+
+    def render(self, content: Any) -> bytes:
+        return json.dumps(
+            content,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=4,
+            separators=(", ", ": "),
+        ).encode(default_encoding)

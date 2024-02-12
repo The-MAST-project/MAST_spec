@@ -92,7 +92,6 @@ class Wheel(Component, Activities):
             idx = self.position_names.index(pos_name)
         except ValueError:
             raise Exception(f"Bad position name '{pos_name}'.  Known position names: {self.position_names}")
-
         return idx
 
     def ontimer(self):

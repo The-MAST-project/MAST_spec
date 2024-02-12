@@ -1,0 +1,48 @@
+
+[global]
+    TopFolder = "C:/MAST"
+
+[server]
+    host = "0.0.0.0"            # listen on all interfaces
+    port = 8000
+
+[stages.controller]
+    ipaddr = "169.254.98.7"     # IP address of the controller
+    port = 55550
+    grating=1                   # axis id of the grating stage
+    camera=2                    # axis id of the camera stage
+    fiber=3                     # axis id of the fiber stage
+
+[stages.grating.presets]        # micrometers
+    Ca      = 1000
+    Halpha  = 2000
+    Mg      = 3000
+
+[stages.camera.presets]        # micrometers
+    Ca      = 10000
+    Halpha  = 15000
+    Mg      = 20000
+
+[stages.fiber.presets]        # micrometers
+    DeepSpec = 1000
+    HighSpec = 2000
+
+[fw.1]
+    Pos1 = "Empty"
+    Pos2 = "ND1000"
+    Pos3 = "ND2000"
+    Pos4 = "ND3000"
+    Pos5 = "ND4000"
+    Pos6 = "ND5000"
+    Default = "Pos1"
+
+[fw.2]
+    Pos1 = "Empty"
+    Pos2 = "ND1000"
+    Pos3 = "ND2000"
+    Pos4 = "ND3000"
+    Pos5 = "ND4000"
+    Pos6 = "ND5000"
+    Default = "Pos1"
+    DeepSpec = 1000
+    HighSpec = 2000
