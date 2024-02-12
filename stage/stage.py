@@ -255,7 +255,15 @@ UnitNames = Enum('UnitNames', units_dict)
 def list_stages():
     response = {}
     for s in stages:
-        response[s] = f"{stages[s].axis}"
+        st = stages[s]
+        r = dict()
+
+        r['device'] = f"{st.axis}"
+        r['axis_id'] = st.axis_id
+        r['presets'] = st.presets
+        r['startup'] = st.startup_position
+        r['shutdown'] = st.shutdown_position
+        response[s] = r
     return response
 
 
