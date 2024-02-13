@@ -24,7 +24,7 @@
     presets = { Ca = 10000, Halpha = 15000, Mg = 20000 }
 
 [stages.fiber]
-    axis_id = 2
+    axis_id = 3
     presets = { DeepSpec = 1000, HighSpec = 2000 }
 
 [fw.1]
