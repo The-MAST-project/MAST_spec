@@ -36,12 +36,18 @@ def on_next(e: zaber_motion.ascii.AlertEvent):
 
 def connect() -> zaber_motion.ascii.Device:
     dev: zaber_motion.ascii.Device
+    my_conf = cfg.toml['stages']['controller']
 
-    ipaddr = cfg.toml['stages']['controller']['ipaddr']
-    port = cfg.toml['stages']['controller']['port']
+    ipaddr = my_conf['ipaddr']
+    port = my_conf['port']
+
     if ipaddr is None:
         raise f"Cannot get configuration entry [stages.controller].ipaddr"
     conn = zaber_motion.ascii.Connection.open_tcp(host_name=ipaddr, port=port)
+    devices = conn.detect_devices(identify_devices=True)
+    if len(devices) < 1:
+        raise f"No Zaber devices (controllers)"
+
     conn.enable_alerts()
     conn.alert.subscribe(on_error=on_error, on_completed=on_completion, on_next=on_next)
     dev = conn.get_device(1)
@@ -114,11 +120,11 @@ class Stage(Component, Activities):
         try:
             self.axis = controller.get_axis(self.axis_id)
             if self.axis.axis_type == zaber_motion.ascii.AxisType.UNKNOWN:
-                self.logger.info(f"No stage '{self.name}' (index={self.axis_id})")
+                self.logger.info(f"No stage name='{self.name}', axis_id={self.axis_id}")
                 self.axis = None
                 return
             t = str(self.axis.axis_type).replace('AxisType.', '')
-            self.logger.info(f"Found stage name='{self.name}', type={t},"
+            self.logger.info(f"Found stage name='{self.name}', axis_id={self.axis.axis_number}, type={t}, "
                              f"peripheral='{self.axis.identity.peripheral_name}'")
 
             if self.axis.is_parked():
@@ -128,7 +134,7 @@ class Stage(Component, Activities):
                 self.axis.home(wait_until_idle=False)
 
         except Exception as ex:
-            self.logger.critical(f"Could not get a Zaber controller handle to unit")
+            self.logger.error(f"Exception: {ex}")
 
     def close_enough(self, microns: float) -> bool:
         """
@@ -178,13 +184,21 @@ class Stage(Component, Activities):
         if self.axis is None:
             return
         self.start_activity(StageActivities.Moving)
-        self.axis.move_relative(amount, unit=unit)
+        try:
+            self.axis.move_relative(amount, unit=unit)
+        except zaber_motion.MotionLibException as ex:
+            self.end_activity(StageActivities.Moving)
+            self.logger.error(f"Exception {ex}")
 
     def move_absolute(self, position: float, unit: zaber_motion.Units):
         if self.axis is None:
             return
         self.start_activity(StageActivities.Moving)
-        self.axis.move_absolute(position, unit=unit)
+        try:
+            self.axis.move_absolute(position, unit=unit)
+        except zaber_motion.MotionLibException as ex:
+            self.end_activity(StageActivities.Moving)
+            self.logger.error(f"Exception {ex}")
 
     def move_to_preset(self, preset: str):
         if self.axis is None:
@@ -195,7 +209,11 @@ class Stage(Component, Activities):
         self.target = self.presets[preset]
         self.target_units = zaber_motion.Units.LENGTH_MICROMETRES
         self.start_activity(StageActivities.Moving)
-        self.axis.move_absolute(self.target, self.target_units)
+        try:
+            self.axis.move_absolute(self.target, self.target_units)
+        except zaber_motion.MotionLibException as ex:
+            self.end_activity(StageActivities.Moving)
+            self.logger.error(f"Exception {ex}")
 
     def shutdown(self):
         if self.axis is None:
@@ -300,7 +318,7 @@ def move_absolute(stage: StageNames, position: float, units: UnitNames):
 def move_relative(stage: StageNames, position: float, units: UnitNames):
     s = stage.value
     if s in stage_names and stages[s].axis is not None:
-        stages[s].move_absolute(position, reverse_units_dict[units.value])
+        stages[s].move_relative(position, reverse_units_dict[units.value])
     else:
         return {
             'Error': f"No physical stage for '{s}'"
