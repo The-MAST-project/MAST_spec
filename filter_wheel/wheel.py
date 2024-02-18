@@ -1,8 +1,9 @@
-from utils import Component, Activities, RepeatTimer, init_log, Config, PrettyJSONResponse, BASE_SPEC_PATH
+from utils import Component, Activities, RepeatTimer, init_log, PrettyJSONResponse, BASE_SPEC_PATH
 from enum import IntFlag, Enum, auto
 import logging
 from fastapi import APIRouter
 from typing import List
+from config.config import Config
 
 import sys
 import os.path

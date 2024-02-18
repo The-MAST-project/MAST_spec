@@ -6,11 +6,10 @@ import logging
 import platform
 import os
 import io
-from tomlkit import TOMLDocument
-import tomlkit
 import json
 from starlette.responses import Response
 from typing import Any
+from config.config import Config
 
 default_log_level = logging.DEBUG
 default_encoding = "utf-8"
@@ -112,12 +111,6 @@ class RepeatTimer(Timer):
             self.function(*self.args, **self.kwargs)
 
 
-def _only_one_bit_is_set(n: int):
-    if n > 0 and (n & (n - 1)) == 0:
-        return True
-    raise Exception(f"More than one bit is set in 0x{n:x}")
-
-
 class SingletonFactory:
     _instances = {}
     _lock = Lock()
@@ -128,45 +121,6 @@ class SingletonFactory:
             if class_type not in SingletonFactory._instances:
                 SingletonFactory._instances[class_type] = class_type()
         return SingletonFactory._instances[class_type]
-
-
-class Config:
-    file: str
-    toml: TOMLDocument = None
-    _instance = None
-    _initialized: bool = False
-
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super(Config, cls).__new__(cls)
-        return cls._instance
-
-    def __init__(self):
-        if self._initialized:
-            return
-        self.file = os.path.join('C:\\Users\\User\\PycharmProjects\\MAST_spec', 'config', 'spec.toml')
-        self.toml = TOMLDocument()
-        self.reload()
-        self._initialized = True
-
-    def reload(self):
-        self.toml.clear()
-        with open(self.file, 'r') as f:
-            self.toml = tomlkit.load(f)
-
-    def get(self, section: str, item: str | None = None):
-        self.reload()
-
-        if item is None:
-            return self.toml[section] if section in self.toml else None
-
-        if section in self.toml:
-            if item in self.toml[section]:
-                return self.toml[section][item]
-            else:
-                raise KeyError(f"No item '{item} in section '{section}' in the configuration")
-        else:
-            raise KeyError(f"No section '{section} in the configuration")
 
 
 class DailyFileHandler(logging.FileHandler):
@@ -221,11 +175,11 @@ class DailyFileHandler(logging.FileHandler):
             self.stream = self._open()
         logging.StreamHandler.emit(self, record=record)
 
-    def __init__(self, path: str, mode='a', encoding=None, delay=False, errors=None):
+    def __init__(self, path: str, mode='a', encoding=None, delay=True, errors=None):
         self.path = path
         if "b" not in mode:
             encoding = io.text_encoding(encoding)
-        logging.FileHandler.__init__(self, filename='', delay=True, mode=mode, encoding=encoding, errors=errors)
+        logging.FileHandler.__init__(self, filename='', delay=delay, mode=mode, encoding=encoding, errors=errors)
 
 
 class PathMaker:
@@ -233,7 +187,7 @@ class PathMaker:
 
     def __init__(self):
         cfg = Config()
-        self.top_folder = cfg.get('global', 'TopFolder')
+        self.top_folder = cfg.toml['global']['TopFolder']
         pass
 
     @staticmethod

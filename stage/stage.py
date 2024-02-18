@@ -4,9 +4,10 @@ import utils
 from utils import Component, Activities, init_log
 import logging
 from enum import IntFlag, auto, Enum
-from utils import Config, PrettyJSONResponse
+from utils import PrettyJSONResponse
 from fastapi import APIRouter
 from typing import Dict, List
+from config.config import Config
 
 cfg = Config()
 logger = logging.getLogger('mast.spec.stage')
