@@ -24,6 +24,10 @@
     axis_id = 3
     presets = { DeepSpec = 1000, HighSpec = 2000 }
 
+#
+# The ThorLABS filter wheels are identified by their serial number which
+#  is labeled SN: on the body of the device itself
+#
 [filter-wheel.1]
     serial_number = "TP03242738-30033"
     Pos1 = "Empty"
