@@ -75,4 +75,3 @@ class DataLoggersInc:
             return {'Error': f"No socket id for name '{socket_name}'"}
 
         self.get(f'outlet?{socket_id}=CCL')
-
