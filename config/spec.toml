@@ -9,9 +9,6 @@
 [stages.controller]
     ipaddr = "169.254.98.7"     # IP address of the controller
     port = 55550
-    grating=1                   # axis id of the grating stage
-    camera=2                    # axis id of the camera stage
-    fiber=3                     # axis id of the fiber stage
 
 [stages.grating]
     axis_id = 1
@@ -27,7 +24,8 @@
     axis_id = 3
     presets = { DeepSpec = 1000, HighSpec = 2000 }
 
-[fw.1]
+[filter-wheel.1]
+    serial_number = "TP03242738-30033"
     Pos1 = "Empty"
     Pos2 = "ND1000"
     Pos3 = "ND2000"
@@ -36,7 +34,8 @@
     Pos6 = "ND5000"
     Default = "Pos1"
 
-[fw.2]
+[filter-wheel.2]
+    serial_number = "TP03242738-30034"
     Pos1 = "Empty"
     Pos2 = "ND1000"
     Pos3 = "ND2000"
@@ -44,5 +43,3 @@
     Pos5 = "ND4000"
     Pos6 = "ND5000"
     Default = "Pos1"
-    DeepSpec = 1000
-    HighSpec = 2000

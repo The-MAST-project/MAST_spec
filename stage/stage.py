@@ -3,10 +3,10 @@ import zaber_motion.ascii
 import utils
 from utils import Component, Activities, init_log
 import logging
-from enum import Flag, auto, Enum
+from enum import IntFlag, auto, Enum
 from utils import Config, PrettyJSONResponse
 from fastapi import APIRouter
-from typing import Dict
+from typing import Dict, List
 
 cfg = Config()
 logger = logging.getLogger('mast.spec.stage')
@@ -21,16 +21,16 @@ def on_error(arg):
 
 
 def on_completion(e: zaber_motion.ascii.AlertEvent):
-    for s in stages:
-        if stages[s].axis_id == e.axis_number:
-            stages[s].on_event(e)
+    for st in stages:
+        if st.axis_id == e.axis_number:
+            st.on_event(e)
             return
 
 
 def on_next(e: zaber_motion.ascii.AlertEvent):
-    for s in stages:
-        if stages[s].axis_id == e.axis_number:
-            stages[s].on_event(e)
+    for st in stages:
+        if st.axis_id == e.axis_number:
+            st.on_event(e)
             return
 
 
@@ -62,7 +62,7 @@ if controller is None:
     controller = connect()
 
 
-class StageActivities(Flag):
+class StageActivities(IntFlag):
     Homing = auto()
     Moving = auto()
     StartingUp = auto()
@@ -71,11 +71,11 @@ class StageActivities(Flag):
 
 
 class StageStatus:
-    activities: Flag
+    activities: IntFlag
     position: float
     preset: str | None
 
-    def __init__(self, activities: Flag, position: float, preset: str | None):
+    def __init__(self, activities: IntFlag, position: float, preset: str | None):
         self.activities = activities
         self.position = position
         self.preset = preset
@@ -251,11 +251,19 @@ class Stage(Component, Activities):
         return StageStatus(self.activities, self.position, self.at_preset())
 
 
-stages = {}
+def make_stages() -> List[Stage]:
+    ret = []
+    names = list(cfg.toml['stages'].keys())
+    names.remove('controller')
+    for name in names:
+        ret.append(Stage(name))
+    return ret
+
+
+stages = make_stages()
 stages_dict = {}
-for name in stage_names:
-    stages[name] = Stage(name)
-    stages_dict[name] = name
+for stage in stages:
+    stages_dict[stage.name] = stage.name
 
 StageNames = Enum('StageNames', stages_dict)
 
@@ -273,55 +281,61 @@ UnitNames = Enum('UnitNames', units_dict)
 def list_stages():
     response = {}
     for s in stages:
-        st = stages[s]
-        r = dict()
-
-        r['device'] = f"{st.axis}"
-        r['axis_id'] = st.axis_id
-        r['presets'] = st.presets
-        r['startup'] = st.startup_position
-        r['shutdown'] = st.shutdown_position
-        response[s] = r
+        response[s.name] = {
+            'device': f"{s.axis}",
+            'axis_id': s.axis_id,
+            'presets': s.presets,
+            'startup': s.startup_position,
+            'shutdown': s.shutdown_position,
+        }
     return response
 
 
-def get_position(stage: StageNames):
-    s = stage.value
-    if s in stage_names and stages[s].axis is not None:
-        return stages[s].position
+def stage_by_name(name: str) -> Stage | None:
+    found = [s for s in stages if s.name == name]
+    if len(found) == 1:
+        return found[0]
+    else:
+        return None
+
+
+def get_position(stage_name: StageNames):
+    st = stage_by_name(stage_name.value)
+    if st:
+        return st.position
     else:
         return {
-            'Error': f"No physical stage for '{s}'"
+            'Error': f"No physical stage for '{stage_name.value}'"
         }
 
 
-def get_status(stage: StageNames):
-    s = stage.value
-    if s in stage_names and stages[s].axis is not None:
-        return stages[s].status()
+def get_status(stage_name: StageNames):
+    st = stage_by_name(stage_name.value)
+    if st:
+        return st.status()
     else:
         return {
-            'Error': f"No physical stage for '{s}'"
+            'Error': f"No physical stage for '{stage_name}'"
         }
 
 
-def move_absolute(stage: StageNames, position: float, units: UnitNames):
-    s = stage.value
-    if s in stage_names and stages[s].axis is not None:
-        stages[s].move_absolute(position, reverse_units_dict[units.value])
+def move_absolute(stage_name: StageNames, position: float, units: UnitNames):
+    st = stage_by_name(stage_name.value)
+    if st:
+        st.move_absolute(position, reverse_units_dict[units.value])
     else:
         return {
-            'Error': f"No physical stage for '{s}'"
+            'Error': f"No physical stage for '{stage_name}'"
         }
 
 
-def move_relative(stage: StageNames, position: float, units: UnitNames):
-    s = stage.value
-    if s in stage_names and stages[s].axis is not None:
-        stages[s].move_relative(position, reverse_units_dict[units.value])
+def move_relative(stage_name: StageNames, position: float, units: UnitNames):
+    st = stage_by_name(stage_name.value)
+    if st:
+        st.move_relative(position, reverse_units_dict[units.value])
     else:
         return {
-            'Error': f"No physical stage for '{s}'"
+            'Error': f"No physical stage for '{stage_name}'"
         }
 
 
@@ -334,52 +348,52 @@ PresetNames = Enum('PresetNames', {
 })
 
 
-def move_to_preset(stage: StageNames, preset: PresetNames):
-    s = stage.value
-    if s in stage_names and stages[s].axis is not None:
-        if (preset.value == 'HighSpec' or preset.value == 'DeepSpec') and s != 'fiber':
+def move_to_preset(stage_name: StageNames, preset: PresetNames):
+    st = stage_by_name(stage_name.value)
+    if st and st.axis:
+        if (preset.value == 'HighSpec' or preset.value == 'DeepSpec') and st.name != 'fiber':
             return {
                 'Error': f"Only the 'fiber' stage has presets named 'DeepSpec' or 'HighSpec'"
             }
-        if (preset.value == 'Ca' or preset.value == 'Mg' or preset.value == 'Halpha') and s == 'fiber':
+        if (preset.value == 'Ca' or preset.value == 'Mg' or preset.value == 'Halpha') and st.name == 'fiber':
             return {
                 'Error': f"The 'fiber' stage has presets named 'DeepSpec' or 'HighSpec'"
             }
 
-        stages[s].move_to_preset(preset.value)
+        st.move_to_preset(preset.value)
     else:
         return {
-            'Error': f"No physical stage for '{s}'"
+            'Error': f"No physical stage for '{stage_name}'"
         }
 
 
-def startup(stage: StageNames):
-    s = stage.value
-    if s in stage_names and stages[s].axis is not None:
-        stages[s].startup()
+def startup(stage_name: StageNames):
+    st = stage_by_name(stage_name.value)
+    if st.axis is not None:
+        st.startup()
     else:
         return {
-            'Error': f"No physical stage for '{s}'"
+            'Error': f"No physical stage for '{stage_name}'"
         }
 
 
-def shutdown(stage: StageNames):
-    s = stage.value
-    if s in stage_names and stages[s].axis is not None:
-        stages[s].shutdown()
+def shutdown(stage_name: StageNames):
+    st = stage_by_name(stage_name.value)
+    if st.axis is not None:
+        st.shutdown()
     else:
         return {
-            'Error': f"No physical stage for '{s}'"
+            'Error': f"No physical stage for '{stage_name}'"
         }
 
 
-def abort(stage: StageNames):
-    s = stage.value
-    if s in stage_names and stages[s].axis is not None:
-        stages[s].abort()
+def abort(stage_name: StageNames):
+    st = stage_by_name(stage_name.value)
+    if st.axis is not None:
+        st.abort()
     else:
         return {
-            'Error': f"No physical stage for '{s}'"
+            'Error': f"No physical stage for '{stage_name}'"
         }
 
 

@@ -1,6 +1,6 @@
 import datetime
 from abc import ABC, abstractmethod
-from enum import Flag
+from enum import IntFlag
 from threading import Timer, Lock
 import logging
 import platform
@@ -75,7 +75,7 @@ class classproperty(property):
 
 
 class Activities:
-    activities: Flag
+    activities: IntFlag = 0
     timings: dict
     Idle = 0
 
@@ -84,26 +84,26 @@ class Activities:
     #     return cls._idle
 
     def __init__(self):
-        self.activities = Activities.Idle
         self.timings = dict()
 
-    def start_activity(self, activity: Flag):
-        _only_one_bit_is_set(activity.value)
-        self.activities |= activity.value
+    def start_activity(self, activity: IntFlag):
+        self.activities |= activity
         self.timings[activity] = Timing()
-        self.logger.info(f"started activity {activity}")
+        self.logger.info(f"started activity {activity.__repr__()}")
 
-    def end_activity(self, activity: Flag):
-        _only_one_bit_is_set(activity.value)
-        self.activities &= ~activity.value
+    def end_activity(self, activity: IntFlag):
+        self.activities &= ~activity
         self.timings[activity].end()
-        self.logger.info(f"ended activity {activity}, duration={self.timings[activity].duration}")
+        self.logger.info(f"ended activity {activity.__repr__()}, duration={self.timings[activity].duration}")
 
     def is_active(self, activity):
-        return (self.activities & activity.value) != 0
+        return (self.activities & activity) != 0
 
     def is_idle(self):
-        return self.activities == Activities.Idle
+        return self.activities == 0
+
+    def __repr__(self):
+        return self.activities.__repr__()
 
 
 class RepeatTimer(Timer):
@@ -112,8 +112,7 @@ class RepeatTimer(Timer):
             self.function(*self.args, **self.kwargs)
 
 
-def _only_one_bit_is_set(f: Flag):
-    n = int(f)
+def _only_one_bit_is_set(n: int):
     if n > 0 and (n & (n - 1)) == 0:
         return True
     raise Exception(f"More than one bit is set in 0x{n:x}")
@@ -168,43 +167,6 @@ class Config:
                 raise KeyError(f"No item '{item} in section '{section}' in the configuration")
         else:
             raise KeyError(f"No section '{section} in the configuration")
-
-    # def set(self, section: str, item: str, value, comment=None):
-    #     """
-    #     Configuration changes are saved in the host-configuration tier
-    #
-    #     Parameters
-    #     ----------
-    #     section
-    #        The configuration section
-    #     item
-    #        The configuration item withing the specified section
-    #     value
-    #        The item's value
-    #     comment
-    #        Optional comment
-    #
-    #     Returns
-    #     -------
-    #
-    #     """
-    #     if section not in config.host_config.toml:
-    #         config.host_config.toml[section] = tomlkit.table(True)
-    #     self.host_config.toml[section][item] = value
-    #     if comment:
-    #         self.host_config.toml[section][item].comment(comment)
-    #
-    # def save(self):
-    #     """
-    #     TBD
-    #     Returns
-    #     -------
-    #
-    #     """
-    #     with open(self.host_config.file, 'w') as f:
-    #         tomlkit.dump(self.host_config.toml, f)
-
-
 
 
 class DailyFileHandler(logging.FileHandler):
@@ -266,14 +228,12 @@ class DailyFileHandler(logging.FileHandler):
         logging.FileHandler.__init__(self, filename='', delay=True, mode=mode, encoding=encoding, errors=errors)
 
 
-config: Config = Config()
-
-
 class PathMaker:
     top_folder: str
 
     def __init__(self):
-        self.top_folder = config.get('global', 'TopFolder')
+        cfg = Config()
+        self.top_folder = cfg.get('global', 'TopFolder')
         pass
 
     @staticmethod
