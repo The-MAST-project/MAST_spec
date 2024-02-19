@@ -1,0 +1,16 @@
+README.rst
+setup.py
+pyAndorSDK2/CameraCapabilities.py
+pyAndorSDK2/__init__.py
+pyAndorSDK2/_version.py
+pyAndorSDK2/atmcd.py
+pyAndorSDK2/atmcd_acquisition.py
+pyAndorSDK2/atmcd_capabilities.py
+pyAndorSDK2/atmcd_codes.py
+pyAndorSDK2/atmcd_errors.py
+pyAndorSDK2.egg-info/PKG-INFO
+pyAndorSDK2.egg-info/SOURCES.txt
+pyAndorSDK2.egg-info/dependency_links.txt
+pyAndorSDK2.egg-info/not-zip-safe
+pyAndorSDK2.egg-info/requires.txt
+pyAndorSDK2.egg-info/top_level.txt
