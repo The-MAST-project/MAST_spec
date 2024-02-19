@@ -36,7 +36,7 @@
     4 = "ND3000"
     5 = "ND4000"
     6 = "ND5000"
-    Default = "1"
+    default = 1
 
 [filter-wheel.qTh]
     serial_number = "TP03242738-30034"
@@ -46,4 +46,4 @@
     4 = "ND3000"
     5 = "ND4000"
     6 = "ND5000"
-    Default = "1"
+    default = 1

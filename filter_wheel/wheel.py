@@ -52,9 +52,12 @@ class Wheel(Component, Activities):
         cfg = Config()
         my_cfg = cfg.toml['filter-wheel'][self.name]
         self.serial_number = my_cfg['serial_number']
-        self.filters = list()
-        for i in range(1, 7):
-            self.filters.append(my_cfg[str(i)])
+        self.positions = dict()
+        for k, v in my_cfg.items():
+            if k == 'serial_number' or k == 'default':
+                continue
+            self.positions[k] = v
+
         prefix = f"'{self.name} (sn: {self.serial_number})'"
 
         devices = FWxCListDevices()
@@ -155,8 +158,8 @@ class Wheel(Component, Activities):
         self.positions = dict()
         for i in range(1, 7):
             self.positions[i] = my_cfg[str(i)]
-        if 'Default' in my_cfg:
-            self.default_position = my_cfg["Default"]
+        if 'default' in my_cfg:
+            self.default_position = my_cfg["default"]
         else:
             self.default_position = None
 
@@ -226,17 +229,19 @@ class Wheel(Component, Activities):
             try:
                 pos = int(pos)
             except ValueError:
-                for i in range(len(self.positions.keys()) + 1):
-                    if self.positions[i] == pos:
-                        pos = i
+                for k, v in self.positions.items():
+                    if pos == v:
+                        pos = int(k)
                         break
+
         if pos == self.position:
-            self.logger.debug(f"Already at position {pos}")
+            self.logger.debug(f"Already at position {pos} ('{self.positions[pos]}')")
             return
 
         if pos in range(len(self.positions.keys()) + 1):
             self.target = pos
             self.start_activity(WheelActivities.Moving)
+            self.logger.debug(f"Moving to position {pos} ('{self.positions[pos]}')")
             FWxCSetPosition(self.device, self.target)
         else:
             return {'Error': f"Valid positions on the '{self.name}' wheel: {self.positions}"}
@@ -283,9 +288,9 @@ def list_wheels():
         }
         if wheel.device is not None:
             d['device'] = wheel.id
-            d['filters'] = {}
+            d['positions'] = {}
             for k, v in wheel.positions:
-                d['filters'][k] = v
+                d['positions'][k] = v
         else:
             d['device'] = 'not-detected'
         ret[wheel.name] = d
@@ -361,3 +366,6 @@ router.add_api_route(base_path + '/move', tags=[tag], endpoint=move,
 router.add_api_route(base_path + '/startup', tags=[tag], endpoint=startup, response_class=PrettyJSONResponse)
 router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=shutdown, response_class=PrettyJSONResponse)
 router.add_api_route(base_path + '/abort', tags=[tag], endpoint=abort, response_class=PrettyJSONResponse)
+
+if __name__ == '__main__':
+    wheels[0].move(5)
