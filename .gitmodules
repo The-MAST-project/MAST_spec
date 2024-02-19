@@ -1,0 +1,3 @@
+[submodule "dlipower"]
+	path = dlipower
+	url = https://github.com/dwighthubbard/python-dlipower.git
