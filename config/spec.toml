@@ -28,7 +28,7 @@
 # The ThorLABS filter wheels are identified by their serial number which
 #  is labeled SN: on the body of the device itself
 #
-[filter-wheel.1]
+[filter-wheel.ThAr]
     serial_number = "TP03242738-30033"
     Pos1 = "Empty"
     Pos2 = "ND1000"
@@ -38,7 +38,7 @@
     Pos6 = "ND5000"
     Default = "Pos1"
 
-[filter-wheel.2]
+[filter-wheel.qTh]
     serial_number = "TP03242738-30034"
     Pos1 = "Empty"
     Pos2 = "ND1000"

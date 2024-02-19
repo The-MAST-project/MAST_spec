@@ -28,7 +28,6 @@ class WheelActivities(IntFlag):
 
 
 class Wheel(Component, Activities):
-    wheel_id: int
     serial_number: str
     device: int | None
     id: str
@@ -42,19 +41,18 @@ class Wheel(Component, Activities):
     speed_mode: SpeedMode
     positions: int
 
-    def __init__(self, wheel_id: int):
+    def __init__(self, wheel_name: str):
         super().__init__()
 
-        self.wheel_id = wheel_id
-        self.name = f"filter-wheel-{self.wheel_id}"
+        self.name = wheel_name
 
-        self.logger = logging.getLogger(f"mast.spec.{self.name}")
+        self.logger = logging.getLogger(f"mast.spec.filter-wheel-{self.name}")
         init_log(self.logger)
 
         cfg = Config()
-        my_cfg = cfg.toml['filter-wheel'][str(self.wheel_id)]
+        my_cfg = cfg.toml['filter-wheel'][self.name]
         self.serial_number = my_cfg['serial_number']
-        prefix = f"'{self.serial_number}'"
+        prefix = f"'{self.name} (sn: {self.serial_number})'"
 
         devices = FWxCListDevices()
         found = [dev for dev in devices if dev[0] == self.serial_number]
@@ -257,7 +255,7 @@ def make_filter_wheels():
 
     ret: List[Wheel] = list()
     for wheel_name in cfg.toml['filter-wheel']:
-        ret.append(Wheel(int(wheel_name)))
+        ret.append(Wheel(wheel_name))
     return ret
 
 
@@ -280,8 +278,8 @@ def list_wheels():
 
 
 class WheelNames(str, Enum):
-    One = "filter-wheel-1"
-    Two = "filter-wheel-2"
+    ThAr = "ThAr"
+    qTh = "qTh"
 
 
 def wheel_by_name(name: WheelNames) -> Wheel | None:
