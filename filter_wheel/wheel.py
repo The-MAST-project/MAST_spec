@@ -32,7 +32,7 @@ class Wheel(Component, Activities):
     device: int | None
     id: str
     name: str
-    position_names: list
+    positions: dict
     default_position: int | None
     target: int | None = None
     timer: RepeatTimer
@@ -52,6 +52,9 @@ class Wheel(Component, Activities):
         cfg = Config()
         my_cfg = cfg.toml['filter-wheel'][self.name]
         self.serial_number = my_cfg['serial_number']
+        self.filters = list()
+        for i in range(1, 7):
+            self.filters.append(my_cfg[str(i)])
         prefix = f"'{self.name} (sn: {self.serial_number})'"
 
         devices = FWxCListDevices()
@@ -149,12 +152,11 @@ class Wheel(Component, Activities):
             return
         self.logger.info(f"{prefix}: Saved")
 
-        self.position_names = list()
+        self.positions = dict()
         for i in range(1, 7):
-            self.position_names.append(my_cfg[f"Pos{i}"])
+            self.positions[i] = my_cfg[str(i)]
         if 'Default' in my_cfg:
-            default_position_name = my_cfg["Default"]
-            self.default_position = int(default_position_name.replace("Pos", ""))
+            self.default_position = my_cfg["Default"]
         else:
             self.default_position = None
 
@@ -219,22 +221,33 @@ class Wheel(Component, Activities):
             return None
         return pos[0]
 
-    def move(self, pos: int | str):
-        if type(pos) is str:
-            pos = self.name_to_number(pos)
-        if self.position == pos:
+    def move(self, pos: str | int):
+        if isinstance(pos, str):
+            try:
+                pos = int(pos)
+            except ValueError:
+                for i in range(len(self.positions.keys()) + 1):
+                    if self.positions[i] == pos:
+                        pos = i
+                        break
+        if pos == self.position:
+            self.logger.debug(f"Already at position {pos}")
             return
 
-        self.target = pos
-        self.start_activity(WheelActivities.Moving)
-        FWxCSetPosition(self.device, self.target)
+        if pos in range(len(self.positions.keys()) + 1):
+            self.target = pos
+            self.start_activity(WheelActivities.Moving)
+            FWxCSetPosition(self.device, self.target)
+        else:
+            return {'Error': f"Valid positions on the '{self.name}' wheel: {self.positions}"}
 
     def name_to_number(self, pos_name: str) -> int | None:
-        try:
-            idx = self.position_names.index(pos_name)
-        except ValueError:
-            raise Exception(f"Bad position name '{pos_name}'.  Known position names: {self.position_names}")
-        return idx
+
+        for k, v in self.positions.items():
+            if v == pos_name:
+                return k
+
+        raise Exception(f"Bad position name '{pos_name}'.  Known position names: {self.positions}")
 
     def ontimer(self):
         if self.is_active(WheelActivities.Moving) and self.position == self.target:
@@ -269,8 +282,10 @@ def list_wheels():
             'serial_number': wheel.serial_number,
         }
         if wheel.device is not None:
-            d['device'] = wheel.wheel_id
-            d['positions'] = wheel.positions
+            d['device'] = wheel.id
+            d['filters'] = {}
+            for k, v in wheel.positions:
+                d['filters'][k] = v
         else:
             d['device'] = 'not-detected'
         ret[wheel.name] = d
@@ -305,12 +320,17 @@ def get_status(wheel: WheelNames):
         return w.status()
 
 
-def move(wheel: WheelNames, pos: int):
+def move(wheel: WheelNames, position: int | str):
     w = wheel_by_name(wheel)
     if w is not None:
         if w.device is None:
             return {'Error': f'{w.serial_number}: device not detected'}
-        return w.move(pos)
+        if isinstance(position, str):
+            for n, v in w.positions.items():
+                if v == position:
+                    position = n
+                    break
+        return w.move(position)
 
 
 def startup():
