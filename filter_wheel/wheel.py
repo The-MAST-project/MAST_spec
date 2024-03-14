@@ -4,6 +4,7 @@ import logging
 from fastapi import APIRouter
 from typing import List
 from config.config import Config
+from dlipower.dlipower.dlipower import SwitchedPowerDevice
 
 import sys
 import os.path
@@ -27,33 +28,32 @@ class WheelActivities(IntFlag):
     Moving = auto()
 
 
-class Wheel(Component, Activities):
+class Wheel(Component, SwitchedPowerDevice, Activities):
     serial_number: str
     device: int | None
-    id: str
     name: str
     positions: dict
     default_position: int | None
     target: int | None = None
     timer: RepeatTimer
-    logger = None
+    switch_logger = None
     sensor_mode: SensorMode
     speed_mode: SpeedMode
     positions: int
 
     def __init__(self, wheel_name: str):
-        super().__init__()
+        Activities.__init__(self)
 
         self.name = wheel_name
 
         self.logger = logging.getLogger(f"mast.spec.filter-wheel-{self.name}")
         init_log(self.logger)
 
-        cfg = Config()
-        my_cfg = cfg.toml['filter-wheel'][self.name]
-        self.serial_number = my_cfg['serial_number']
+        self.conf = Config().toml['filter-wheel'][self.name]
+        SwitchedPowerDevice.__init__(self, self.conf)
+        self.serial_number = self.conf['serial_number']
         self.positions = dict()
-        for k, v in my_cfg.items():
+        for k, v in self.conf.items():
             if k == 'serial_number' or k == 'default':
                 continue
             self.positions[k] = v
@@ -67,7 +67,7 @@ class Wheel(Component, Activities):
             self.logger.error(f"{prefix}: Could not find device")
             return
 
-        self.device = FWxCOpen(self.serial_number,115200,3)
+        self.device = FWxCOpen(self.serial_number, 115200, 3)
         if self.device < 0:
             self.logger.error(f"{prefix}: Could not open device")
             self.device = None
@@ -80,7 +80,7 @@ class Wheel(Component, Activities):
             self.device = None
             return
         _id[0] = _id[0][6:]
-        self.id = _id[0][:-3]
+        self.id: str = _id[0][:-3]
 
         npos = [self.device]
         result = FWxCGetPositionCount(self.device, npos)
@@ -96,7 +96,7 @@ class Wheel(Component, Activities):
             return
 
         self.positions = npos[0]
-        self.logger.info(f"{prefix}: positions={self.positions}, id='{self.id[0]}'")
+        self.logger.info(f"{prefix}: positions={self.positions}, id='{self.id}'")
 
         # set the speed mode to 'high' (1)
         result = FWxCSetSpeedMode(self.device, SpeedMode.High.value)
@@ -157,9 +157,9 @@ class Wheel(Component, Activities):
 
         self.positions = dict()
         for i in range(1, 7):
-            self.positions[i] = my_cfg[str(i)]
-        if 'default' in my_cfg:
-            self.default_position = my_cfg["default"]
+            self.positions[i] = self.conf[str(i)]
+        if 'default' in self.conf:
+            self.default_position = self.conf["default"]
         else:
             self.default_position = None
 
@@ -181,7 +181,8 @@ class Wheel(Component, Activities):
         if self.device is None:
             return
 
-        if hasattr(self, 'default_position') and self.default_position is not None and self.position != self.default_position:
+        if (hasattr(self, 'default_position') and self.default_position is not None and
+                self.position != self.default_position):
             self.start_activity(WheelActivities.StartingUp)
             self.move(self.default_position)
 
@@ -265,7 +266,7 @@ class Wheel(Component, Activities):
                 self.end_activity(WheelActivities.ShuttingDown)
 
     def __repr__(self):
-        return f"<Wheel-{self.wheel_id}>(name='{self.name}', serial='{self.serial_number}', id={self.id[0]}"
+        return f"<Wheel-{self.id}>(name='{self.name}', serial='{self.serial_number}')"
 
 
 def make_filter_wheels():
