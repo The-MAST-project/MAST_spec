@@ -15,8 +15,11 @@ if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
         ret, iSerialNumber))
 
     # Configure the acquisition
-    ret = sdk.SetTemperature(-60)
-    print("Function SetTemperature returned {} target temperature -60".format(ret))
+    # ret = sdk.SetTemperature(-60)
+    new_temperature = 10
+    ret = sdk.SetTemperature(new_temperature)
+    # print("Function SetTemperature returned {} target temperature -60".format(ret))
+    print(f"Function SetTemperature returned {ret} target temperature {new_temperature}")
 
     ret = sdk.CoolerON()
     print("Function CoolerON returned {}".format(ret))

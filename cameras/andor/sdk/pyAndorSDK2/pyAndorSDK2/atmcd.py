@@ -181,7 +181,7 @@ class atmcd:
                 DRV_NOT_INITIALIZED - System not initialized.
                 DRV_ACQUIRING - Acquisition in progress.
                 DRV_ERROR_ACK - Unable to communicate with card.
-                DRV_NOT_SUPPORTED - Camera does not support switching cooler off.
+                DRV_NOT_SUPPORTED - Camera does not support switching activate_cooler off.
 
             C++ Equiv:
             unsigned int CoolerOFF(void);
@@ -2725,7 +2725,7 @@ class atmcd:
     def GetFrontEndStatus(self):
         """
             Description:
-            This function will return if the Front End cooler has overheated.
+            This function will return if the Front End activate_cooler has overheated.
 
             Synopsis:
             (ret, piFlag) = GetFrontEndStatus()
@@ -2737,10 +2737,10 @@ class atmcd:
             ret - Function Return Code:
                 DRV_SUCCESS - State returned.
                 DRV_NOT_INITIALIZED - System not initialized.
-                DRV_NOT_SUPPORTED DRV_ACQUIRING - Front End cooler not supported.
+                DRV_NOT_SUPPORTED DRV_ACQUIRING - Front End activate_cooler not supported.
                 DRV_ERROR_ACK - Acquisition in progress.
                 DRV_P1INVALID - Unable to communicate with card.
-            piFlag - The status of the front end cooler:
+            piFlag - The status of the front end activate_cooler:
                 0 - Normal
                 1 - Tripped
 
@@ -5972,7 +5972,7 @@ class atmcd:
     def IsCoolerOn(self):
         """
             Description:
-            This function checks the status of the cooler.
+            This function checks the status of the activate_cooler.
 
             Synopsis:
             (ret, iCoolerStatus) = IsCoolerOn()
@@ -8016,7 +8016,7 @@ class atmcd:
     def SetCoolerMode(self, mode):
         """
             Description:
-            This function determines whether the cooler is switched off when the camera is shut down.
+            This function determines whether the activate_cooler is switched off when the camera is shut down.
 
             Synopsis:
             ret = SetCoolerMode(mode)
@@ -10013,7 +10013,7 @@ class atmcd:
     def SetFrontEndEvent(self, event):
         """
             Description:
-            This function passes a Win32 Event handle to the driver via which the driver can inform the user software that the Front End cooler has overheated or returned to a normal state. To determine what event has actually occurred call the GetFrontEndStatus function. This may give the user software an opportunity to perform other actions that will not affect the readout of the current acquisition.
+            This function passes a Win32 Event handle to the driver via which the driver can inform the user software that the Front End activate_cooler has overheated or returned to a normal state. To determine what event has actually occurred call the GetFrontEndStatus function. This may give the user software an opportunity to perform other actions that will not affect the readout of the current acquisition.
 
             Synopsis:
             ret = SetFrontEndEvent(event)
