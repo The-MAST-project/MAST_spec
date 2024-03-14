@@ -8,59 +8,11 @@ from utils import PrettyJSONResponse
 from fastapi import APIRouter
 from typing import Dict, List
 from config.config import Config
+from dlipower.dlipower.dlipower import SwitchedPowerDevice
+from networking import NetworkedDevice
 
-cfg = Config()
 logger = logging.getLogger('mast.spec.stage')
 init_log(logger)
-
-stage_names = list(cfg.toml['stages'].keys())
-stage_names.remove('controller')
-
-
-def on_error(arg):
-    logger.error(f"on_error: {arg}")
-
-
-def on_completion(e: zaber_motion.ascii.AlertEvent):
-    for st in stages:
-        if st.axis_id == e.axis_number:
-            st.on_event(e)
-            return
-
-
-def on_next(e: zaber_motion.ascii.AlertEvent):
-    for st in stages:
-        if st.axis_id == e.axis_number:
-            st.on_event(e)
-            return
-
-
-def connect() -> zaber_motion.ascii.Device:
-    dev: zaber_motion.ascii.Device
-    my_conf = cfg.toml['stages']['controller']
-
-    ipaddr = my_conf['ipaddr']
-    port = my_conf['port']
-
-    if ipaddr is None:
-        raise f"Cannot get configuration entry [stages.controller].ipaddr"
-    conn = zaber_motion.ascii.Connection.open_tcp(host_name=ipaddr, port=port)
-    devices = conn.detect_devices(identify_devices=True)
-    if len(devices) < 1:
-        raise f"No Zaber devices (controllers)"
-
-    conn.enable_alerts()
-    conn.alert.subscribe(on_error=on_error, on_completed=on_completion, on_next=on_next)
-    dev = conn.get_device(1)
-    dev.identify()
-
-    return dev
-
-
-controller: zaber_motion.ascii.Device | None = None
-
-if controller is None:
-    controller = connect()
 
 
 class StageActivities(IntFlag):
@@ -92,34 +44,37 @@ class Stage(Component, Activities):
     startup_position: float | None = None
     shutdown_position: float | None = None
 
-    def __init__(self, stage_name: str):
+    def __init__(self, name: str, ctlr=None):
         super().__init__()
 
-        if stage_name not in stage_names:
-            raise f"Bad stage name '{stage_name}'.  Known names are: {stage_names}"
+        try:
+            self.conf = Config().toml['stage'][name]
+        except Exception as ex:
+            logger.error(f"No stage named '{name}' in the config file")
+            return
 
-        self.name = stage_name
+        self.name = name
+        self.controller = ctlr
         self.logger = logging.getLogger(f"mast.spec.stage.{self.name}")
         init_log(self.logger)
 
-        my_conf = cfg.toml['stages'][self.name]
         try:
-            self.axis_id = int(my_conf['axis_id'])
+            self.axis_id = int(self.conf['axis_id'])
         except ValueError:
             raise f"Bad or missing configuration item '[stages.{self.name}] -> axis_id"
 
         self.presets = dict()
-        for key in my_conf['presets'].keys():
-            self.presets[key] = my_conf['presets'][key]
+        for key in self.conf['presets'].keys():
+            self.presets[key] = self.conf['presets'][key]
 
-        if 'startup' in my_conf:
-            self.startup_position = float(my_conf['startup'])
+        if 'startup' in self.conf:
+            self.startup_position = float(self.conf['startup'])
 
-        if 'shutdown' in my_conf:
-            self.startup_position = float(my_conf['shutdown'])
+        if 'shutdown' in self.conf:
+            self.startup_position = float(self.conf['shutdown'])
 
         try:
-            self.axis = controller.get_axis(self.axis_id)
+            self.axis = self.controller.device.get_axis(self.axis_id)
             if self.axis.axis_type == zaber_motion.ascii.AxisType.UNKNOWN:
                 self.logger.info(f"No stage name='{self.name}', axis_id={self.axis_id}")
                 self.axis = None
@@ -252,18 +207,56 @@ class Stage(Component, Activities):
         return StageStatus(self.activities, self.position, self.at_preset())
 
 
-def make_stages() -> List[Stage]:
-    ret = []
-    names = list(cfg.toml['stages'].keys())
-    names.remove('controller')
-    for name in names:
-        ret.append(Stage(name))
-    return ret
+class Controller(SwitchedPowerDevice, NetworkedDevice):
+
+    def __init__(self):
+        self.conf = Config().toml['stages']['controller']
+
+        SwitchedPowerDevice.__init__(self, self.conf)
+        NetworkedDevice.__init__(self, self.conf['network'])
+
+        self.device: zaber_motion.ascii.Device = self.connect()
+
+        self.stages: List = list()
+        for name in Config().toml['stage']:
+            self.stages.append(Stage(name=name, ctlr=self))
+
+    @staticmethod
+    def on_error(arg):
+        logger.error(f"on_error: {arg}")
+
+    def on_completion(self, e: zaber_motion.ascii.AlertEvent):
+        for st in self.stages:
+            if st.axis_id == e.axis_number:
+                st.on_event(e)
+                return
+
+    def on_next(self, e: zaber_motion.ascii.AlertEvent):
+        for st in self.stages:
+            if st.axis_id == e.axis_number:
+                st.on_event(e)
+                return
+
+    def connect(self) -> zaber_motion.ascii.Device:
+        dev: zaber_motion.ascii.Device
+
+        conn = zaber_motion.ascii.Connection.open_tcp(host_name=self.destination.address)
+        devices = conn.detect_devices(identify_devices=True)
+        if len(devices) < 1:
+            raise f"No Zaber devices (controllers)"
+
+        conn.enable_alerts()
+        conn.alert.subscribe(on_error=self.on_error, on_completed=self.on_completion, on_next=self.on_next)
+        dev = conn.get_device(1)
+        dev.identify()
+
+        return dev
 
 
-stages = make_stages()
+controller: Controller = Controller()
+
 stages_dict = {}
-for stage in stages:
+for stage in controller.stages:
     stages_dict[stage.name] = stage.name
 
 StageNames = Enum('StageNames', stages_dict)
@@ -281,7 +274,7 @@ UnitNames = Enum('UnitNames', units_dict)
 # FastApi stuff
 def list_stages():
     response = {}
-    for s in stages:
+    for s in controller.stages:
         response[s.name] = {
             'device': f"{s.axis}",
             'axis_id': s.axis_id,
@@ -293,7 +286,7 @@ def list_stages():
 
 
 def stage_by_name(name: str) -> Stage | None:
-    found = [s for s in stages if s.name == name]
+    found = [s for s in controller.stages if s.name == name]
     if len(found) == 1:
         return found[0]
     else:
