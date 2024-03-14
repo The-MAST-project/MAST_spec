@@ -91,6 +91,8 @@ class Activities:
         self.logger.info(f"started activity {activity.__repr__()}")
 
     def end_activity(self, activity: IntFlag):
+        if not self.is_active(activity):
+            return
         self.activities &= ~activity
         self.timings[activity].end()
         self.logger.info(f"ended activity {activity.__repr__()}, duration={self.timings[activity].duration}")
@@ -235,11 +237,12 @@ class PathMaker:
 path_maker = SingletonFactory.get_instance(PathMaker)
 
 
-def init_log(logger: logging.Logger):
+def init_log(logger: logging.Logger, level: int | None = None):
     logger.propagate = False
-    logger.setLevel(default_log_level)
+    level = default_log_level if level is None else level
+    logger.setLevel(level)
     handler = logging.StreamHandler()
-    handler.setLevel(default_log_level)
+    handler.setLevel(level)
     formatter = logging.Formatter('%(asctime)s - %(levelname)-8s - {%(name)s:%(funcName)s:%(threadName)s:%(thread)s}' +
                                   ' -  %(message)s')
     handler.setFormatter(formatter)
@@ -247,7 +250,7 @@ def init_log(logger: logging.Logger):
 
     # path_maker = SingletonFactory.get_instance(PathMaker)
     handler = DailyFileHandler(path=os.path.join(path_maker.make_daily_folder_name(), 'log.txt'), mode='a')
-    handler.setLevel(default_log_level)
+    handler.setLevel(level)
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
@@ -263,3 +266,19 @@ class PrettyJSONResponse(Response):
             indent=4,
             separators=(", ", ": "),
         ).encode(default_encoding)
+
+
+def deep_update(original: dict, update: dict):
+    """
+    Recursively update a dictionary with nested dictionaries.
+    :param original: The original dictionary to be updated, in place.
+    :param update: The dictionary with updates.
+    """
+    for key, value in update.items():
+        if isinstance(value, dict) and key in original:
+            # If the value is a dict and the key exists in the original dict,
+            # perform a deep update
+            deep_update(original[key], value)
+        else:
+            # Otherwise, update or add the key-value pair to the original dict
+            original[key] = value
