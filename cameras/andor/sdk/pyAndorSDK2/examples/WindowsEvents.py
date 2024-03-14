@@ -45,7 +45,7 @@ if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
     print("Function PrepareAcquisition returned {}".format(ret))
 
     event = win32event.CreateEvent(None, 0, 0, None)
-    ret = sdk.SetDriverEvent(event)
+    ret = sdk.SetDriverEvent(event.handle)
     print("Function SetDriverEvent returned {}".format(ret))
 
     # Perform Acquisition
