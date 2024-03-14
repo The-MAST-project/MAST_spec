@@ -7,20 +7,21 @@
     port = 8000
 
 [stages.controller]
-    ipaddr = "169.254.98.7"     # IP address of the controller
+    network = {address="169.254.98.7"}
     port = 55550
+    power = {switch='1', outlet=3, delay=5}
 
-[stages.grating]
+[stage.grating]
     axis_id = 1
     # startup = ...
     # shutdown = ...
     presets = { Ca = 1000, Halpha  = 2000, Mg = 3000 }
 
-[stages.camera]
+[stage.camera]
     axis_id = 2
     presets = { Ca = 10000, Halpha = 15000, Mg = 20000 }
 
-[stages.fiber]
+[stage.fiber]
     axis_id = 3
     presets = { DeepSpec = 1000, HighSpec = 2000 }
 
@@ -37,6 +38,7 @@
     5 = "ND4000"
     6 = "ND5000"
     default = 1
+    power = {switch='1', outlet=1}
 
 [filter-wheel.qTh]
     serial_number = "TP03242738-30034"
@@ -47,3 +49,95 @@
     5 = "ND4000"
     6 = "ND5000"
     default = 1
+    power = {switch='1', outlet=2}
+
+[chiller]
+    power = {switch='2', outlet=1}
+
+[deepspec.cameras]                      # common settings for all the DeepSpec cameras
+    boot_delay = 20                     # delay (seconds) after power is turned ON, wait for camera to boot
+    target_cool_temp = -80              # target set-point for cooling down
+    target_warm_temp = 0                # target set-point for warming up
+    backside_temp_check_interval = 30   # between backside temperature checks
+
+    readout_amplifiers = 0              # 0 = 1 Amplifier (OSR), 2 = 1 Amplifier (OSL), 2 = 2 Amplifiers (OSR + OSL)
+    x_binning = 1
+    y_binning = 1
+    exposure = 1e-3                     # exposure time (seconds)
+    readout_speed = 'KHz_250'           # 'MHz_1', 'MHz_3', 'KHz_500', 'KHz_250', 'KHz_100', 'KHz_50'
+    bit_depth = 4
+
+[deepspec.camera.1]
+    band = "U"
+    network = {address="192.168.1.231"}
+    power = {switch='1', outlet=5}
+    enabled = true
+
+[deepspec.camera.2]
+    band = "G"
+    network = {address="192.168.1.232"}
+    power = {switch='1', outlet=6}
+
+[deepspec.camera.3]
+    band = "R"
+    network = {address="192.168.1.233"}
+    power = {switch='1', outlet=7}
+    enabled = true
+
+[deepspec.camera.4]
+    band = "I"
+    network = {address="192.168.1.234"}
+    power = {switch='1', outlet=8}
+
+[highspec.camera]
+    acquisition-mode = 1    # AC_ACQMODE_SINGLE = 1
+                            # AC_ACQMODE_VIDEO = 2
+                            # AC_ACQMODE_ACCUMULATE = 4
+                            # AC_ACQMODE_KINETIC = 8
+                            # AC_ACQMODE_FRAMETRANSFER = 16
+                            # AC_ACQMODE_FASTKINETICS = 32
+                            # AC_ACQMODE_OVERLAP = 64
+                            # AC_ACQMODE_TDI = 128
+    exposure = 5            # seconds
+    gain = 200              # up to 4095
+    cooler-mode = 0         # 0=return to ambient on ShutDown, 1=maintain current temperature on ShutDown
+    activate-cooler = true  # true=turn activate_cooler ON, false=turn activate_cooler OFF
+    set-point = -10
+    h-bin = 1                # number of pixels to bin horizontally
+    v-bin = 1                # number of pixels to bin vertically
+    power = {switch=1, outlet=1, delay-after-on=2}
+
+[power-switch.1]
+    network = {address="192.168.0.100"}
+    user = "admin"
+    password = "1234"
+    cycle_time = 5
+    outlets = {1="HighSpec Camera", 2="Wheel: ThAr", 3="Stage Controller", 4="Wheel: qTh", 5="DeepSpec Camera1", 6="DeepSpec Camera2", 7="DeepSpec Camera3", 8="DeepSpec Camera4"}
+
+[power-switch.2]
+    network = {address="192.168.0.101"}
+    user = "admin"
+    password = "1234"
+    cycle_time = 5
+    outlets = {1="Chiller"}
+
+[usbhub]
+    network = {address="192.168.210.1"}
+
+#
+# networks
+#
+[network.power-switches]
+    local = "192.168.0.100"
+    mask = "255.255.255.0"
+    peers = ["192.168.0.100", "192.168.0.102"]
+
+[network.deepspec-cameras]
+    local = "192.168.1.1"
+    mask = "255.255.255.0"
+    peers = ["192.168.1.231", "192.168.1.232", "192.168.1.233", "192.168.1.234"]
+
+[network.stage-controller]
+    local="169.254.98.1"
+    mask = "255.255.255.0"
+    peers = ["169.254.98.7"]
