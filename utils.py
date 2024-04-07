@@ -1,4 +1,3 @@
-import datetime
 from abc import ABC, abstractmethod
 from enum import IntFlag
 from threading import Timer, Lock
@@ -6,51 +5,15 @@ import logging
 import platform
 import os
 import io
-import json
-from starlette.responses import Response
-from typing import Any
+
 from config.config import Config
+import datetime
+from typing import List
 
 default_log_level = logging.DEBUG
 default_encoding = "utf-8"
 
 BASE_SPEC_PATH = '/spec/'
-
-
-class Component(ABC):
-
-    @abstractmethod
-    def startup(self):
-        """
-        Called whenever an observing session starts (at sun-down or when safety returns)
-        :return:
-        """
-        pass
-
-    @abstractmethod
-    def shutdown(self):
-        """
-        Called whenever an observing session is terminated (at sun-up or when becoming unsafe)
-        :return:
-        """
-        pass
-
-    @abstractmethod
-    def abort(self):
-        """
-        Immediately terminates any in-progress activities and returns the component to its
-         default state.
-        :return:
-        """
-        pass
-
-    @abstractmethod
-    def status(self):
-        """
-        Returns the component's current status
-        :return:
-        """
-        pass
 
 
 class Timing:
@@ -66,11 +29,11 @@ class Timing:
         self.duration = self.end_time - self.start_time
 
 
-class classproperty(property):
-    def __get__(self, obj, cls=None):
-        if cls is None:
-            cls = type(obj)
-        return super().__get__(cls)
+# class classproperty(property):
+#     def __get__(self, obj, cls=None):
+#         if cls is None:
+#             cls = type(obj)
+#         return super().__get__(cls)
 
 
 class Activities:
@@ -213,15 +176,19 @@ class PathMaker:
         os.makedirs(d, exist_ok=True)
         return d
 
-    def make_exposure_file_name(self):
+    def make_exposure_file_name(self, camera: str):
         exposures_folder = os.path.join(self.make_daily_folder_name(), 'Exposures')
         os.makedirs(exposures_folder, exist_ok=True)
-        return os.path.join(exposures_folder, f'exposure-{path_maker.make_seq(exposures_folder):04d}')
+        return os.path.join(exposures_folder, camera, f'exposure-{path_maker.make_seq(exposures_folder):04d}')
 
-    def make_acquisition_folder_name(self):
+    def make_acquisition_folder_name(self, uuid: str = None):
         acquisitions_folder = os.path.join(self.make_daily_folder_name(), 'Acquisitions')
         os.makedirs(acquisitions_folder, exist_ok=True)
-        return os.path.join(acquisitions_folder, f'acquisition-{PathMaker.make_seq(acquisitions_folder)}')
+        if uuid is None:
+            path = os.path.join(acquisitions_folder, f'acquisition-{PathMaker.make_seq(acquisitions_folder)}')
+        else:
+            path = os.path.join(acquisitions_folder, f"{uuid}")
+        return path
 
     def make_guiding_folder_name(self):
         guiding_folder = os.path.join(self.make_daily_folder_name(), 'Guidings')
@@ -255,17 +222,28 @@ def init_log(logger: logging.Logger, level: int | None = None):
     logger.addHandler(handler)
 
 
-class PrettyJSONResponse(Response):
-    media_type = "application/json"
+# class CustomJSONEncoder(json.JSONEncoder):
+#     def default(self, obj: Any) -> Any:
+#         if isinstance(obj, float) and obj != obj:  # Check for NaN
+#             return "NaN"  # or use None
+#         elif isinstance(obj, datetime.datetime):
+#             return obj.isoformat()  # Format datetime as ISO8601 string
+#         # Add more custom handling cases here if needed
+#         return super().default(obj)
 
-    def render(self, content: Any) -> bytes:
-        return json.dumps(
-            content,
-            ensure_ascii=False,
-            allow_nan=False,
-            indent=4,
-            separators=(", ", ": "),
-        ).encode(default_encoding)
+
+# class CustomJSONResponse(JSONResponse):
+#     media_type = "application/json"
+#
+#     def render(self, content: Any) -> bytes:
+#         return json.dumps(
+#             content,
+#             ensure_ascii=False,
+#             allow_nan=False,
+#             indent=4,
+#             separators=(", ", ": "),
+#             cls=CustomJSONEncoder,
+#         ).encode(default_encoding)
 
 
 def deep_update(original: dict, update: dict):
@@ -282,3 +260,68 @@ def deep_update(original: dict, update: dict):
         else:
             # Otherwise, update or add the key-value pair to the original dict
             original[key] = value
+
+
+class Component(ABC, Activities):
+
+    @abstractmethod
+    def startup(self):
+        """
+        Called whenever an observing session starts (at sun-down or when safety returns)
+        :return:
+        """
+        pass
+
+    @abstractmethod
+    def shutdown(self):
+        """
+        Called whenever an observing session is terminated (at sun-up or when becoming unsafe)
+        :return:
+        """
+        pass
+
+    @abstractmethod
+    def abort(self):
+        """
+        Immediately terminates any in-progress activities and returns the component to its
+         default state.
+        :return:
+        """
+        pass
+
+    @abstractmethod
+    def status(self):
+        """
+        Returns the component's current status
+        :return:
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """The getter method for the abstract name property."""
+        pass
+
+    @name.setter
+    @abstractmethod
+    def name(self, value: str):
+        """The setter method for the abstract name property."""
+        pass
+
+    @property
+    @abstractmethod
+    def operational(self) -> bool:
+        """The getter method for the abstract name property."""
+        pass
+
+    @operational.setter
+    @abstractmethod
+    def operational(self, value: str) -> bool:
+        """The setter method for the abstract name property."""
+        pass
+
+    @property
+    @abstractmethod
+    def why_not_operational(self) -> List[str]:
+        pass

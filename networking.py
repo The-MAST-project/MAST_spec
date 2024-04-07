@@ -33,13 +33,13 @@ class NetworkedDevice:
         if 'network' not in conf:
             raise Exception(f"Missing 'network.address' key in {conf}")
 
-        self.address = conf['network']['address']
+        self.ipaddress = conf['network']['address']
         self.port = int(conf['network']['port']) if 'port' in conf['network'] else None
 
-        self.destination = NetworkDestination(address=self.address, port=self.port)
+        self.destination = NetworkDestination(address=self.ipaddress, port=self.port)
 
 
-def ping_peers(verbose: bool = False) -> Tuple[List, List]:
+def ping_peers(verbose: bool = False):
     """
     ICMP pings all the configured peers
     :param verbose: If True, output results
@@ -49,6 +49,7 @@ def ping_peers(verbose: bool = False) -> Tuple[List, List]:
     failed = []
     succeeded = []
 
+    print('Pinging network peers ...')
     responses = deep_search(conf, 'address')
     for response in responses:
         peer_name = response.path
@@ -64,10 +65,9 @@ def ping_peers(verbose: bool = False) -> Tuple[List, List]:
             if verbose:
                 logger.error(f"{peer_name} does not respond to ping")
 
-    return succeeded, failed
+    print(f"     responding: {succeeded}")
+    print(f" not-responding: {failed}")
 
 
 if __name__ == '__main__':
-    successes, failures = ping_peers(verbose=False)
-    print(f"responding:     {successes}")
-    print(f"not responding: {failures}")
+    ping_peers(verbose=False)

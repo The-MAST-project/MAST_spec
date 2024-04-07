@@ -1,4 +1,4 @@
-from utils import Component, Activities, RepeatTimer, init_log, PrettyJSONResponse, BASE_SPEC_PATH
+from utils import Component, Activities, RepeatTimer, init_log, BASE_SPEC_PATH
 from enum import IntFlag, Enum, auto
 import logging
 from fastapi import APIRouter
@@ -28,31 +28,28 @@ class WheelActivities(IntFlag):
     Moving = auto()
 
 
-class Wheel(Component, SwitchedPowerDevice, Activities):
-    serial_number: str
-    device: int | None
-    name: str
-    positions: dict
-    default_position: int | None
-    target: int | None = None
-    timer: RepeatTimer
-    switch_logger = None
-    sensor_mode: SensorMode
-    speed_mode: SpeedMode
-    positions: int
+class Wheel(Component, SwitchedPowerDevice):
 
     def __init__(self, wheel_name: str):
         Activities.__init__(self)
 
-        self.name = wheel_name
+        self._wheel_name = wheel_name
+        self.name = self._wheel_name
+        self.id: str = ''
+        self.detected = False
+
+        self.conf = Config().toml['filter-wheel'][self.name]
+        self.power = SwitchedPowerDevice(self.conf)
+        if self.power.switch.detected:
+            if self.power.switch.is_off(self.power.outlet):
+                self.power.switch.on(self.power.outlet)
 
         self.logger = logging.getLogger(f"mast.spec.filter-wheel-{self.name}")
         init_log(self.logger)
 
-        self.conf = Config().toml['filter-wheel'][self.name]
-        SwitchedPowerDevice.__init__(self, self.conf)
         self.serial_number = self.conf['serial_number']
         self.positions = dict()
+        self.target: int | None = None
         for k, v in self.conf.items():
             if k == 'serial_number' or k == 'default':
                 continue
@@ -72,6 +69,7 @@ class Wheel(Component, SwitchedPowerDevice, Activities):
             self.logger.error(f"{prefix}: Could not open device")
             self.device = None
             return
+        self.detected = True
 
         _id = []
         result = FWxCGetId(self.device, _id)
@@ -169,8 +167,11 @@ class Wheel(Component, SwitchedPowerDevice, Activities):
 
         self.logger.info('initialized')
 
+    def name(self) -> str:
+        return self._wheel_name
+
     def __del__(self):
-        if self.device is not None:
+        if self.detected:
             FWxCClose(self.device)
 
     def startup(self):
@@ -178,7 +179,7 @@ class Wheel(Component, SwitchedPowerDevice, Activities):
         Go to default position
         :return:
         """
-        if self.device is None:
+        if not self.detected:
             return
 
         if (hasattr(self, 'default_position') and self.default_position is not None and
@@ -191,7 +192,7 @@ class Wheel(Component, SwitchedPowerDevice, Activities):
         Return to default position
         :return:
         """
-        if self.device is None:
+        if not self.detected:
             return
 
         if self.default_position is not None and self.position != self.default_position:
@@ -200,17 +201,34 @@ class Wheel(Component, SwitchedPowerDevice, Activities):
 
     def abort(self):
         # The wheel cannot be stopped
+        if not self.detected:
+            return
+
         if self.is_active(WheelActivities.Moving):
             self.end_activity(WheelActivities.Moving)
 
     def status(self) -> dict:
-        return {
-            'serial_number': self.serial_number,
-            'id': self.id,
-            'position': self.position,
-            'speed_mode': self.speed_mode,
-            'sensor_mode': self.sensor_mode,
+        filter_dict = {}
+        for i in range(1, 7):
+            filter_dict[i] = self.conf[f"{i}"]
+        ret = {
+            'detected': self.detected,
+            'operational': self.operational(),
+            'why_not_operational': self.why_not_operational(),
+            'filters': filter_dict,
         }
+
+        if self.detected:
+            ret['serial_number'] = self.serial_number
+            ret['id'] = self.id
+            ret['activities'] = self.activities
+            ret['activities_verbal'] = self.activities.__repr__()
+            ret['idle'] = self.is_idle()
+            ret['position'] = self.position
+            ret['speed_mode'] = self.speed_mode
+            ret['sensor_mode'] = self.sensor_mode
+
+        return ret
 
     @property
     def position(self) -> int | None:
@@ -218,6 +236,9 @@ class Wheel(Component, SwitchedPowerDevice, Activities):
         Get the current position from the controller
         :return:
         """
+        if not self.detected:
+            return None
+
         pos = [0]
         result = FWxCGetPosition(self.device, pos)
         if result < 0:
@@ -226,6 +247,9 @@ class Wheel(Component, SwitchedPowerDevice, Activities):
         return pos[0]
 
     def move(self, pos: str | int):
+        if not self.detected:
+            return 'not-detected'
+
         if isinstance(pos, str):
             try:
                 pos = int(pos)
@@ -249,6 +273,9 @@ class Wheel(Component, SwitchedPowerDevice, Activities):
 
     def name_to_number(self, pos_name: str) -> int | None:
 
+        if not self.detected:
+            return None
+
         for k, v in self.positions.items():
             if v == pos_name:
                 return k
@@ -256,6 +283,9 @@ class Wheel(Component, SwitchedPowerDevice, Activities):
         raise Exception(f"Bad position name '{pos_name}'.  Known position names: {self.positions}")
 
     def ontimer(self):
+        if not self.detected:
+            return
+
         if self.is_active(WheelActivities.Moving) and self.position == self.target:
             self.end_activity(WheelActivities.Moving)
             self.target = None
@@ -265,8 +295,17 @@ class Wheel(Component, SwitchedPowerDevice, Activities):
             if self.is_active(WheelActivities.ShuttingDown):
                 self.end_activity(WheelActivities.ShuttingDown)
 
-    def __repr__(self):
-        return f"<Wheel-{self.id}>(name='{self.name}', serial='{self.serial_number}')"
+    # def __repr__(self):
+    #     return f"<Wheel-{self.id}>(name='{self.name}', serial='{self.serial_number}')"
+
+    def operational(self) -> bool:
+        return self.detected
+
+    def why_not_operational(self):
+        ret = []
+        if not self.detected:
+            ret.append('not detected')
+        return ret
 
 
 def make_filter_wheels():
@@ -278,22 +317,38 @@ def make_filter_wheels():
     return ret
 
 
-wheels = make_filter_wheels()
+# wheels = make_filter_wheels()
+
+
+class FilterWheels:
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(FilterWheels, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        self.wheels = make_filter_wheels()
+
+
+filter_wheeler = FilterWheels()
 
 
 def list_wheels():
     ret = {}
-    for wheel in wheels:
+    for wheel in filter_wheeler.wheels:
         d = {
             'serial_number': wheel.serial_number,
         }
         if wheel.device is not None:
+            d['detected'] = True
             d['device'] = wheel.id
             d['positions'] = {}
-            for k, v in wheel.positions:
+            for k, v in wheel.positions.items():
                 d['positions'][k] = v
         else:
-            d['device'] = 'not-detected'
+            d['detected'] = False
         ret[wheel.name] = d
     return ret
 
@@ -304,7 +359,7 @@ class WheelNames(str, Enum):
 
 
 def wheel_by_name(name: WheelNames) -> Wheel | None:
-    for w in wheels:
+    for w in filter_wheeler.wheels:
         if w.name == name.value:
             return w
     return None
@@ -340,33 +395,32 @@ def move(wheel: WheelNames, position: int | str):
 
 
 def startup():
-    for w in wheels:
+    for w in filter_wheeler.wheels:
         w.startup()
 
 
 def shutdown():
-    for w in wheels:
+    for w in filter_wheeler.wheels:
         w.shutdown()
 
 
 def abort():
-    for w in wheels:
+    for w in filter_wheeler.wheels:
         w.abort()
 
 
 base_path = BASE_SPEC_PATH + 'fw'
-tag = 'filter-wheel'
+tag = 'Filter wheels'
 router = APIRouter()
 
-router.add_api_route(base_path, tags=[tag], endpoint=list_wheels, response_class=PrettyJSONResponse)
-router.add_api_route(base_path + '/position', tags=[tag], endpoint=get_position, response_class=PrettyJSONResponse)
-router.add_api_route(base_path + '/status', tags=[tag], endpoint=get_status, response_class=PrettyJSONResponse)
-router.add_api_route(base_path + '/move', tags=[tag], endpoint=move,
-                     response_class=PrettyJSONResponse)
+router.add_api_route(base_path, tags=[tag], endpoint=list_wheels)
+router.add_api_route(base_path + '/position', tags=[tag], endpoint=get_position)
+router.add_api_route(base_path + '/status', tags=[tag], endpoint=get_status)
+router.add_api_route(base_path + '/move', tags=[tag], endpoint=move)
 
-router.add_api_route(base_path + '/startup', tags=[tag], endpoint=startup, response_class=PrettyJSONResponse)
-router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=shutdown, response_class=PrettyJSONResponse)
-router.add_api_route(base_path + '/abort', tags=[tag], endpoint=abort, response_class=PrettyJSONResponse)
+router.add_api_route(base_path + '/startup', tags=[tag], endpoint=startup)
+router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=shutdown)
+router.add_api_route(base_path + '/abort', tags=[tag], endpoint=abort)
 
 if __name__ == '__main__':
-    wheels[0].move(5)
+    filter_wheeler.wheels[0].move(5)

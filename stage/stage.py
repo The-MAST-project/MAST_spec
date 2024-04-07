@@ -1,10 +1,9 @@
 import zaber_motion
 import zaber_motion.ascii
 import utils
-from utils import Component, Activities, init_log
+from utils import Component, init_log
 import logging
 from enum import IntFlag, auto, Enum
-from utils import PrettyJSONResponse
 from fastapi import APIRouter
 from typing import Dict, List
 from config.config import Config
@@ -30,22 +29,15 @@ class StageStatus:
 
     def __init__(self, activities: IntFlag, position: float, preset: str | None):
         self.activities = activities
+        self.activities_verbal = activities.__repr__()
         self.position = position
         self.preset = preset
 
 
-class Stage(Component, Activities):
-    name: str
-    axis: zaber_motion.ascii.Axis | None
-    logger: logging.Logger
-    target: float | None = None
-    target_units: zaber_motion.Units | None
-    presets: Dict[str, float]
-    startup_position: float | None = None
-    shutdown_position: float | None = None
+class Stage(Component):
 
-    def __init__(self, name: str, ctlr=None):
-        super().__init__()
+    def __init__(self, name: str, controller=None):
+        Component.__init__(self)
 
         try:
             self.conf = Config().toml['stage'][name]
@@ -54,7 +46,7 @@ class Stage(Component, Activities):
             return
 
         self.name = name
-        self.controller = ctlr
+        self.controller = controller
         self.logger = logging.getLogger(f"mast.spec.stage.{self.name}")
         init_log(self.logger)
 
@@ -67,30 +59,43 @@ class Stage(Component, Activities):
         for key in self.conf['presets'].keys():
             self.presets[key] = self.conf['presets'][key]
 
+        self.startup_position: float | None = None
         if 'startup' in self.conf:
             self.startup_position = float(self.conf['startup'])
 
+        self.shutdown_position: float | None = None
         if 'shutdown' in self.conf:
-            self.startup_position = float(self.conf['shutdown'])
+            self.shutdown_position = float(self.conf['shutdown'])
 
-        try:
-            self.axis = self.controller.device.get_axis(self.axis_id)
-            if self.axis.axis_type == zaber_motion.ascii.AxisType.UNKNOWN:
-                self.logger.info(f"No stage name='{self.name}', axis_id={self.axis_id}")
-                self.axis = None
-                return
-            t = str(self.axis.axis_type).replace('AxisType.', '')
-            self.logger.info(f"Found stage name='{self.name}', axis_id={self.axis.axis_number}, type={t}, "
-                             f"peripheral='{self.axis.identity.peripheral_name}'")
+        self.target: float | None = None
+        self.target_units: zaber_motion.Units | None = None
 
-            if self.axis.is_parked():
-                self.axis.unpark()
-            elif not self.axis.is_homed():
-                self.start_activity(StageActivities.Homing)
-                self.axis.home(wait_until_idle=False)
+        self.detected = False
+        self.axis = None
+        if self.controller and self.controller.detected:
+            try:
+                self.axis = self.controller.device.get_axis(self.axis_id)
+                if self.axis.axis_type == zaber_motion.ascii.AxisType.UNKNOWN:
+                    self.logger.info(f"No stage name='{self.name}', axis_id={self.axis_id}")
+                    self.axis = None
+                    return
+                self.detected = True
 
-        except Exception as ex:
-            self.logger.error(f"Exception: {ex}")
+                t = str(self.axis.axis_type).replace('AxisType.', '')
+                self.logger.info(f"Found stage name='{self.name}', axis_id={self.axis.axis_number}, type={t}, "
+                                 f"peripheral='{self.axis.identity.peripheral_name}'")
+
+                if self.axis.is_parked():
+                    self.axis.unpark()
+                elif not self.axis.is_homed():
+                    self.start_activity(StageActivities.Homing)
+                    self.axis.home(wait_until_idle=False)
+
+            except Exception as ex:
+                self.logger.error(f"Exception: {ex}")
+
+    def __repr__(self):
+        return f"<Stage name={self.name}>"
 
     def close_enough(self, microns: float) -> bool:
         """
@@ -102,7 +107,7 @@ class Stage(Component, Activities):
         return abs(current - microns) <= 1
 
     def at_preset(self) -> str | None:
-        if self.axis.is_busy():
+        if not self.axis or self.axis.is_busy():
             return None
         for key, val in self.presets.items():
             if self.close_enough(val):
@@ -203,23 +208,57 @@ class Stage(Component, Activities):
             return float('nan')
         return self.axis.get_position()
 
-    def status(self) -> StageStatus:
-        return StageStatus(self.activities, self.position, self.at_preset())
+    def status(self):
+        ret = {
+            'detected': self.detected,
+            'presets': self.presets,
+        }
+        if self.detected:
+            ret['activities'] = self.activities
+            ret['activities_verbal'] = self.activities.__repr__()
+            ret['at_preset'] = self.at_preset()
+            ret['position'] = self.position
+
+        return ret
+
+    def operational(self) -> bool:
+        return self.detected
+
+    def why_not_operational(self) -> List[str]:
+        ret = []
+        if not self.detected:
+            ret.append(f"not detected")
+        return ret
 
 
 class Controller(SwitchedPowerDevice, NetworkedDevice):
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(Controller, cls).__new__(cls)
+        return cls._instance
 
     def __init__(self):
         self.conf = Config().toml['stages']['controller']
-
-        SwitchedPowerDevice.__init__(self, self.conf)
-        NetworkedDevice.__init__(self, self.conf['network'])
-
-        self.device: zaber_motion.ascii.Device = self.connect()
-
         self.stages: List = list()
+
+        self.detected = False
+        self.power = SwitchedPowerDevice(self.conf)
+        if self.power.switch.detected:
+            if self.power.switch.is_off(self.power.outlet):
+                self.power.switch.on(self.power.outlet)
+
+        NetworkedDevice.__init__(self, self.conf)
+
+        self.device = None
+        if self.power.switch.detected:
+            self.device: zaber_motion.ascii.Device = self.connect()
+        if self.device:
+            self.detected = True
+
         for name in Config().toml['stage']:
-            self.stages.append(Stage(name=name, ctlr=self))
+            self.stages.append(Stage(name=name, controller=self))
 
     @staticmethod
     def on_error(arg):
@@ -253,10 +292,10 @@ class Controller(SwitchedPowerDevice, NetworkedDevice):
         return dev
 
 
-controller: Controller = Controller()
+zaber_controller: Controller = Controller()
 
 stages_dict = {}
-for stage in controller.stages:
+for stage in zaber_controller.stages:
     stages_dict[stage.name] = stage.name
 
 StageNames = Enum('StageNames', stages_dict)
@@ -274,7 +313,7 @@ UnitNames = Enum('UnitNames', units_dict)
 # FastApi stuff
 def list_stages():
     response = {}
-    for s in controller.stages:
+    for s in zaber_controller.stages:
         response[s.name] = {
             'device': f"{s.axis}",
             'axis_id': s.axis_id,
@@ -286,7 +325,7 @@ def list_stages():
 
 
 def stage_by_name(name: str) -> Stage | None:
-    found = [s for s in controller.stages if s.name == name]
+    found = [s for s in zaber_controller.stages if s.name == name]
     if len(found) == 1:
         return found[0]
     else:
@@ -392,18 +431,15 @@ def abort(stage_name: StageNames):
 
 
 base_path = utils.BASE_SPEC_PATH + 'stages'
-tag = 'stages'
+tag = 'Stages'
 router = APIRouter()
 
-router.add_api_route(base_path, tags=[tag], endpoint=list_stages, response_class=PrettyJSONResponse)
-router.add_api_route(base_path + '/position', tags=[tag], endpoint=get_position, response_class=PrettyJSONResponse)
-router.add_api_route(base_path + '/status', tags=[tag], endpoint=get_status, response_class=PrettyJSONResponse)
-router.add_api_route(base_path + '/move_absolute', tags=[tag], endpoint=move_absolute,
-                     response_class=PrettyJSONResponse)
-router.add_api_route(base_path + '/move_relative', tags=[tag], endpoint=move_relative,
-                     response_class=PrettyJSONResponse)
-router.add_api_route(base_path + '/move_to_preset', tags=[tag], endpoint=move_to_preset,
-                     response_class=PrettyJSONResponse)
-router.add_api_route(base_path + '/startup', tags=[tag], endpoint=startup, response_class=PrettyJSONResponse)
-router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=shutdown, response_class=PrettyJSONResponse)
-router.add_api_route(base_path + '/abort', tags=[tag], endpoint=abort, response_class=PrettyJSONResponse)
+router.add_api_route(base_path, tags=[tag], endpoint=list_stages)
+router.add_api_route(base_path + '/position', tags=[tag], endpoint=get_position)
+router.add_api_route(base_path + '/status', tags=[tag], endpoint=get_status)
+router.add_api_route(base_path + '/move_absolute', tags=[tag], endpoint=move_absolute)
+router.add_api_route(base_path + '/move_relative', tags=[tag], endpoint=move_relative)
+router.add_api_route(base_path + '/move_to_preset', tags=[tag], endpoint=move_to_preset)
+router.add_api_route(base_path + '/startup', tags=[tag], endpoint=startup)
+router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=shutdown)
+router.add_api_route(base_path + '/abort', tags=[tag], endpoint=abort)

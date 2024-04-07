@@ -59,13 +59,13 @@
     target_cool_temp = -80              # target set-point for cooling down
     target_warm_temp = 0                # target set-point for warming up
     backside_temp_check_interval = 30   # between backside temperature checks
-
-    readout_amplifiers = 0              # 0 = 1 Amplifier (OSR), 2 = 1 Amplifier (OSL), 2 = 2 Amplifiers (OSR + OSL)
-    x_binning = 1
-    y_binning = 1
+    readout_amplifiers = 'OSL'           # 'OSL', 'OSR', 'OSL_AND_OSR'
+    x_binning = 'NoBinning'
+    y_binning = 'NoBinning'             # Lines: 'Two', 'Four', 'Eight', 'Sixteen', 'ThirtyTwo', 'SixtyFour', 'OneHundredTwentyEight', 'Full'
     exposure = 1e-3                     # exposure time (seconds)
     readout_speed = 'KHz_250'           # 'MHz_1', 'MHz_3', 'KHz_500', 'KHz_250', 'KHz_100', 'KHz_50'
-    bit_depth = 4
+    bytes_per_pixel = 'Four'            # 'Two', 'Three', 'Four'
+    gain = 'Low'                        # 'Low', 'Std'
 
 [deepspec.camera.1]
     band = "U"
@@ -82,7 +82,7 @@
     band = "R"
     network = {address="192.168.1.233"}
     power = {switch='1', outlet=7}
-    enabled = true
+    enabled = false
 
 [deepspec.camera.4]
     band = "I"
@@ -105,14 +105,14 @@
     set-point = -10
     h-bin = 1                # number of pixels to bin horizontally
     v-bin = 1                # number of pixels to bin vertically
-    power = {switch=1, outlet=1, delay-after-on=2}
+    power = {switch=1, outlet=1, delay-after-on=5}
 
 [power-switch.1]
     network = {address="192.168.0.100"}
     user = "admin"
     password = "1234"
     cycle_time = 5
-    outlets = {1="HighSpec Camera", 2="Wheel: ThAr", 3="Stage Controller", 4="Wheel: qTh", 5="DeepSpec Camera1", 6="DeepSpec Camera2", 7="DeepSpec Camera3", 8="DeepSpec Camera4"}
+    outlets = {1="HighSpec Camera", 2="Wheel: ThAr", 3="Stage Controller", 4="Wheel: qTh", 5="DeepSpec Cam U", 6="DeepSpec Cam G", 7="DeepSpec Cam R", 8="DeepSpec Cam I"}
 
 [power-switch.2]
     network = {address="192.168.0.101"}

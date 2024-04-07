@@ -1,6 +1,10 @@
+import datetime
+import sys
+
 import tomlkit
 import os
 from typing import List
+import git
 
 
 class Config:
@@ -26,6 +30,23 @@ class Config:
         self.toml.clear()
         with open(self.file, 'r') as f:
             self.toml = tomlkit.load(f)
+
+    def save(self):
+        self.toml['global']['saved_at'] = datetime.datetime.now()
+        with open(self.file, 'w') as f:
+            tomlkit.dump(self.toml, f)
+
+        repo_path = os.path.dirname(os.path.dirname(self.file))
+        file_path = self.file.removeprefix(repo_path + os.path.sep)
+        repo = git.Repo(repo_path)
+        if file_path in repo.git.diff(None, name_only=True):
+            try:
+                repo.git.add(file_path)
+                repo.index.commit('Saved changes')
+                origin = repo.remotes['origin']
+                origin.push(str(repo.active_branch))
+            except Exception as e:
+                print(f"Exception: {e}")
 
 
 class DeepSearchResult:
