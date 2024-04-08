@@ -102,10 +102,10 @@
     gain = 200              # up to 4095
     cooler-mode = 0         # 0=return to ambient on ShutDown, 1=maintain current temperature on ShutDown
     activate-cooler = true  # true=turn activate_cooler ON, false=turn activate_cooler OFF
-    set-point = -10
+    set-point = -15
     h-bin = 1                # number of pixels to bin horizontally
     v-bin = 1                # number of pixels to bin vertically
-    power = {switch=1, outlet=1, delay-after-on=5}
+    power = {switch=1, outlet=1, delay-after-on=10}
 
 [power-switch.1]
     network = {address="192.168.0.100"}

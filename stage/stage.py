@@ -94,6 +94,15 @@ class Stage(Component):
             except Exception as ex:
                 self.logger.error(f"Exception: {ex}")
 
+    def can_move(self):
+        ret = []
+        if not self.detected:
+            ret.append('not detected')
+        return ret
+
+    def name(self) -> str:
+        return self.name
+
     def __repr__(self):
         return f"<Stage name={self.name}>"
 
@@ -179,21 +188,21 @@ class Stage(Component):
     def shutdown(self):
         if self.axis is None:
             return
-        self.start_activity(StageActivities.ShuttingDown)
-        if self.shutdown_position is not None:
+        if self.shutdown_position and not self.close_enough(self.shutdown_position):
+            self.start_activity(StageActivities.ShuttingDown)
             self.move_absolute(self.shutdown_position, unit=zaber_motion.Units.LENGTH_MICROMETRES)
 
     def startup(self):
         if self.axis is None:
             return
-        self.start_activity(StageActivities.StartingUp)
         if self.axis.is_parked():
             self.axis.unpark()
         elif not self.axis.is_homed():
             self.start_activity(StageActivities.Homing)
             self.axis.home(wait_until_idle=False)
 
-        if self.startup_position is not None:
+        if self.startup_position and not self.close_enough(self.startup_position):
+            self.start_activity(StageActivities.StartingUp)
             self.move_absolute(self.startup_position, unit=zaber_motion.Units.LENGTH_MICROMETRES)
 
     def abort(self):
@@ -221,13 +230,16 @@ class Stage(Component):
 
         return ret
 
+    @property
     def operational(self) -> bool:
         return self.detected
 
+    @property
     def why_not_operational(self) -> List[str]:
         ret = []
+        label = f"stage '{self.name}'"
         if not self.detected:
-            ret.append(f"not detected")
+            ret.append(f"{label} not detected")
         return ret
 
 

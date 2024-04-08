@@ -30,7 +30,7 @@ class NetworkedDevice:
 
         if 'network' not in conf:
             raise Exception(f"Missing 'network' key in {conf}")
-        if 'network' not in conf:
+        if 'address' not in conf['network']:
             raise Exception(f"Missing 'network.address' key in {conf}")
 
         self.ipaddress = conf['network']['address']

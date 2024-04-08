@@ -126,6 +126,7 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
     def __init__(self):
         self.conf = Config().toml['highspec']['camera']
         Component.__init__(self)
+        self._name = 'highspec'
 
         self.detected = False
         self.power = SwitchedPowerDevice(self.conf)
@@ -181,6 +182,15 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
             self.sdk.ShutDown()
             return
 
+        self.min_temp: float | None = None
+        self.max_temp: float | None = None
+        (ret, min_temp, max_temp) = self.sdk.GetTemperatureRange()
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            self.min_temp = min_temp
+            self.max_temp = max_temp
+
+        self.acquisition: str | None = None
+
         self.logger.info(f"Found camera SN: {self.serial_number}, {self.x_pixels=}, {self.y_pixels=}")
         self.set_modes()  # initial values
 
@@ -189,34 +199,65 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.logger.info(f"Set event handler")
             self._terminated = False
-            self.event_handler = threading.Thread(name='event-handler-thread',
-                                                  target=self.event_handler, args=(event_handle,))
-            self.event_handler.start()
+            self.event_handler_thread = threading.Thread(name='event-handler-thread',
+                                                         target=self.event_handler, args=(event_handle,))
+            self.event_handler_thread.start()
         else:
             self.logger.error(f"Could not set event handler (code={error_code(ret)})")
 
+        self.start_cooldown()
+
         self._initialized = True
 
-    def name(self) -> str:
-        return 'newton'
+    def start_cooldown(self):
+        self.turn_cooler(True)
+        target_temp = self.set_point
+        ret = self.sdk.SetTemperature(target_temp)
+        if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
+            self.logger.error(f"failed to set temperature to {target_temp} degrees (code={error_code(ret)})")
+            return
+        self.start_activity(NewtonActivities.CoolingDown)
 
+    def start_warmup(self):
+        self.turn_cooler(True)
+        target_temp = self.max_temp
+        ret = self.sdk.SetTemperature(target_temp)
+        if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
+            self.logger.error(f"failed to set temperature to {target_temp} degrees (code={error_code(ret)})")
+            return
+        self.start_activity(NewtonActivities.WarmingUp)
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @name.setter
+    def name(self, value: str):
+        self._name = value
+
+    @property
     def operational(self) -> bool:
         return (self.power.switch.detected and self.detected and not
         (self.is_active(NewtonActivities.CoolingDown) or self.is_active(NewtonActivities.WarmingUp)))
 
+    @property
     def why_not_operational(self) -> List[str]:
         ret = []
-        if not self.power.switch.detected:
-            ret.append(f"power switch not detected")
+        label = 'highspec'
         if not self.detected:
-            ret.append(f"camera not detected")
+            ret.append(f"{label} camera not detected")
         if self.is_active(NewtonActivities.CoolingDown):
-            ret.append(f"camera is CoolingDown")
+            ret.append(f"{label} camera is CoolingDown")
         if self.is_active(NewtonActivities.WarmingUp):
-            ret.append(f"camera is WarmingUp")
+            ret.append(f"{label} camera is WarmingUp")
         return ret
 
     def event_handler(self, event_handle):
+        """
+        Handles Win32 events from the SDK
+        :param event_handle:
+        :return:
+        """
         while not self._terminated:
             result = win32event.WaitForSingleObject(event_handle, win32event.INFINITE)
             if result == win32event.WAIT_OBJECT_0:
@@ -244,23 +285,26 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
                                 self.end_activity(NewtonActivities.WarmingUp)
                                 if self.is_active(NewtonActivities.ShuttingDown):
                                     self.end_activity(NewtonActivities.ShuttingDown)
+                                    ret = self.sdk.CoolerOFF()
+                                    if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
+                                        self.logger.error(f"could not turn cooler OFF (code={error_code(ret)}")
                                     power_off = True
                             if power_off:
-                                self.power_off()
+                                self.power.switch.off(self.power.outlet)
                         else:
                             self.logger.error(f"Could not GetTemperatureF() (code={error_code(temp_code)})")
 
                     elif status_code == atmcd_errors.Error_Codes.DRV_ERROR_ACK:
                         self.logger.error(f"Driver cannot communicate with the camera " +
-                                          f"(status_code={error_code(status_code)})")
+                                          f"(code={error_code(status_code)})")
 
                     elif status_code == atmcd_errors.Error_Codes.DRV_ACQ_BUFFER:
                         self.logger.error(f"Driver cannot read data at required rate " +
-                                          f"(status_code={error_code(status_code)})")
+                                          f"(code={error_code(status_code)})")
 
                     elif status_code == atmcd_errors.Error_Codes.DRV_ACQ_DOWNFIFO_FULL:
                         self.logger.error(f"Driver cannot read data fast enough to prevent FIFO overflow " +
-                                          f"(status_code={error_code(status_code)})")
+                                          f"(code={error_code(status_code)})")
                     else:
                         self.logger.error(f"Unhandled case: status_code={error_code(status_code)}")
                 else:
@@ -422,13 +466,20 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
         else:
             self.logger.error(f"Could not turn the Cooler {'ON' if on_off else 'OFF'} (code={error_code(ret)})")
     
-    def expose(self, seconds: float | None = None):
+    def expose(self, seconds: float | None = None, acquisition: str | None = None):
+        """
+        Starts an exposure.
+        :param seconds: exposure duration (seconds)
+        :param acquisition: if given, a directory where to store the image
+        :return:
+        """
         if not self.detected:
             self.logger.error(f"camera not detected")
             return
 
         if not self._initialized:
-            raise Exception("SDK not initialized")
+            self.logger.error(f"not initialized")
+            return
 
         if seconds is not None:
             ret = self.sdk.SetExposureTime(seconds)
@@ -437,6 +488,9 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
             else:
                 self.logger.error(f"Could not set exposure time to {seconds=:.2f} (code={error_code(ret)})")
                 return
+
+        if acquisition:
+            self.acquisition = acquisition
 
         ret = self.sdk.StartAcquisition()
         if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
@@ -450,7 +504,7 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
         if not self.detected:
             self.logger.error(f"camera not detected")
             return
-        filename = PathMaker().make_exposure_file_name(camera='highspec') + '.fits'
+        filename = PathMaker().make_exposure_file_name(camera='highspec', acquisition=self.acquisition) + '.fits'
         ret = self.sdk.SaveAsFITS(filename, typ=1)
         if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.logger.error(f"failed sdk.SaveAsFITS({filename}, typ=1) (ret={ret}")
@@ -470,11 +524,7 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
             self.logger.error(f"camera not detected")
             return
         self.start_activity(NewtonActivities.ShuttingDown)
-        self.start_activity(NewtonActivities.WarmingUp)
-        self.turn_cooler(False)  # or do we need to a controlled warmup by setting the set-point?
-        # TBD:
-        # - do we need to wait for the temperature to stabilize?
-        # - do we power off after stabilization?
+        self.start_warmup()
     
     def abort(self):
         if not self.detected:
@@ -511,8 +561,8 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
     def status(self):
         ret = {
             'detected': self.detected,
-            'operational': self.operational(),
-            'why_not_operational': self.why_not_operational(),
+            'operational': self.operational,
+            'why_not_operational': self.why_not_operational,
         }
         if self.detected:
             ret['activities'] = self.activities
@@ -520,6 +570,17 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
             ret['idle'] = self.is_idle()
             ret['temperature'] = self.get_temperature()
 
+        return ret
+
+    def can_expose(self) -> List[str]:
+        ret = []
+        if not self.detected:
+            ret.append('not-detected')
+        if not self._initialized:
+            ret.append('not initialized')
+        temp = self.get_temperature()
+        if temp > self.TargetTemp:
+            ret.append(f'temperature ({temp=} above {self.TargetTemp}')
         return ret
 
 

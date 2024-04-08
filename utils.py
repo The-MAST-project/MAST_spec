@@ -156,8 +156,18 @@ class PathMaker:
         pass
 
     @staticmethod
-    def make_seq(path: str):
-        seq_file = os.path.join(path, '.seq')
+    def make_seq(folder: str, camera: str | None = None) -> str:
+        """
+        Creates a sequence number by maintaining a '.seq' file.
+        The sequence may be camera specific or camera agnostic.
+        :param folder: Where to maintain the '.seq' file
+        :param camera: What camera is the sequence for
+        :return: The resulting sequence string
+        """
+        if camera:
+            seq_file = os.path.join(folder, f'.{camera}.seq')
+        else:
+            seq_file = os.path.join(folder, '.seq')
 
         os.makedirs(os.path.dirname(seq_file), exist_ok=True)
         if os.path.exists(seq_file):
@@ -169,25 +179,28 @@ class PathMaker:
         with open(seq_file, 'w') as file:
             file.write(f'{seq}\n')
 
-        return seq
+        return f"{seq:04d}"
 
     def make_daily_folder_name(self):
         d = os.path.join(self.top_folder, datetime.datetime.now().strftime('%Y-%m-%d'))
         os.makedirs(d, exist_ok=True)
         return d
 
-    def make_exposure_file_name(self, camera: str):
-        exposures_folder = os.path.join(self.make_daily_folder_name(), 'Exposures')
-        os.makedirs(exposures_folder, exist_ok=True)
-        return os.path.join(exposures_folder, camera, f'exposure-{path_maker.make_seq(exposures_folder):04d}')
+    def make_exposure_file_name(self, camera: str, acquisition: str | None = None):
+        if acquisition:
+            folder = self.make_acquisition_folder_name(acquisition)
+        else:
+            folder = os.path.join(self.make_daily_folder_name(), 'Exposures')
+        os.makedirs(folder, exist_ok=True)
+        return os.path.join(folder, f'exposure-{camera}-{path_maker.make_seq(folder)}')
 
-    def make_acquisition_folder_name(self, uuid: str = None):
+    def make_acquisition_folder_name(self, acquisition: str = None):
         acquisitions_folder = os.path.join(self.make_daily_folder_name(), 'Acquisitions')
         os.makedirs(acquisitions_folder, exist_ok=True)
-        if uuid is None:
-            path = os.path.join(acquisitions_folder, f'acquisition-{PathMaker.make_seq(acquisitions_folder)}')
+        if acquisition is None:
+            path = os.path.join(acquisitions_folder, f'acquisition-{PathMaker.make_seq(folder=acquisitions_folder)}')
         else:
-            path = os.path.join(acquisitions_folder, f"{uuid}")
+            path = os.path.join(acquisitions_folder, f"{acquisition}")
         return path
 
     def make_guiding_folder_name(self):

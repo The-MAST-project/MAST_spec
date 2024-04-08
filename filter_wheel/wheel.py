@@ -213,8 +213,8 @@ class Wheel(Component, SwitchedPowerDevice):
             filter_dict[i] = self.conf[f"{i}"]
         ret = {
             'detected': self.detected,
-            'operational': self.operational(),
-            'why_not_operational': self.why_not_operational(),
+            'operational': self.operational,
+            'why_not_operational': self.why_not_operational,
             'filters': filter_dict,
         }
 
@@ -298,13 +298,16 @@ class Wheel(Component, SwitchedPowerDevice):
     # def __repr__(self):
     #     return f"<Wheel-{self.id}>(name='{self.name}', serial='{self.serial_number}')"
 
+    @property
     def operational(self) -> bool:
         return self.detected
 
+    @property
     def why_not_operational(self):
         ret = []
+        tag = f"filter-wheel '{self.name}'"
         if not self.detected:
-            ret.append('not detected')
+            ret.append(f'{tag} not detected')
         return ret
 
 
