@@ -1,13 +1,20 @@
-import itertools
 import threading
 
-from utils import BASE_SPEC_PATH, Component, init_log, PathMaker
+import cooling.chiller
+from utils import BASE_SPEC_PATH, Component, init_log, PathMaker, Config
 from typing import List, Dict
 from fastapi import APIRouter
 from enum import IntFlag, auto
 import time
 import logging
+from dlipower.dlipower.dlipower import SwitchedPowerDevice
 from itertools import chain
+
+# The Newton HighSpec camera must be switched on before the Newton.startup() is called
+highspec_power = SwitchedPowerDevice(Config().toml['highspec']['camera'])
+if highspec_power.switch.detected:
+    if highspec_power.is_off():
+        highspec_power.power_on()
 
 from cameras.andor.newton import camera as highspec_camera, NewtonEMCCD, NewtonActivities
 from cameras.greateyes.greateyes import DeepSpec, deepspec, GreatEyesActivities
@@ -35,24 +42,19 @@ class Spec(Component):
         self.highspec_camera: NewtonEMCCD = highspec_camera
         self.stages: List[Stage] = stage_controller.stages
         self.wheels: List[Wheel] = filter_wheeler.wheels
+        self.chiller = cooling.chiller.Chiller()
 
         self.components_dict: Dict[str, Component | List[Component]] = {
             'power_switches': self.power_switches,
             'deepspec': self.deepspec,
             'highspec': self.highspec_camera,
             'stages': self.stages,
-            'wheels': self.wheels
+            'wheels': self.wheels,
+            'chiller': self.chiller,
         }
-        self.components = []
-        for comp in self.power_switches:
-            self.components.append(comp)
-        self.components.append(highspec_camera)
-        for comp in self.deepspec.cameras:
-            self.components.append(comp)
-        for comp in self.stages:
-            self.components.append(comp)
-        for comp in self.wheels:
-            self.components.append(comp)
+
+        self.components = chain(self.power_switches, [self.highspec_camera], self.deepspec.cameras,
+                                self.stages, self.wheels, [self.chiller])
 
         self.highspec_exposure_seconds = 15
         self.deepspec_exposure_seconds = 10

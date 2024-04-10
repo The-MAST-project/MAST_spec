@@ -180,8 +180,8 @@ class GreatEyes(SwitchedPowerDevice, NetworkedDevice, Component):
         if not self.power.switch.detected:
             return
 
-        if self.power.switch.is_off(self.power.outlet):
-            self.power.switch.on(self.power.outlet)
+        if self.power.is_off():
+            self.power_on()
         else:
             self.power.switch.cycle(self.power.outlet)
 

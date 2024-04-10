@@ -5,7 +5,7 @@ import time
 from typing import List
 
 import win32event
-from pyAndorSDK2 import atmcd, atmcd_codes, atmcd_errors, atmcd_capabilities
+# from pyAndorSDK2 import atmcd, atmcd_codes, atmcd_errors, atmcd_capabilities
 import logging
 
 from utils import init_log, PathMaker
@@ -19,6 +19,7 @@ from utils import BASE_SPEC_PATH, Component
 logger = logging.getLogger("mast.highspec.camera")
 init_log(logger)
 
+from pyAndorSDK2 import atmcd_codes, atmcd_codes, atmcd_errors, atmcd_capabilities
 codes = atmcd_codes
 
 
@@ -129,10 +130,9 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
         self._name = 'highspec'
 
         self.detected = False
+
+        # NOTE: The power to this camera is switched on by spec.startup()
         self.power = SwitchedPowerDevice(self.conf)
-        if self.power.switch.detected:
-            if self.power.switch.is_off(self.power.outlet):
-                self.power.switch.on(self.power.outlet)
 
         self._initialized = False
         self.logger = logging.getLogger('mast.spec.highspec.camera')
@@ -157,6 +157,7 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
         if not self.power.switch.detected:
             return
 
+        from pyAndorSDK2 import atmcd
         self.sdk = atmcd()
 
         ret = self.sdk.Initialize(os.path.join(os.path.dirname(__file__), 'sdk', 'pyAndorSDK2', 'pyAndorSDK2'))

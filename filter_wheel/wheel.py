@@ -41,8 +41,8 @@ class Wheel(Component, SwitchedPowerDevice):
         self.conf = Config().toml['filter-wheel'][self.name]
         self.power = SwitchedPowerDevice(self.conf)
         if self.power.switch.detected:
-            if self.power.switch.is_off(self.power.outlet):
-                self.power.switch.on(self.power.outlet)
+            if self.power.is_off():
+                self.power.power_on()
 
         self.logger = logging.getLogger(f"mast.spec.filter-wheel-{self.name}")
         init_log(self.logger)

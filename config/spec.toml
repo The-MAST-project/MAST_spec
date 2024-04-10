@@ -120,9 +120,17 @@
     password = "1234"
     cycle_time = 5
     outlets = {1="Chiller"}
+    outlets = {2="Lamp ThAr"}
+    outlets = {3="Lamp qTh"}
 
 [usbhub]
     network = {address="192.168.210.1"}
+
+[lamp.ThAr]
+    power = {switch='2', outlet=2}
+
+[lamp.qTh]
+    power = {switch='2', outlet=3}
 
 #
 # networks

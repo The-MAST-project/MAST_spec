@@ -258,8 +258,8 @@ class Controller(SwitchedPowerDevice, NetworkedDevice):
         self.detected = False
         self.power = SwitchedPowerDevice(self.conf)
         if self.power.switch.detected:
-            if self.power.switch.is_off(self.power.outlet):
-                self.power.switch.on(self.power.outlet)
+            if self.power.is_off():
+                self.power_on()
 
         NetworkedDevice.__init__(self, self.conf)
 
