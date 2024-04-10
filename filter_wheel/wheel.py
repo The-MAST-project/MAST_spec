@@ -3,7 +3,7 @@ from enum import IntFlag, Enum, auto
 import logging
 from fastapi import APIRouter
 from typing import List
-from config.config import Config
+from config import Config
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
 
 import sys

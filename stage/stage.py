@@ -5,8 +5,8 @@ from utils import Component, init_log
 import logging
 from enum import IntFlag, auto, Enum
 from fastapi import APIRouter
-from typing import Dict, List
-from config.config import Config
+from typing import List
+from config import Config
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
 from networking import NetworkedDevice
 

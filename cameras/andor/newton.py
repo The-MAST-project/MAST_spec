@@ -11,7 +11,7 @@ import logging
 from utils import init_log, PathMaker
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
 from enum import IntFlag, auto, Enum
-from config.config import Config
+from config import Config
 
 from fastapi import APIRouter, Query
 from utils import BASE_SPEC_PATH, Component
@@ -19,7 +19,7 @@ from utils import BASE_SPEC_PATH, Component
 logger = logging.getLogger("mast.highspec.camera")
 init_log(logger)
 
-from pyAndorSDK2 import atmcd_codes, atmcd_codes, atmcd_errors, atmcd_capabilities
+from pyAndorSDK2 import atmcd_codes, atmcd_errors, atmcd_capabilities
 codes = atmcd_codes
 
 

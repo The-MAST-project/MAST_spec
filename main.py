@@ -1,7 +1,6 @@
 import uvicorn
 from fastapi import FastAPI
-from config.config import Config
-from networking import ping_peers
+from config import Config
 from spec import startup as spec_startup, shutdown as spec_shutdown, router as spec_router
 from fastapi.responses import ORJSONResponse
 

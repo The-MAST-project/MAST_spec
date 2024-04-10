@@ -6,7 +6,7 @@ import fastapi
 from fastapi import Query
 
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
-from config.config import Config
+from config import Config
 import sys
 import os
 import logging
@@ -14,13 +14,13 @@ from utils import init_log, PathMaker, Component
 from networking import NetworkedDevice
 from typing import List
 from copy import deepcopy
-from utils import Activities, RepeatTimer, BASE_SPEC_PATH
+from utils import RepeatTimer, BASE_SPEC_PATH
 from enum import IntFlag, auto, Enum
 from datetime import timedelta, datetime
 
 import astropy.io.fits as fits
 import astropy.time as atime
-from fits import FITS_DATE_FORMAT, FITS_HEADER_COMMENTS, FITS_STANDARD_FIELDS
+from fits import FITS_HEADER_COMMENTS, FITS_STANDARD_FIELDS
 
 sys.path.append(os.path.join(os.path.dirname(__file__), 'sdk'))
 import greateyesSDK as ge

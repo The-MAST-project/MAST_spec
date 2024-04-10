@@ -6,7 +6,7 @@ import platform
 import os
 import io
 
-from config.config import Config
+from config import Config
 import datetime
 from typing import List
 

@@ -1,8 +1,7 @@
-from config.config import Config, deep_search, DeepSearchResult
+from config import Config, deep_search
 import pythonping
 import logging
 from utils import init_log
-from typing import Tuple, List
 
 logger = logging.getLogger('networking')
 init_log(logger, logging.DEBUG)

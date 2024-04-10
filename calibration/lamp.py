@@ -1,8 +1,7 @@
 from typing import List
 
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
-from utils import Component
-from config.config import Config
+from utils import Component, Config
 
 
 class CalibrationLamp(Component, SwitchedPowerDevice):
