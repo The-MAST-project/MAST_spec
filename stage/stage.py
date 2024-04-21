@@ -1,14 +1,13 @@
 import zaber_motion
 import zaber_motion.ascii
-import utils
-from utils import Component, init_log
+from common.utils import Component, init_log, BASE_SPEC_API_PATH
 import logging
 from enum import IntFlag, auto, Enum
 from fastapi import APIRouter
 from typing import List
-from config import Config
+from common.config import Config
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
-from networking import NetworkedDevice
+from common.networking import NetworkedDevice
 
 logger = logging.getLogger('mast.spec.stage')
 init_log(logger)
@@ -237,7 +236,7 @@ class Stage(Component):
     @property
     def why_not_operational(self) -> List[str]:
         ret = []
-        label = f"stage '{self.name}'"
+        label = f"stage '{self.name}':"
         if not self.detected:
             ret.append(f"{label} not detected")
         return ret
@@ -441,8 +440,7 @@ def abort(stage_name: StageNames):
             'Error': f"No physical stage for '{stage_name}'"
         }
 
-
-base_path = utils.BASE_SPEC_PATH + 'stages'
+base_path = BASE_SPEC_API_PATH + 'stages'
 tag = 'Stages'
 router = APIRouter()
 

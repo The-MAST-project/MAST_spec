@@ -8,13 +8,13 @@ import win32event
 # from pyAndorSDK2 import atmcd, atmcd_codes, atmcd_errors, atmcd_capabilities
 import logging
 
-from utils import init_log, PathMaker
+from common.utils import init_log, PathMaker
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
 from enum import IntFlag, auto, Enum
-from config import Config
+from common.config import Config
 
 from fastapi import APIRouter, Query
-from utils import BASE_SPEC_PATH, Component
+from common.utils import BASE_SPEC_API_PATH, Component
 
 logger = logging.getLogger("mast.highspec.camera")
 init_log(logger)
@@ -244,7 +244,7 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
     @property
     def why_not_operational(self) -> List[str]:
         ret = []
-        label = 'highspec'
+        label = 'highspec:'
         if not self.detected:
             ret.append(f"{label} camera not detected")
         if self.is_active(NewtonActivities.CoolingDown):
@@ -679,7 +679,7 @@ def abort():
     camera.abort()
 
 
-base_path = BASE_SPEC_PATH + 'highspec/camera'
+base_path = BASE_SPEC_API_PATH + 'highspec/camera'
 tag = 'HighSpec Camera'
 router = APIRouter()
 

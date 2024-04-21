@@ -1,9 +1,9 @@
-from utils import Component, Activities, RepeatTimer, init_log, BASE_SPEC_PATH
+from common.utils import Component, Activities, RepeatTimer, init_log, BASE_SPEC_API_PATH
 from enum import IntFlag, Enum, auto
 import logging
 from fastapi import APIRouter
 from typing import List
-from config import Config
+from common.config import Config
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
 
 import sys
@@ -305,9 +305,9 @@ class Wheel(Component, SwitchedPowerDevice):
     @property
     def why_not_operational(self):
         ret = []
-        tag = f"filter-wheel '{self.name}'"
+        label = f"filter-wheel '{self.name}':"
         if not self.detected:
-            ret.append(f'{tag} not detected')
+            ret.append(f'{label} not detected')
         return ret
 
 
@@ -412,7 +412,7 @@ def abort():
         w.abort()
 
 
-base_path = BASE_SPEC_PATH + 'fw'
+base_path = BASE_SPEC_API_PATH + 'fw'
 tag = 'Filter wheels'
 router = APIRouter()
 

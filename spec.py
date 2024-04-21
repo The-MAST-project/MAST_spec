@@ -1,7 +1,7 @@
 import threading
 
 import cooling.chiller
-from utils import BASE_SPEC_PATH, Component, init_log, PathMaker, Config
+from common.utils import BASE_SPEC_API_PATH, Component, init_log, PathMaker, Config
 from typing import List, Dict
 from fastapi import APIRouter
 from enum import IntFlag, auto
@@ -21,6 +21,7 @@ from cameras.greateyes.greateyes import DeepSpec, deepspec, GreatEyesActivities
 from stage.stage import zaber_controller as stage_controller, Stage, StageActivities
 from filter_wheel.wheel import filter_wheeler, Wheel
 from dlipower.dlipower.dlipower import PowerSwitch, PowerSwitchFactory
+from calibration.lamp import CalibrationLamp
 
 
 class SpecActivities(IntFlag):
@@ -43,18 +44,20 @@ class Spec(Component):
         self.stages: List[Stage] = stage_controller.stages
         self.wheels: List[Wheel] = filter_wheeler.wheels
         self.chiller = cooling.chiller.Chiller()
+        self.lamps: List[CalibrationLamp] = [CalibrationLamp('ThAr'), CalibrationLamp('qTh')]
 
         self.components_dict: Dict[str, Component | List[Component]] = {
+            'chiller': self.chiller,
             'power_switches': self.power_switches,
+            'lamps': self.lamps,
             'deepspec': self.deepspec,
             'highspec': self.highspec_camera,
             'stages': self.stages,
             'wheels': self.wheels,
-            'chiller': self.chiller,
         }
 
-        self.components = chain(self.power_switches, [self.highspec_camera], self.deepspec.cameras,
-                                self.stages, self.wheels, [self.chiller])
+        self.components = list(chain([self.chiller], self.power_switches, self.lamps, [self.highspec_camera],
+                                     self.deepspec.cameras, self.stages, self.wheels))
 
         self.highspec_exposure_seconds = 15
         self.deepspec_exposure_seconds = 10
@@ -205,7 +208,7 @@ def set_params(highspec_exposure: float, deepspec_exposure: float):
     spec.set_params(highspec_exposure, deepspec_exposure)
 
 
-base_path = BASE_SPEC_PATH
+base_path = BASE_SPEC_API_PATH
 tag = 'Spec'
 
 router = APIRouter()

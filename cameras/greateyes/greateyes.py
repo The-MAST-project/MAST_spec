@@ -6,15 +6,15 @@ import fastapi
 from fastapi import Query
 
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
-from config import Config
+from common.config import Config
 import sys
 import os
 import logging
-from utils import init_log, PathMaker, Component
-from networking import NetworkedDevice
+from common.utils import init_log, PathMaker, Component
+from common.networking import NetworkedDevice
 from typing import List
 from copy import deepcopy
-from utils import RepeatTimer, BASE_SPEC_PATH
+from common.utils import RepeatTimer, BASE_SPEC_API_PATH
 from enum import IntFlag, auto, Enum
 from datetime import timedelta, datetime
 
@@ -148,6 +148,7 @@ class GreatEyes(SwitchedPowerDevice, NetworkedDevice, Component):
 
         self.conf.update(specific_conf)
         NetworkedDevice.__init__(self, self.conf)
+        SwitchedPowerDevice.__init__(self, self.conf)
 
         self.band = self.conf['band']
         self.logger = logging.getLogger(f"mast.spec.deepspec.camera.{self.band}")
@@ -180,10 +181,10 @@ class GreatEyes(SwitchedPowerDevice, NetworkedDevice, Component):
         if not self.power.switch.detected:
             return
 
-        if self.power.is_off():
+        if self.is_off():
             self.power_on()
         else:
-            self.power.switch.cycle(self.power.outlet)
+            self.cycle()
 
         self.logger.info(f"waiting for the camera to boot ({boot_delay} seconds) ...")
         time.sleep(boot_delay)
@@ -630,9 +631,9 @@ class GreatEyes(SwitchedPowerDevice, NetworkedDevice, Component):
     @property
     def why_not_operational(self) -> List[str]:
         ret = []
-        label = f"{self.name}"
+        label = f"{self.name}:"
         if not self.power.switch.detected:
-            ret.append(f"{label}: power switch (at {self.power.switch.ipaddress}) not detected")
+            ret.append(f"{label} power switch (at {self.power.switch.ipaddress}) not detected")
         if not self.detected:
             ret.append(f"{label} camera (at {self.ipaddress}) not detected")
         if self.is_active(GreatEyesActivities.CoolingDown):
@@ -833,7 +834,7 @@ def camera_expose(band: Band, seconds: float):
     ).start()
 
 
-base_path = BASE_SPEC_PATH + 'deepspec/cameras/'
+base_path = BASE_SPEC_API_PATH + 'deepspec/cameras/'
 tag = 'DeepSpec Cameras'
 router = fastapi.APIRouter()
 

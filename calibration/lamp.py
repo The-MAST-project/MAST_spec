@@ -1,7 +1,8 @@
 from typing import List
 
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
-from utils import Component, Config
+from common.utils import Component
+from common.config import Config
 
 
 class CalibrationLamp(Component, SwitchedPowerDevice):
@@ -9,18 +10,20 @@ class CalibrationLamp(Component, SwitchedPowerDevice):
     def __init__(self, name):
         self._name = f"lamp-{name}"
         Component.__init__(self)
-        SwitchedPowerDevice.__init__(self, Config.toml['lamp'][name])
+        self.conf = Config().toml['lamp'][name]
+        SwitchedPowerDevice.__init__(self, self.conf)
 
         if not self.is_on():
             self.power_on()
 
-    def status(self):
-        if not self.switch.detected:
-            state = 'unknown'
-        else:
-            state = self.is_on()
+    def __repr__(self):
+        return f"<Lamp name={self.name}"
 
-        return {'powered': state}
+    def status(self):
+        return {
+            'operational': self.operational,
+            'why_not_operational': self.why_not_operational
+        }
 
     @property
     def operational(self) -> bool:
@@ -30,9 +33,9 @@ class CalibrationLamp(Component, SwitchedPowerDevice):
     def why_not_operational(self) -> List[str]:
         ret = []
         if not self.switch.detected:
-            ret.append(f"power switch '{self.switch.name}' (at '{self.switch.ipaddress}') not detected")
+            ret.append(f"{self.name}: power switch '{self.switch.name}' (at '{self.switch.ipaddress}') not detected")
         elif not self.is_on():
-            ret.append(f"not powered")
+            ret.append(f"{self.name}: not powered")
         return ret
 
     def startup(self):
