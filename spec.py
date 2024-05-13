@@ -1,7 +1,7 @@
 import threading
 
 import cooling.chiller
-from common.utils import BASE_SPEC_API_PATH, Component, init_log, PathMaker, Config
+from common.utils import BASE_SPEC_PATH, Component, init_log, PathMaker, Config, CanonicalResponse
 from typing import List, Dict
 from fastapi import APIRouter
 from enum import IntFlag, auto
@@ -44,7 +44,10 @@ class Spec(Component):
         self.stages: List[Stage] = stage_controller.stages
         self.wheels: List[Wheel] = filter_wheeler.wheels
         self.chiller = cooling.chiller.Chiller()
-        self.lamps: List[CalibrationLamp] = [CalibrationLamp('ThAr'), CalibrationLamp('qTh')]
+        self.lamps: List[CalibrationLamp] = [
+            CalibrationLamp('ThAr'),
+            CalibrationLamp('qTh'),
+        ]
 
         self.components_dict: Dict[str, Component | List[Component]] = {
             'chiller': self.chiller,
@@ -62,22 +65,42 @@ class Spec(Component):
         self.highspec_exposure_seconds = 15
         self.deepspec_exposure_seconds = 10
 
+        self._was_shut_down = False
+
+    @property
+    def detected(self) -> bool:
+        return all([comp.detected for comp in self.components])
+
+    @property
+    def connected(self):
+        return all([comp.connected for comp in self.components])
+
+    @property
+    def was_shut_down(self):
+        return all([comp.was_shut_down for comp in self.components])
+
+    @property
     def name(self) -> str:
         return 'spec'
 
+    @property
     def status(self):
         ret = self.traverse_and_return('status')
-        ret['activities'] = self.activities
-        ret['activities_verbal'] = self.activities.__repr__()
-        ret['operational'] = self.operational
-        ret['why_not_operational'] = self.why_not_operational
+        ret |= {
+            'activities': self.activities,
+            'activities_verbal': self.activities.__repr__(),
+            'operational': self.operational,
+            'why_not_operational': self.why_not_operational,
+        }
         return ret
     
     def startup(self):
         self.traverse_and_call('startup')
+        self._was_shut_down = False
     
     def shutdown(self):
         self.traverse_and_call('shutdown')
+        self._was_shut_down = True
 
     def abort(self):
         self.traverse_and_call('abort')
@@ -101,7 +124,12 @@ class Spec(Component):
                         name = comp.name
                     elif callable(comp.name):
                         name = comp.name()
-                    ret[key][name] = getattr(comp, method_name)()
+                    try:
+                        result = getattr(comp, method_name)
+                        ret[key][name] = result() if callable(result) else result
+                    except Exception as e:
+                        self.logger.error(f"exception: {e} ({comp=}, {method_name=}")
+                        pass
             else:
                 ret[key] = getattr(component, method_name)()
         return ret
@@ -201,14 +229,14 @@ def acquire():
 
 
 def status():
-    return spec.status()
+    return CanonicalResponse(value=spec.status)
 
 
 def set_params(highspec_exposure: float, deepspec_exposure: float):
     spec.set_params(highspec_exposure, deepspec_exposure)
 
 
-base_path = BASE_SPEC_API_PATH
+base_path = BASE_SPEC_PATH
 tag = 'Spec'
 
 router = APIRouter()
