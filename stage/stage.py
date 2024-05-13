@@ -1,6 +1,6 @@
 import zaber_motion
 import zaber_motion.ascii
-from common.utils import Component, init_log, BASE_SPEC_API_PATH
+from common.utils import Component, init_log, BASE_SPEC_PATH
 import logging
 from enum import IntFlag, auto, Enum
 from fastapi import APIRouter
@@ -38,6 +38,7 @@ class Stage(Component):
     def __init__(self, name: str, controller=None):
         Component.__init__(self)
 
+        self._was_shut_down = False
         try:
             self.conf = Config().toml['stage'][name]
         except Exception as ex:
@@ -69,7 +70,7 @@ class Stage(Component):
         self.target: float | None = None
         self.target_units: zaber_motion.Units | None = None
 
-        self.detected = False
+        self._detected = False
         self.axis = None
         if self.controller and self.controller.detected:
             try:
@@ -78,7 +79,7 @@ class Stage(Component):
                     self.logger.info(f"No stage name='{self.name}', axis_id={self.axis_id}")
                     self.axis = None
                     return
-                self.detected = True
+                self._detected = True
 
                 t = str(self.axis.axis_type).replace('AxisType.', '')
                 self.logger.info(f"Found stage name='{self.name}', axis_id={self.axis.axis_number}, type={t}, "
@@ -92,6 +93,19 @@ class Stage(Component):
 
             except Exception as ex:
                 self.logger.error(f"Exception: {ex}")
+
+
+    @property
+    def detected(self):
+        return self._detected
+
+    @property
+    def connected(self) -> bool:
+        return self.detected
+
+    @property
+    def was_shut_down(self) -> bool:
+        return self._was_shut_down
 
     def can_move(self):
         ret = []
@@ -190,6 +204,7 @@ class Stage(Component):
         if self.shutdown_position and not self.close_enough(self.shutdown_position):
             self.start_activity(StageActivities.ShuttingDown)
             self.move_absolute(self.shutdown_position, unit=zaber_motion.Units.LENGTH_MICROMETRES)
+        self._was_shut_down = True
 
     def startup(self):
         if self.axis is None:
@@ -203,6 +218,7 @@ class Stage(Component):
         if self.startup_position and not self.close_enough(self.startup_position):
             self.start_activity(StageActivities.StartingUp)
             self.move_absolute(self.startup_position, unit=zaber_motion.Units.LENGTH_MICROMETRES)
+        self._was_shut_down = False
 
     def abort(self):
         if self.axis is None:
@@ -255,15 +271,14 @@ class Controller(SwitchedPowerDevice, NetworkedDevice):
         self.stages: List = list()
 
         self.detected = False
-        self.power = SwitchedPowerDevice(self.conf)
-        if self.power.switch.detected:
-            if self.power.is_off():
-                self.power_on()
+        SwitchedPowerDevice.__init__(self, conf=self.conf)
+        if not self.is_on():
+            self.power_on()
 
         NetworkedDevice.__init__(self, self.conf)
 
         self.device = None
-        if self.power.switch.detected:
+        if self.is_on():
             self.device: zaber_motion.ascii.Device = self.connect()
         if self.device:
             self.detected = True
@@ -440,7 +455,7 @@ def abort(stage_name: StageNames):
             'Error': f"No physical stage for '{stage_name}'"
         }
 
-base_path = BASE_SPEC_API_PATH + 'stages'
+base_path = BASE_SPEC_PATH + 'stages'
 tag = 'Stages'
 router = APIRouter()
 

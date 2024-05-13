@@ -1,4 +1,4 @@
-from common.utils import Component, Activities, RepeatTimer, init_log, BASE_SPEC_API_PATH
+from common.utils import Component, Activities, RepeatTimer, init_log, BASE_SPEC_PATH
 from enum import IntFlag, Enum, auto
 import logging
 from fastapi import APIRouter
@@ -34,9 +34,8 @@ class Wheel(Component, SwitchedPowerDevice):
         Activities.__init__(self)
 
         self._wheel_name = wheel_name
-        self.name = self._wheel_name
         self.id: str = ''
-        self.detected = False
+        self._detected = False
 
         self.conf = Config().toml['filter-wheel'][self.name]
         self.power = SwitchedPowerDevice(self.conf)
@@ -69,7 +68,7 @@ class Wheel(Component, SwitchedPowerDevice):
             self.logger.error(f"{prefix}: Could not open device")
             self.device = None
             return
-        self.detected = True
+        self._detected = True
 
         _id = []
         result = FWxCGetId(self.device, _id)
@@ -165,8 +164,23 @@ class Wheel(Component, SwitchedPowerDevice):
         self.timer.name = f'{self.name}-timer-thread'
         self.timer.start()
 
+        self._was_shut_down = False
+
         self.logger.info('initialized')
 
+    @property
+    def detected(self) -> bool:
+        return self._detected
+
+    @property
+    def connected(self):
+        return self.detected
+
+    @property
+    def was_shut_down(self) -> bool:
+        return self._was_shut_down
+
+    @property
     def name(self) -> str:
         return self._wheel_name
 
@@ -187,6 +201,8 @@ class Wheel(Component, SwitchedPowerDevice):
             self.start_activity(WheelActivities.StartingUp)
             self.move(self.default_position)
 
+        self._was_shut_down = False
+
     def shutdown(self):
         """
         Return to default position
@@ -198,6 +214,8 @@ class Wheel(Component, SwitchedPowerDevice):
         if self.default_position is not None and self.position != self.default_position:
             self.start_activity(WheelActivities.ShuttingDown)
             self.move(self.default_position)
+
+        self._was_shut_down = True
 
     def abort(self):
         # The wheel cannot be stopped
@@ -412,7 +430,7 @@ def abort():
         w.abort()
 
 
-base_path = BASE_SPEC_API_PATH + 'fw'
+base_path = BASE_SPEC_PATH + 'fw'
 tag = 'Filter wheels'
 router = APIRouter()
 

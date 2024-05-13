@@ -14,7 +14,7 @@ from common.utils import init_log, PathMaker, Component
 from common.networking import NetworkedDevice
 from typing import List
 from copy import deepcopy
-from common.utils import RepeatTimer, BASE_SPEC_API_PATH
+from common.utils import RepeatTimer, BASE_SPEC_PATH
 from enum import IntFlag, auto, Enum
 from datetime import timedelta, datetime
 
@@ -135,8 +135,8 @@ class GreatEyes(SwitchedPowerDevice, NetworkedDevice, Component):
 
     def __init__(self, _id: int):
         self._initialized = False
-        self.detected = False
-        self.connected = False
+        self._detected = False
+        self._connected = False
         Component.__init__(self)
 
         self.id = int(_id)
@@ -173,7 +173,7 @@ class GreatEyes(SwitchedPowerDevice, NetworkedDevice, Component):
         boot_delay = self.conf['boot_delay'] if 'boot_delay' in self.conf else 20
 
         self.power = SwitchedPowerDevice(self.conf)
-        self.detected = False
+        self._detected = False
         if not self.enabled:
             self.logger.error(f"camera {self.name} is disabled")
             return
@@ -210,7 +210,7 @@ class GreatEyes(SwitchedPowerDevice, NetworkedDevice, Component):
         self.logger.debug(f"OK: ge.ConnectToSingleCameraServer(addr={self.addr}) " +
                           f"(ret={ret}, msg='{ge.StatusMSG}')")
 
-        self.detected = True
+        self._detected = True
         model = []
         ret = ge.ConnectCamera(model=model, addr=self.addr)
         if not ret:
@@ -218,7 +218,7 @@ class GreatEyes(SwitchedPowerDevice, NetworkedDevice, Component):
                               f"msg='{ge.StatusMSG}')")
             return
         self.logger.debug(f"OK: ge.ConnectCamera(model=[], addr={self.addr}) (ret={ret}, msg='{ge.StatusMSG}')")
-        self.connected = True
+        self._connected = True
 
         self.model_id = model[0]
         self.model = model[1]
@@ -276,7 +276,21 @@ class GreatEyes(SwitchedPowerDevice, NetworkedDevice, Component):
         self.timer.name = f'deepspec-camera-{self.band}-timer-thread'
         self.timer.start()
 
+        self._was_shut_down = False
+
         self._initialized = True
+
+    @property
+    def detected(self) -> bool:
+        return self._detected
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    @property
+    def was_shut_down(self):
+        return self._was_shut_down
 
     @property
     def name(self) -> str:
@@ -352,12 +366,14 @@ class GreatEyes(SwitchedPowerDevice, NetworkedDevice, Component):
             return
         self.start_activity(GreatEyesActivities.StartingUp)
         self.cool_down()
+        self._was_shut_down = False
 
     def shutdown(self):
         if not self.detected:
             return
         self.start_activity(GreatEyesActivities.ShuttingDown)
         self.warm_up()
+        self._was_shut_down = True
 
     def set_parameters(self,
                        readout_amplifiers_: readout_amplifiers | None,
@@ -660,6 +676,18 @@ class DeepSpec(Component):
         self.configured_cameras = list(self.conf.keys())
         self.cameras = make_deepspec_cameras()
 
+    @property
+    def detected(self) -> bool:
+        return all([cam.detected for cam in self.cameras])
+
+    @property
+    def connected(self) -> bool:
+        return all([cam.connected for cam in self.cameras])
+
+    @property
+    def was_shut_down(self):
+        return all([cam.was_shut_down for cam in self.cameras])
+
     def status(self):
         ret = {}
         for num in self.configured_cameras:
@@ -684,18 +712,19 @@ class DeepSpec(Component):
         return 'deepspec'
 
     def startup(self):
-        pass
+        for cam in self.cameras:
+            cam.startup()
 
     def shutdown(self):
-        pass
+        for cam in self.cameras:
+            cam.shutdown()
 
     def abort(self):
         pass
 
     @property
     def operational(self) -> bool:
-        not_detected = [cam for cam in self.cameras if not cam.detected]
-        return len(not_detected) == 0
+        return all([cam.detected for cam in self.cameras if not cam.detected])
 
     @property
     def why_not_operational(self) -> List[str]:
@@ -834,7 +863,7 @@ def camera_expose(band: Band, seconds: float):
     ).start()
 
 
-base_path = BASE_SPEC_API_PATH + 'deepspec/cameras/'
+base_path = BASE_SPEC_PATH + 'deepspec/cameras/'
 tag = 'DeepSpec Cameras'
 router = fastapi.APIRouter()
 

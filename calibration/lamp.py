@@ -15,10 +15,24 @@ class CalibrationLamp(Component, SwitchedPowerDevice):
 
         if not self.is_on():
             self.power_on()
+        self._was_shut_down = False
 
     def __repr__(self):
-        return f"<Lamp name={self.name}"
+        return f"<Lamp name={self.name}>"
 
+    @property
+    def detected(self) -> bool:
+        return self.is_on()
+
+    @property
+    def connected(self) -> bool:
+        return self.is_on()
+
+    @property
+    def was_shut_down(self) -> bool:
+        return self._was_shut_down
+
+    @property
     def status(self):
         return {
             'operational': self.operational,
@@ -41,13 +55,16 @@ class CalibrationLamp(Component, SwitchedPowerDevice):
     def startup(self):
         if not self.is_on():
             self.power_on()
+        self._was_shut_down = False
 
     def shutdown(self):
         if self.is_on():
             self.power_off()
+        self._was_shut_down = True
 
     def abort(self):
         pass
 
+    @property
     def name(self) -> str:
         return self._name

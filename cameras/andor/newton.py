@@ -14,7 +14,7 @@ from enum import IntFlag, auto, Enum
 from common.config import Config
 
 from fastapi import APIRouter, Query
-from common.utils import BASE_SPEC_API_PATH, Component
+from common.utils import BASE_SPEC_PATH, Component
 
 logger = logging.getLogger("mast.highspec.camera")
 init_log(logger)
@@ -129,7 +129,7 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
         Component.__init__(self)
         self._name = 'highspec'
 
-        self.detected = False
+        self._detected = False
 
         # NOTE: The power to this camera is switched on by spec.startup()
         self.power = SwitchedPowerDevice(self.conf)
@@ -168,7 +168,7 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
         (ret, iSerialNumber) = self.sdk.GetCameraSerialNumber()
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.serial_number = iSerialNumber
-            self.detected = True
+            self._detected = True
         else:
             self.logger.error(f"Could not get serial number (code={error_code(ret)})")
             self.sdk.ShutDown()
@@ -207,6 +207,7 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
             self.logger.error(f"Could not set event handler (code={error_code(ret)})")
 
         self.start_cooldown()
+        self._was_shut_down = False
 
         self._initialized = True
 
@@ -237,9 +238,21 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
         self._name = value
 
     @property
+    def detected(self) -> bool:
+        return self._detected
+
+    @property
+    def connected(self) -> bool:
+        return self.detected
+
+    @property
+    def was_shut_down(self) -> bool:
+        return self._was_shut_down
+
+    @property
     def operational(self) -> bool:
         return (self.power.switch.detected and self.detected and not
-        (self.is_active(NewtonActivities.CoolingDown) or self.is_active(NewtonActivities.WarmingUp)))
+            (self.is_active(NewtonActivities.CoolingDown) or self.is_active(NewtonActivities.WarmingUp)))
 
     @property
     def why_not_operational(self) -> List[str]:
@@ -519,6 +532,7 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
         self.start_activity(NewtonActivities.StartingUp)
         self.start_activity(NewtonActivities.CoolingDown)
         self.turn_cooler(True)
+        self._was_shut_down = False
     
     def shutdown(self):
         if not self.detected:
@@ -526,6 +540,7 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
             return
         self.start_activity(NewtonActivities.ShuttingDown)
         self.start_warmup()
+        self._was_shut_down = True
     
     def abort(self):
         if not self.detected:
@@ -679,7 +694,7 @@ def abort():
     camera.abort()
 
 
-base_path = BASE_SPEC_API_PATH + 'highspec/camera'
+base_path = BASE_SPEC_PATH + 'highspec/camera'
 tag = 'HighSpec Camera'
 router = APIRouter()
 

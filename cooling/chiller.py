@@ -16,18 +16,37 @@ class Chiller(SwitchedPowerDevice, Component):
 
         if not self.is_on():
             self.power_on()
+        self._was_shut_down = False
 
     def __repr__(self):
         return f"Chiller"
 
     def startup(self):
-        pass
+        if not self.is_on():
+            self.power_on()
+
+        self._was_shut_down = False
 
     def shutdown(self):
-        pass
+        if self.is_on():
+            self.power_off()
+
+        self._was_shut_down = True
 
     def abort(self):
         pass
+
+    @property
+    def detected(self):
+        return self.is_on()
+
+    @property
+    def connected(self):
+        return self.is_on()
+
+    @property
+    def was_shut_down(self) -> bool:
+        return self._was_shut_down
 
     @property
     def name(self) -> str:
