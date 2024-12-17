@@ -1,6 +1,7 @@
 import zaber_motion
 import zaber_motion.ascii
-from common.utils import Component, init_log, BASE_SPEC_PATH
+from common.utils import Component, BASE_SPEC_PATH
+from common.mast_logging import init_log
 import logging
 from enum import IntFlag, auto, Enum
 from fastapi import APIRouter
