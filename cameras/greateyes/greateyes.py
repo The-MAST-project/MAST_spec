@@ -7,6 +7,9 @@ from fastapi import Query
 
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
 from common.config import Config
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain
+from common.spec import SpecCameraExposureSettings
+from common.filer import Filer
 import sys
 import os
 import logging
@@ -131,7 +134,7 @@ class GreatEyesActivities(IntFlag):
     SettingParameters = auto()
 
 
-class GreatEyes(SwitchedPowerDevice, NetworkedDevice, Component):
+class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
     def __init__(self, _id: int):
         self._initialized = False
@@ -148,7 +151,7 @@ class GreatEyes(SwitchedPowerDevice, NetworkedDevice, Component):
 
         self.conf.update(specific_conf)
         NetworkedDevice.__init__(self, self.conf)
-        SwitchedPowerDevice.__init__(self, self.conf)
+        SwitchedOutlet.__init__(self, outlet_name=f'{self._name}', domain=OutletDomain.Spec)
 
         self.band = self.conf['band']
         self.logger = logging.getLogger(f"mast.spec.deepspec.camera.{self.band}")
@@ -172,13 +175,12 @@ class GreatEyes(SwitchedPowerDevice, NetworkedDevice, Component):
         self.acquisition: str | None = None
         boot_delay = self.conf['boot_delay'] if 'boot_delay' in self.conf else 20
 
-        self.power = SwitchedPowerDevice(self.conf)
         self._detected = False
         if not self.enabled:
             self.logger.error(f"camera {self.name} is disabled")
             return
 
-        if not self.power.switch.detected:
+        if not self.switch.detected:
             return
 
         if self.is_off():
@@ -321,8 +323,7 @@ class GreatEyes(SwitchedPowerDevice, NetworkedDevice, Component):
         self.logger.error(err)
 
     def power_off(self):
-        if self.power.switch:
-            self.power.switch.off(self.power.outlet)
+        self.power_off()
 
     def status(self) -> dict:
         ret = {
@@ -648,8 +649,8 @@ class GreatEyes(SwitchedPowerDevice, NetworkedDevice, Component):
     def why_not_operational(self) -> List[str]:
         ret = []
         label = f"{self.name}:"
-        if not self.power.switch.detected:
-            ret.append(f"{label} power switch (at {self.power.switch.ipaddress}) not detected")
+        if not self.switch.detected:
+            ret.append(f"{label} power switch (at {self.switch.ipaddress}) not detected")
         if not self.detected:
             ret.append(f"{label} camera (at {self.ipaddress}) not detected")
         if self.is_active(GreatEyesActivities.CoolingDown):
