@@ -114,7 +114,7 @@ defaults = {
 }
 
 
-class NewtonEMCCD(Component, SwitchedPowerDevice):
+class NewtonEMCCD(Component, SwitchedOutlet):
 
     SECONDS_BETWEEN_TEMP_LOGS = 30
     _instance = None
@@ -132,7 +132,7 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
         self._detected = False
 
         # NOTE: The power to this camera is switched on by spec.startup()
-        self.power = SwitchedPowerDevice(self.conf)
+        SwitchedOutlet.__init__(self, outlet_name='Highspec', domain=OutletDomain.Spec)
 
         self._initialized = False
         self.logger = logging.getLogger('mast.spec.highspec.camera')
@@ -154,7 +154,7 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
         self.activate_cooler: bool | None = None
         self.exposure: float | None = None
 
-        if not self.power.switch.detected:
+        if not self.switch.detected:
             return
 
         from pyAndorSDK2 import atmcd
@@ -251,7 +251,7 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
 
     @property
     def operational(self) -> bool:
-        return (self.power.switch.detected and self.detected and not
+        return (self.switch.detected and self.detected and not
             (self.is_active(NewtonActivities.CoolingDown) or self.is_active(NewtonActivities.WarmingUp)))
 
     @property
@@ -304,7 +304,7 @@ class NewtonEMCCD(Component, SwitchedPowerDevice):
                                         self.logger.error(f"could not turn cooler OFF (code={error_code(ret)}")
                                     power_off = True
                             if power_off:
-                                self.power.switch.off(self.power.outlet)
+                                self.power_off()
                         else:
                             self.logger.error(f"Could not GetTemperatureF() (code={error_code(temp_code)})")
 
@@ -625,8 +625,8 @@ def show_camera():
         'cooler_mode': camera.cooler_mode,
 
         'power': {
-            'switch': camera.conf['power']['switch'],
-            'outlet': camera.conf['power']['outlet'],
+            'switch': camera.switch.ipaddr,
+            'outlet': camera.outlet_name,
             'state':  'ON' if camera.is_on() else 'OFF',
         },
     }
