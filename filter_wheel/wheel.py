@@ -34,7 +34,7 @@ class Wheel(Component, SwitchedOutlet):
     def __init__(self, wheel_name: str):
         Activities.__init__(self)
 
-        self._wheel_name = wheel_name
+        self._name = f"{wheel_name}Wheel"   # used by self.name
         self.id: str = ''
         self._detected = False
 
@@ -82,20 +82,20 @@ class Wheel(Component, SwitchedOutlet):
         _id[0] = _id[0][6:]
         self.id: str = _id[0][:-3]
 
-        npos = [self.device]
-        result = FWxCGetPositionCount(self.device, npos)
+        number_of_positions = [self.device]
+        result = FWxCGetPositionCount(self.device, number_of_positions)
         if result < 0:
             self.logger.error(f"{prefix}: Could not get number of positions")
             self.device = None
             return
 
         expected_number_of_positions = 6
-        if npos[0] != expected_number_of_positions:
-            self.logger.error(f"{prefix} expected {expected_number_of_positions} positions, got {npos[0]}")
+        if number_of_positions[0] != expected_number_of_positions:
+            self.logger.error(f"{prefix} expected {expected_number_of_positions} positions, got {number_of_positions[0]}")
             self.device = None
             return
 
-        self.positions = npos[0]
+        self.positions = number_of_positions[0]
         self.logger.info(f"{prefix}: positions={self.positions}, id='{self.id}'")
 
         # set the speed mode to 'high' (1)
@@ -185,7 +185,7 @@ class Wheel(Component, SwitchedOutlet):
 
     @property
     def name(self) -> str:
-        return self._wheel_name
+        return self._name
 
     def __del__(self):
         if self.detected:
