@@ -1,15 +1,15 @@
 from typing import List
 
-from dlipower.dlipower.dlipower import SwitchedPowerDevice
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 from common.utils import Component
 from common.config import Config
 
 
-class Chiller(SwitchedPowerDevice, Component):
+class Chiller(SwitchedOutlet, Component):
 
     def __init__(self):
-        self.conf = Config().toml['chiller']
-        SwitchedPowerDevice.__init__(self, self.conf)
+        self.conf = Config().get_specs()['chiller']
+        SwitchedOutlet.__init__(self, domain=OutletDomain.Spec, outlet_name='Chiller')
 
         if not self.switch.detected:
             return
