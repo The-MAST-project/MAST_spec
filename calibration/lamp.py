@@ -1,11 +1,11 @@
 from typing import List
 
-from dlipower.dlipower.dlipower import SwitchedPowerDevice
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 from common.utils import Component
 from common.config import Config
 
 
-class CalibrationLamp(Component, SwitchedPowerDevice):
+class CalibrationLamp(Component, SwitchedOutlet):
 
     def __init__(self, name):
         self._name = f"lamp-{name}"
@@ -13,6 +13,7 @@ class CalibrationLamp(Component, SwitchedPowerDevice):
         self.conf = Config().toml['lamp'][name]
         SwitchedPowerDevice.__init__(self, self.conf)
 
+        SwitchedOutlet.__init__(self, domain=OutletDomain.Spec, outlet_name=self.name)
         if not self.is_on():
             self.power_on()
         self._was_shut_down = False
