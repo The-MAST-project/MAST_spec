@@ -4,7 +4,7 @@ import logging
 from fastapi import APIRouter
 from typing import List
 from common.config import Config
-from dlipower.dlipower.dlipower import SwitchedPowerDevice
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 
 import sys
 import os.path
@@ -37,11 +37,13 @@ class Wheel(Component, SwitchedPowerDevice):
         self.id: str = ''
         self._detected = False
 
-        self.conf = Config().toml['filter-wheel'][self.name]
-        self.power = SwitchedPowerDevice(self.conf)
-        if self.power.switch.detected:
-            if self.power.is_off():
-                self.power.power_on()
+        self.conf = Config().get_specs()['wheels'][self.name]
+        self.filters: Dict = self.conf['filters']
+
+        SwitchedOutlet.__init__(self, domain=OutletDomain.Spec, outlet_name=self.name)
+        if self.switch.detected:
+            if self.is_off():
+                self.power_on()
 
         self.logger = logging.getLogger(f"mast.spec.filter-wheel-{self.name}")
         init_log(self.logger)
