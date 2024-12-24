@@ -1,8 +1,9 @@
-from common.utils import Component, Activities, RepeatTimer, init_log, BASE_SPEC_PATH
+from common.utils import Component, Activities, RepeatTimer, BASE_SPEC_PATH
+from common.mast_logging import init_log
 from enum import IntFlag, Enum, auto
 import logging
 from fastapi import APIRouter
-from typing import List
+from typing import List, Dict
 from common.config import Config
 from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 
@@ -228,14 +229,11 @@ class Wheel(Component, SwitchedPowerDevice):
             self.end_activity(WheelActivities.Moving)
 
     def status(self) -> dict:
-        filter_dict = {}
-        for i in range(1, 7):
-            filter_dict[i] = self.conf[f"{i}"]
         ret = {
             'detected': self.detected,
             'operational': self.operational,
             'why_not_operational': self.why_not_operational,
-            'filters': filter_dict,
+            'filters': self.conf['filters'],
         }
 
         if self.detected:
@@ -253,7 +251,7 @@ class Wheel(Component, SwitchedPowerDevice):
     @property
     def position(self) -> int | None:
         """
-        Get the current position from the controller
+        Get the current position from the controller (1 to N)
         :return:
         """
         if not self.detected:
@@ -265,6 +263,20 @@ class Wheel(Component, SwitchedPowerDevice):
             self.logger.error(f"'{self.serial_number}: Could not get position")
             return None
         return pos[0]
+
+    def position_of_filter(self, filter_name: str) -> int:
+        if filter_name not in self.filters.values():
+            raise ValueError(f"bad {filter_name=}, must be one of {list(self.filters.values())}")
+        return int([key for key in self.filters.keys() if self.filters[key] == filter_name][0])
+
+    def at_filter(self, filter_name: str):
+        return self.position == self.position_of_filter(filter_name)
+
+    def move_to_filter(self, filter_name: str):
+        if filter_name not in self.filters.values():
+            raise ValueError(f"bad {filter_name=}, must be one of {list(self.filters.values())}")
+        position = int([key for key in self.filters.keys() if self.filters[key] == filter_name][0])
+        self.move(position)
 
     def move(self, pos: str | int):
         if not self.detected:
@@ -319,6 +331,10 @@ class Wheel(Component, SwitchedPowerDevice):
     #     return f"<Wheel-{self.id}>(name='{self.name}', serial='{self.serial_number}')"
 
     @property
+    def is_moving(self) -> bool:
+        return self.is_active(WheelActivities.Moving)
+
+    @property
     def operational(self) -> bool:
         return self.detected
 
@@ -331,16 +347,13 @@ class Wheel(Component, SwitchedPowerDevice):
         return ret
 
 
-def make_filter_wheels():
+def make_filter_wheels() -> List[Wheel]:
     cfg = Config()
 
     ret: List[Wheel] = list()
-    for wheel_name in cfg.toml['filter-wheel']:
+    for wheel_name in list(cfg.get_specs()['wheels'].keys()):
         ret.append(Wheel(wheel_name))
     return ret
-
-
-# wheels = make_filter_wheels()
 
 
 class FilterWheels:
