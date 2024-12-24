@@ -5,13 +5,15 @@ import time
 from typing import List
 
 import win32event
-# from pyAndorSDK2 import atmcd, atmcd_codes, atmcd_errors, atmcd_capabilities
+from sdk.pyAndorSDK2.pyAndorSDK2 import atmcd, atmcd_codes, atmcd_errors, atmcd_capabilities
 import logging
 
-from common.utils import init_log, PathMaker
-from dlipower.dlipower.dlipower import SwitchedPowerDevice
+from common.mast_logging import init_log
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 from enum import IntFlag, auto, Enum
 from common.config import Config
+from common.spec import SpecCameraExposureSettings
+from common.filer import Filer
 
 from fastapi import APIRouter, Query
 from common.utils import BASE_SPEC_PATH, Component
@@ -19,7 +21,6 @@ from common.utils import BASE_SPEC_PATH, Component
 logger = logging.getLogger("mast.highspec.camera")
 init_log(logger)
 
-from pyAndorSDK2 import atmcd_codes, atmcd_errors, atmcd_capabilities
 codes = atmcd_codes
 
 
@@ -66,6 +67,7 @@ class NewtonActivities(IntFlag):
     WarmingUp = auto()
     Exposing = auto()
     ReadingOut = auto()
+    Saving = auto()
     
     
 class AcquisitionMode(Enum):
@@ -157,7 +159,6 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         if not self.switch.detected:
             return
 
-        from pyAndorSDK2 import atmcd
         self.sdk = atmcd()
 
         ret = self.sdk.Initialize(os.path.join(os.path.dirname(__file__), 'sdk', 'pyAndorSDK2', 'pyAndorSDK2'))
@@ -165,9 +166,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.logger.error(f"Could not initialize SDK (code={error_code(ret)})")
             return
 
-        (ret, iSerialNumber) = self.sdk.GetCameraSerialNumber()
+        (ret, serial_number) = self.sdk.GetCameraSerialNumber()
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.serial_number = iSerialNumber
+            self.serial_number = serial_number
             self._detected = True
         else:
             self.logger.error(f"Could not get serial number (code={error_code(ret)})")
@@ -190,7 +191,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.min_temp = min_temp
             self.max_temp = max_temp
 
-        self.acquisition: str | None = None
+        self.latest_settings: SpecCameraExposureSettings | None = None
 
         self.logger.info(f"Found camera SN: {self.serial_number}, {self.x_pixels=}, {self.y_pixels=}")
         self.set_modes()  # initial values
@@ -479,12 +480,20 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.logger.info(f"turned the cooler {'ON' if on_off else 'OFF'}")
         else:
             self.logger.error(f"Could not turn the Cooler {'ON' if on_off else 'OFF'} (code={error_code(ret)})")
-    
-    def expose(self, seconds: float | None = None, acquisition: str | None = None):
+
+    @property
+    def is_working(self) -> bool:
+        return (self.is_active(NewtonActivities.Exposing) or
+                self.is_active(NewtonActivities.ReadingOut) or
+                self.is_active(NewtonActivities.Saving))
+
+    def start_exposure(self, settings: SpecCameraExposureSettings):
+        self.expose(settings=settings)
+
+    def expose(self, settings: SpecCameraExposureSettings):
         """
         Starts an exposure.
-        :param seconds: exposure duration (seconds)
-        :param acquisition: if given, a directory where to store the image
+        :param settings: exposure settings
         :return:
         """
         if not self.detected:
@@ -495,16 +504,15 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.logger.error(f"not initialized")
             return
 
-        if seconds is not None:
-            ret = self.sdk.SetExposureTime(seconds)
-            if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-                self.logger.info(f"Set exposure time to {seconds=:.2f}")
-            else:
-                self.logger.error(f"Could not set exposure time to {seconds=:.2f} (code={error_code(ret)})")
-                return
+        self.latest_settings = settings
+        ret = self.sdk.SetExposureTime(settings.exposure_duration)
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            self.logger.info(f"Set exposure time to {settings.exposure_duration=:.2f}")
+        else:
+            self.logger.error(f"Could not set exposure time to {settings.exposure_duration=:.2f} (code={error_code(ret)})")
+            return
 
-        if acquisition:
-            self.acquisition = acquisition
+        # TODO: set binning from settings
 
         ret = self.sdk.StartAcquisition()
         if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
@@ -518,11 +526,16 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         if not self.detected:
             self.logger.error(f"camera not detected")
             return
-        filename = PathMaker().make_exposure_file_name(camera='highspec', acquisition=self.acquisition) + '.fits'
+        filename = os.path.join(Filer().ram.root, self.latest_settings.output_folder, f"{self.name}")
+        if self.latest_settings.number_in_sequence:
+            filename += f"_{self.latest_settings.number_in_sequence}"
+        filename += ".fits"
         ret = self.sdk.SaveAsFITS(filename, typ=1)
-        if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            self.logger.info(f"saved {filename}")
+            Filer().move_ram_to_shared(filename)
+        else:
             self.logger.error(f"failed sdk.SaveAsFITS({filename}, typ=1) (ret={ret}")
-        self.logger.info(f"saved exposure in '{filename}")
         self.end_activity(NewtonActivities.Exposing)
 
     def startup(self):
@@ -632,14 +645,6 @@ def show_camera():
     }
 
 
-def take_exposure(seconds: float):
-    camera.expose(seconds)
-
-
-def camera_status():
-    return camera.status()
-
-
 def camera_modes() -> dict:
     return {
         'exposure': camera.exposure,
@@ -682,32 +687,21 @@ def set_camera_modes(
     )
 
 
-def startup():
-    camera.startup()
-
-
-def shutdown():
-    camera.shutdown()
-
-
-def abort():
-    camera.abort()
-
-
 base_path = BASE_SPEC_PATH + 'highspec/camera'
 tag = 'HighSpec Camera'
 router = APIRouter()
 
-router.add_api_route(base_path, tags=[tag], endpoint=show_camera)
-router.add_api_route(base_path + '/expose', tags=[tag], endpoint=take_exposure)
-router.add_api_route(base_path + '/status', tags=[tag], endpoint=camera_status)
-router.add_api_route(base_path + '/set-modes', tags=[tag], endpoint=set_camera_modes)
-router.add_api_route(base_path + '/startup', tags=[tag], endpoint=startup)
-router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=shutdown)
-router.add_api_route(base_path + '/abort', tags=[tag], endpoint=abort)
-
-
 camera = NewtonEMCCD()
+
+router.add_api_route(base_path, tags=[tag], endpoint=show_camera)
+router.add_api_route(base_path + '/expose', tags=[tag], endpoint=camera.expose)
+router.add_api_route(base_path + '/status', tags=[tag], endpoint=camera.status)
+router.add_api_route(base_path + '/set-modes', tags=[tag], endpoint=set_camera_modes)
+router.add_api_route(base_path + '/startup', tags=[tag], endpoint=camera.startup)
+router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=camera.shutdown)
+router.add_api_route(base_path + '/abort', tags=[tag], endpoint=camera.abort)
+
+
 
 
 if __name__ == '__main__':
@@ -717,7 +711,7 @@ if __name__ == '__main__':
         camera.logger.debug(f"waiting for NewtonActivities.StartingUp to end ...")
         time.sleep(5)
 
-    camera.expose()
+    camera.expose(SpecCameraExposureSettings(exposure_duration=5, number_of_exposures=1, output_folder='c:/tmp'))
     while camera.is_active(NewtonActivities.Exposing):
         camera.logger.debug(f"waiting for NewtonActivities.Exposing to end ...")
         time.sleep(5)
