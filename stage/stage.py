@@ -5,10 +5,11 @@ from common.mast_logging import init_log
 import logging
 from enum import IntFlag, auto, Enum
 from fastapi import APIRouter
-from typing import List
+from typing import List, get_args
 from common.config import Config
 from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 from common.networking import NetworkedDevice
+from common.spec import GratingsStageLiteral, CameraStageLiteral, StageLiteral
 
 logger = logging.getLogger('mast.spec.stage')
 init_log(logger)
@@ -36,18 +37,19 @@ class StageStatus:
 
 class Stage(Component):
 
-    def __init__(self, name: str, controller=None):
+    def __init__(self, name: str, presets_literal: GratingsStageLiteral | CameraStageLiteral, controller=None):
         Component.__init__(self)
 
         self._was_shut_down = False
         try:
-            self.conf = Config().toml['stage'][name]
+            self.conf = Config().get_specs()['stage'][name]
         except Exception as ex:
             logger.error(f"No stage named '{name}' in the config file")
             return
 
         self.name = name
         self.controller = controller
+        self.presets_literal = presets_literal
         self.logger = logging.getLogger(f"mast.spec.stage.{self.name}")
         init_log(self.logger)
 
@@ -129,13 +131,12 @@ class Stage(Component):
         current = self.axis.get_position(unit=zaber_motion.Units.LENGTH_MICROMETRES)
         return abs(current - microns) <= 1
 
-    def at_preset(self) -> str | None:
+    def at_preset(self, preset: StageLiteral) -> bool:
         if not self.axis or self.axis.is_busy():
-            return None
-        for key, val in self.presets.items():
-            if self.close_enough(val):
-                return key
-        return None
+            return False
+        if preset not in get_args(self.presets_literal):
+            return False
+        return self.close_enough(self.presets[preset])
 
     def on_event(self, e: zaber_motion.ascii.AlertEvent):
         if e.status == 'IDLE':
@@ -184,11 +185,11 @@ class Stage(Component):
             self.end_activity(StageActivities.Moving)
             self.logger.error(f"Exception {ex}")
 
-    def move_to_preset(self, preset: str):
+    def move_to_preset(self, preset: StageLiteral):
         if self.axis is None:
             return
-        if preset not in self.presets:
-            raise ValueError(f"Bad preset '{preset}. Valid presets are; {",".join(self.presets.keys())}")
+        if preset not in get_args(self.presets_literal):
+            raise ValueError(f"Bad preset '{preset}. Valid presets are; {",".join(get_args(self.presets_literal))}")
 
         self.target = self.presets[preset]
         self.target_units = zaber_motion.Units.LENGTH_MICROMETRES
@@ -198,6 +199,10 @@ class Stage(Component):
         except zaber_motion.MotionLibException as ex:
             self.end_activity(StageActivities.Moving)
             self.logger.error(f"Exception {ex}")
+
+    @property
+    def is_moving(self) -> bool:
+        return self.is_active(StageActivities.Moving)
 
     def shutdown(self):
         if self.axis is None:
@@ -241,7 +246,7 @@ class Stage(Component):
         if self.detected:
             ret['activities'] = self.activities
             ret['activities_verbal'] = self.activities.__repr__()
-            ret['at_preset'] = self.at_preset()
+            ret['at_preset'] = [preset for preset in self.presets if self.close_enough(preset)]
             ret['position'] = self.position
 
         return ret
@@ -268,7 +273,7 @@ class Controller(SwitchedOutlet, NetworkedDevice):
         return cls._instance
 
     def __init__(self):
-        self.conf = Config().toml['stages']['controller']
+        self.conf = Config().get_specs()['stage']['controller']
         self.stages: List = list()
 
         self.detected = False
@@ -285,8 +290,9 @@ class Controller(SwitchedOutlet, NetworkedDevice):
         if self.device:
             self.detected = True
 
-        for name in Config().toml['stage']:
-            self.stages.append(Stage(name=name, controller=self))
+        for stage_name in [key for key in self.conf.keys() if key != 'controller']:
+            presets_literal = CameraStageLiteral if stage_name == 'camera' else GratingsStageLiteral
+            self.stages.append(Stage(name=stage_name, presets_literal=presets_literal, controller=self))
 
     @staticmethod
     def on_error(arg):
@@ -307,7 +313,7 @@ class Controller(SwitchedOutlet, NetworkedDevice):
     def connect(self) -> zaber_motion.ascii.Device:
         dev: zaber_motion.ascii.Device
 
-        conn = zaber_motion.ascii.Connection.open_tcp(host_name=self.destination.address)
+        conn = zaber_motion.ascii.Connection.open_tcp(host_name=self.network.address)
         devices = conn.detect_devices(identify_devices=True)
         if len(devices) < 1:
             raise f"No Zaber devices (controllers)"
@@ -324,7 +330,7 @@ zaber_controller: Controller = Controller()
 
 stages_dict = {}
 for stage in zaber_controller.stages:
-    stages_dict[stage.name] = stage.name
+    stages_dict[stage.name] = stage.label
 
 StageNames = Enum('StageNames', stages_dict)
 
