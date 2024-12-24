@@ -125,7 +125,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         return cls._instance
 
     def __init__(self):
-        self.conf = Config().toml['highspec']['camera']
+        self.conf = Config().get_specs()['highspec']
         Component.__init__(self)
         self._name = 'highspec'
 
