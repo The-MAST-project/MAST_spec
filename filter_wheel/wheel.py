@@ -29,7 +29,7 @@ class WheelActivities(IntFlag):
     Moving = auto()
 
 
-class Wheel(Component, SwitchedPowerDevice):
+class Wheel(Component, SwitchedOutlet):
 
     def __init__(self, wheel_name: str):
         Activities.__init__(self)
