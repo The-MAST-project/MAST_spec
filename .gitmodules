@@ -3,4 +3,4 @@
 	url = https://github.com/blumzi/python-dlipower.git
 [submodule "common"]
 	path = common
-	url = https://github.com/blumzi/MAST_common.git
+	url = https://github.com/The-MAST-project/MAST_common.git
