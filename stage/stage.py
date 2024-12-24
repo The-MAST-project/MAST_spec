@@ -7,7 +7,7 @@ from enum import IntFlag, auto, Enum
 from fastapi import APIRouter
 from typing import List
 from common.config import Config
-from dlipower.dlipower.dlipower import SwitchedPowerDevice
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 from common.networking import NetworkedDevice
 
 logger = logging.getLogger('mast.spec.stage')
@@ -259,7 +259,7 @@ class Stage(Component):
         return ret
 
 
-class Controller(SwitchedPowerDevice, NetworkedDevice):
+class Controller(SwitchedOutlet, NetworkedDevice):
     _instance = None
 
     def __new__(cls, *args, **kwargs):
@@ -272,7 +272,8 @@ class Controller(SwitchedPowerDevice, NetworkedDevice):
         self.stages: List = list()
 
         self.detected = False
-        SwitchedPowerDevice.__init__(self, conf=self.conf)
+
+        SwitchedOutlet.__init__(self, domain=OutletDomain.Spec, outlet_name='Stage')
         if not self.is_on():
             self.power_on()
 
