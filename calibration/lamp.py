@@ -8,11 +8,11 @@ from common.config import Config
 class CalibrationLamp(Component, SwitchedOutlet):
 
     def __init__(self, name):
-        self._name = f"{name}Lamp"
+        self._name = name
         Component.__init__(self)
-        self.conf = Config().get_specs()[name]
+        self.conf = Config().get_specs()['lamps'][name]
 
-        SwitchedOutlet.__init__(self, domain=OutletDomain.Spec, outlet_name=self.name)
+        SwitchedOutlet.__init__(self, domain=OutletDomain.Spec, outlet_name=f"{self.name}Lamp")
         if not self.is_on():
             self.power_on()
         self._was_shut_down = False
@@ -41,15 +41,15 @@ class CalibrationLamp(Component, SwitchedOutlet):
 
     @property
     def operational(self) -> bool:
-        return self.switch.detected and self.is_on()
+        return self.power_switch.detected and self.is_on()
 
     @property
     def why_not_operational(self) -> List[str]:
         ret = []
-        if not self.switch.detected:
-            ret.append(f"{self.name}: power switch '{self.switch.name}' (at '{self.switch.ipaddress}') not detected")
-        elif not self.is_on():
-            ret.append(f"{self.name}: not powered")
+        if not self.power_switch.detected:
+            ret.append(f"{self.name}: {self.power_switch} not detected")
+        elif self.is_off():
+            ret.append(f"{self.name}: {self.power_switch}:{self.outlet_name} is OFF")
         return ret
 
     def startup(self):
