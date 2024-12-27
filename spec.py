@@ -18,12 +18,12 @@ if not spec_conf:
 
 # The Newton HighSpec camera must be switched on before the Newton.startup() is called
 highspec_outlet = SwitchedOutlet(domain=OutletDomain.Spec, outlet_name='Highspec')
-if highspec_outlet.switch.detected:
+if highspec_outlet.power_switch.detected:
     if highspec_outlet.is_off():
         highspec_outlet.power_on()
 
 from cameras.andor.newton import camera as highspec_camera, NewtonEMCCD
-from cameras.greateyes.greateyes import DeepSpec, deepspec
+from deepspec import deepspec
 from stage.stage import zaber_controller as stage_controller, Stage
 from filter_wheel.wheel import filter_wheeler, Wheel
 from calibration.lamp import CalibrationLamp
@@ -44,18 +44,16 @@ class Spec(Component):
             PowerSwitchFactory.get_instance('mast-spec-ps1'),
             PowerSwitchFactory.get_instance('mast-spec-ps2')
         ]
-        self.deepspec: DeepSpec = deepspec
+        self.deepspec = deepspec
         self.highspec: NewtonEMCCD = highspec_camera
-        self.stages: List[Stage] = stage_controller.stages
 
         # convenience fields for the stages
-        self.fiber_stage = [s for s in self.stages if s.name == 'fiber'][0]
-        self.camera_stage = [s for s in self.stages if s.name == 'camera'][0]
-        self.gratings_stage = [s for s in self.stages if s.name == 'gratings'][0]
+        self.fiber_stage = stage_controller.fiber_stage
+        self.camera_stage = stage_controller.camera_stage
+        self.gratings_stage = stage_controller.gratings_stage
 
         self.wheels: List[Wheel] = filter_wheeler.wheels
         self.thar_wheel = [w for w in self.wheels if w.name == 'ThAr'][0]   # convenience wheel field
-
 
         self.chiller = cooling.chiller.Chiller()
         self.lamps: List[CalibrationLamp] = [
@@ -70,7 +68,7 @@ class Spec(Component):
             'lamps': self.lamps,
             'deepspec': self.deepspec,
             'highspec': self.highspec,
-            'stages': self.stages,
+            'stages': stage_controller.stages,
             'wheels': self.wheels,
         }
 
@@ -129,7 +127,10 @@ class Spec(Component):
         for key, component in self.components_dict.items():
             if isinstance(component, list):
                 for comp in component:
-                    getattr(comp, method_name)()
+                    if comp:
+                        getattr(comp, method_name)()
+                    else:
+                        self.logger.error(f"component is None")
             else:
                 getattr(component, method_name)()
 
@@ -318,6 +319,11 @@ def status():
 def set_params(highspec_exposure: float, deepspec_exposure: float):
     spec.set_params(highspec_exposure, deepspec_exposure)
 
+def startup():
+    spec.startup()
+
+def shutdown():
+    spec.shutdown()
 
 base_path = BASE_SPEC_PATH
 tag = 'Spec'
