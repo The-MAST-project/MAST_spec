@@ -34,15 +34,15 @@ class Wheel(Component, SwitchedOutlet):
     def __init__(self, wheel_name: str):
         Activities.__init__(self)
 
-        self._name = f"{wheel_name}Wheel"   # used by self.name
+        self._name = wheel_name   # used by self.name
         self.id: str = ''
         self._detected = False
 
-        self.conf = Config().get_specs()['wheels'][self.name]
+        self.conf = Config().get_specs()['wheels'][wheel_name]
         self.filters: Dict = self.conf['filters']
 
-        SwitchedOutlet.__init__(self, domain=OutletDomain.Spec, outlet_name=self.name)
-        if self.switch.detected:
+        SwitchedOutlet.__init__(self, domain=OutletDomain.Spec, outlet_name=f"{self.name}Wheel")
+        if self.power_switch.detected:
             if self.is_off():
                 self.power_on()
 
@@ -57,7 +57,7 @@ class Wheel(Component, SwitchedOutlet):
                 continue
             self.positions[k] = v
 
-        prefix = f"'{self.name} (sn: {self.serial_number})'"
+        prefix = f"{self.name} (SN: {self.serial_number})"
 
         devices = FWxCListDevices()
         found = [dev for dev in devices if dev[0] == self.serial_number]
@@ -336,23 +336,27 @@ class Wheel(Component, SwitchedOutlet):
 
     @property
     def operational(self) -> bool:
-        return self.detected
+        return self.power_switch.detected and self.detected
 
     @property
     def why_not_operational(self):
         ret = []
         label = f"filter-wheel '{self.name}':"
-        if not self.detected:
-            ret.append(f'{label} not detected')
+        if not self.power_switch.detected:
+            ret.append(f'{label} {self.power_switch} not detected')
+        elif self.is_off():
+            ret.append(f'{label} {self.power_switch}:{self.outlet_name} is OFF')
+        else:
+            if not self.detected:
+                ret.append(f'{label} device not detected')
         return ret
 
 
-def make_filter_wheels() -> List[Wheel]:
-    cfg = Config()
-
-    ret: List[Wheel] = list()
-    for wheel_name in list(cfg.get_specs()['wheels'].keys()):
-        ret.append(Wheel(wheel_name))
+def make_filter_wheels():
+    ret: List[Wheel] = []
+    for wheel_name in list(Config().get_specs()['wheels'].keys()):
+        wheel = Wheel(wheel_name)
+        ret.append(wheel)
     return ret
 
 
