@@ -51,11 +51,7 @@ class Deepspec(Component):
     def why_not_operational(self) -> List[str]:
         ret = []
         for band in self.cameras.keys():
-            cam = self.cameras[band]
-            if not cam.is_on():
-                ret.append(f"camera[{band}] is not ON")
-            if not cam.detected:
-                ret.append(f"camera[{band} is not detected")
+            ret += self.cameras[band].why_not_operational
         return ret
 
     @property

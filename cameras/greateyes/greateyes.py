@@ -7,7 +7,7 @@ from fastapi import Query
 
 from common.config import Config
 from common.dlipowerswitch import SwitchedOutlet, OutletDomain
-from common.spec import SpecCameraExposureSettings
+from common.spec import SpecCameraExposureSettings, DeepspecBands
 from common.filer import Filer
 import sys
 import os
@@ -15,7 +15,7 @@ import logging
 from common.utils import Component
 from common.mast_logging import init_log
 from common.networking import NetworkedDevice
-from typing import List
+from typing import List, get_args
 from common.utils import RepeatTimer, BASE_SPEC_PATH
 from enum import IntFlag, auto, Enum
 from datetime import timedelta, datetime
@@ -173,12 +173,11 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.acquisition: str | None = None
         boot_delay = self.conf['boot_delay'] if 'boot_delay' in self.conf else 20
 
-        self._detected = False
         if not self.enabled:
             self.logger.error(f"camera {self.name} is disabled")
             return
 
-        if not self.switch.detected:
+        if not self.power_switch.detected:
             return
 
         if self.is_off():
@@ -196,7 +195,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         ret = ge.SetupCameraInterface(ge.connectionType_Ethernet, ipAddress=self.network.ipaddr, addr=self.ge_device)
         if not ret:
-            self.logger.error(f"Could not ge.SetupCameraInterface({ge.connectionType_Ethernet}, " +
+            self.logger.error(f"could not ge.SetupCameraInterface({ge.connectionType_Ethernet}, " +
                               f"ipaddress={self.network.ipaddr}, addr={self.ge_device}) (ret={ret}, msg='{ge.StatusMSG}')")
             return
         self.logger.debug(f"OK: ge.SetupCameraInterface({ge.connectionType_Ethernet}, " +
@@ -204,7 +203,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         ret = ge.ConnectToSingleCameraServer(addr=self.ge_device)
         if not ret:
-            self.logger.error(f"Could not ge.ConnectToSingleCameraServer(addr={self.ge_device}) " +
+            self.logger.error(f"could not ge.ConnectToSingleCameraServer(addr={self.ge_device}) " +
                               f"(ret={ret}, msg='{ge.StatusMSG}')")
             return
         self.logger.debug(f"OK: ge.ConnectToSingleCameraServer(addr={self.ge_device}) " +
@@ -214,7 +213,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         model = []
         ret = ge.ConnectCamera(model=model, addr=self.ge_device)
         if not ret:
-            self.logger.error(f"Could not ge.ConnectCamera(model=[], addr={self.ge_device}) (ret={ret}, " +
+            self.logger.error(f"could not ge.ConnectCamera(model=[], addr={self.ge_device}) (ret={ret}, " +
                               f"msg='{ge.StatusMSG}')")
             return
         self.logger.debug(f"OK: ge.ConnectCamera(model=[], addr={self.ge_device}) (ret={ret}, msg='{ge.StatusMSG}')")
@@ -330,26 +329,27 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
     def status(self) -> dict:
         ret = {
-            'id': self.band,
+            'band': self.band,
             'ipaddr': self.network.ipaddr,
             'detected': self.detected,
             'operational': self.operational,
             'why_not_operational': self.why_not_operational,
             'enabled': self.enabled,
-            'band': self.band,
         }
         if self.enabled and self.detected:
-            ret['powered'] = self.is_on()
-            ret['connected'] = self.connected
-            ret['addr'] = self.ge_device
-            ret['activities'] = self.activities
-            ret['activities_verbal'] = self.activities.__repr__()
-            ret['idle'] = self.is_idle()
-            ret['min_temp'] = self.min_temp
-            ret['max_temp'] = self.max_temp
-            ret['front_temperature'] = ge.TemperatureControl_GetTemperature(thermistor=0, addr=self.ge_device)
-            ret['back_temperature'] = ge.TemperatureControl_GetTemperature(thermistor=1, addr=self.ge_device)
-            ret['errors'] = self.errors
+            ret |= {
+             'powered': self.is_on(),
+             'connected': self.connected,
+             'addr': self.ge_device,
+             'activities': self.activities,
+             'activities_verbal': self.activities.__repr__(),
+             'idle': self.is_idle(),
+             'min_temp': self.min_temp,
+             'max_temp': self.max_temp,
+             'front_temperature': ge.TemperatureControl_GetTemperature(thermistor=0, addr=self.ge_device),
+             'back_temperature': ge.TemperatureControl_GetTemperature(thermistor=1, addr=self.ge_device),
+             'errors': self.errors,
+            }
         return ret
 
     def cool_down(self):
@@ -665,173 +665,30 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
     @property
     def operational(self) -> bool:
-        return self.switch.detected and self.detected and not \
+        return self.power_switch.detected and self.detected and not \
             (self.is_active(GreatEyesActivities.CoolingDown) or self.is_active(GreatEyesActivities.WarmingUp))
 
     @property
     def why_not_operational(self) -> List[str]:
         ret = []
         label = f"{self.name}:"
-        if not self.switch.detected:
-            ret.append(f"{label} power switch (at {self.switch.ipaddress}) not detected")
-        if not self.detected:
-            ret.append(f"{label} camera (at {self.network.ipaddr}) not detected")
-        if self.is_active(GreatEyesActivities.CoolingDown):
-            ret.append(f'{label} camera is CoolingDown')
-        if self.is_active(GreatEyesActivities.WarmingUp):
-            ret.append(f'{label} camera is WarmingUp')
+        if not self.power_switch.detected:
+            ret.append(f"{label} {self.power_switch} not detected")
+        elif self.is_off():
+            ret.append(f"{label} {self.power_switch}:{self.outlet_name} is OFF")
+        else:
+            if not self.detected:
+                ret.append(f"{label} camera (at {self.network.ipaddr}) not detected")
+            if self.is_active(GreatEyesActivities.CoolingDown):
+                ret.append(f'{label} camera is CoolingDown')
+            if self.is_active(GreatEyesActivities.WarmingUp):
+                ret.append(f'{label} camera is WarmingUp')
 
         return ret
-
-
-class DeepSpec(Component):
-
-    cameras = []
-    _instance = None
-
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super(DeepSpec, cls).__new__(cls)
-        return cls._instance
-
-    def __init__(self):
-        Component.__init__(self)
-        self.conf = Config().get_specs()['deepspec']
-        self.bands = [k for k in self.conf if k != 'common']
-        self.cameras = []
-        for band in self.bands:
-            camera = GreatEyes(band=band, conf=self.conf[band])
-            if camera.connected:
-                camera.startup()
-            self.cameras.append(camera)
-
-    @property
-    def detected(self) -> bool:
-        return all([cam.detected for cam in self.cameras])
-
-    @property
-    def connected(self) -> bool:
-        return all([cam.connected for cam in self.cameras])
-
-    @property
-    def was_shut_down(self):
-        return all([cam.was_shut_down for cam in self.cameras])
-
-    def status(self):
-        ret = {}
-        for cam in self.cameras:
-            band = cam.band
-            ret[band] = {
-                'detected': cam.detected,
-                'enabled': cam.enabled,
-            }
-            for k, v in cam.status().items():
-                ret[band][k] = v
-        return ret
-
-    def name(self) -> str:
-        return 'deepspec'
-
-    def startup(self):
-        for cam in self.cameras:
-            cam.startup()
-
-    def shutdown(self):
-        for cam in self.cameras:
-            cam.shutdown()
-
-    def abort(self):
-        pass
-
-    @property
-    def operational(self) -> bool:
-        return all([cam.detected for cam in self.cameras if not cam.detected])
-
-    @property
-    def why_not_operational(self) -> List[str]:
-        ret = []
-        for cam in self.cameras:
-            for reason in cam.why_not_operational:
-                ret.append(reason)
-        return ret
-
-
-def make_deepspec_cameras() -> List[GreatEyes] | None:
-
-    conf = Config().get_specs()['deepspec']
-    configured_bands = [key for key in conf.keys() if key != 'common']
-    cams: List[GreatEyes | None] = []
-
-    for band in configured_bands:
-        cam = GreatEyes(band=band, conf=conf[band])
-        cams.append(cam)
-        if cam.connected:
-            cam.startup()
-    return cams
-
 
 #
 # FastAPI
 #
-
-deepspec = DeepSpec()
-
-
-def list_cameras():
-    return deepspec.cameras
-
-
-def status() -> dict:
-    return deepspec.status()
-
-
-def bands() -> List[str]:
-    return list(Band.__members__.keys())
-
-
-def startup():
-    for camera in deepspec.cameras:
-        threading.Thread(
-                name=f"camera-{camera.band}-startup",
-                target=camera.startup,
-            ).start()
-
-
-def shutdown():
-    for camera in deepspec.cameras:
-        threading.Thread(
-                name=f"camera-{camera.band}-shutdown",
-                target=camera.shutdown,
-            ).start()
-
-
-def abort():
-    for camera in deepspec.cameras:
-        camera.abort()
-
-
-def set_params(
-        readout_amplifier: readout_amplifiers = Query(description='', default=defaults['readout-amplifiers']),
-        y_binning: binnings = Query(description='Vertical binning', default=defaults['y-binning']),
-        gain: gains = Query(description='Gain', default=defaults['gain']),
-        bytes_per_pixel: bytes_per_pixels = Query(description='Bytes per pixel', default=defaults['bytes-per-pixel']),
-        readout_speed: readout_speeds = Query(description='Readout speed', default=defaults['readout-speed']),
-        save: bool = Query(description='Save these values to the configuration file?', default=False)
-):
-    for camera in deepspec.cameras:
-        threading.Thread(
-            name=f"camera-{camera.band}-set-parameters",
-            target=camera.set_parameters,
-            args=[
-                getattr(ReadoutAmplifiers, readout_amplifier.name),
-                getattr(Binning, y_binning.name),
-                getattr(Gain, gain.name),
-                getattr(BytesPerPixel, bytes_per_pixel.name),
-                getattr(ReadoutSpeed, readout_speed.name),
-                save,
-            ]
-        ).start()
-
 
 def set_camera_params(band: Band,
                       readout_amplifier: readout_amplifiers = Query(description='',
@@ -844,7 +701,7 @@ def set_camera_params(band: Band,
                                                             default=defaults['readout-speed'].name),
                       save: bool = Query(description='Save these values to the configuration file?', default=False)
                       ):
-    found = [cam for cam in deepspec.cameras if cam.band == band]
+    found = [cam for cam in cameras if cam.band == band]
     if len(found) == 0:
         return {'Error': f"No camera for band '{band}'"}
 
@@ -863,46 +720,28 @@ def set_camera_params(band: Band,
     ).start()
 
 
-def expose(seconds: float):
-    for camera in deepspec.cameras:
-        threading.Thread(
-            name=f"camera-{camera.band}-exposure-{seconds}sec",
-            target=camera.expose,
-            args=[seconds]
-        ).start()
+def camera_expose(band: DeepspecBands, seconds: float):
 
-
-def camera_expose(band: Band, seconds: float):
-    found = [cam for cam in deepspec.cameras if cam.band == band]
-    if len(found) == 0:
-        return {'Error': f"No camera for band '{band}'"}
-
-    camera = found[0]
+    camera = [cam for cam in cameras if cam.band == band][0]
     threading.Thread(
         name=f"camera-{camera.band}-exposure-{seconds}sec",
         target=camera.expose,
         args=[seconds]
     ).start()
 
+cameras = []
+cfg = Config().get_specs()['deepspec']
+for _band in get_args(DeepspecBands):
+    cameras.append(GreatEyes(band=_band, conf=cfg[_band]))
 
-base_path = BASE_SPEC_PATH + 'deepspec/cameras/'
-tag = 'DeepSpec Cameras'
+base_path = BASE_SPEC_PATH + 'deepspec/camera/'
+tag = 'Deepspec Cameras'
 router = fastapi.APIRouter()
 
-router.add_api_route(base_path + 'list', tags=[tag], endpoint=list_cameras)
-router.add_api_route(base_path + 'bands', tags=[tag], endpoint=bands)
-router.add_api_route(base_path + 'status', tags=[tag], endpoint=status)
-router.add_api_route(base_path + 'set_params', tags=[tag], endpoint=set_params)
 router.add_api_route(base_path + 'set_camera_params', tags=[tag], endpoint=set_camera_params)
-router.add_api_route(base_path + 'expose', tags=[tag], endpoint=expose)
 router.add_api_route(base_path + 'camera_expose', tags=[tag], endpoint=camera_expose)
-router.add_api_route(base_path + 'startup', tags=[tag], endpoint=startup)
-router.add_api_route(base_path + 'shutdown', tags=[tag], endpoint=shutdown)
-router.add_api_route(base_path + 'abort', tags=[tag], endpoint=abort)
 
 if __name__ == "__main__":
-    cameras: List[GreatEyes] = make_deepspec_cameras()
-
-    for c in deepspec.cameras:
+    for c in cameras:
         print(c)
         c.power_off()
