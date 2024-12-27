@@ -5,7 +5,7 @@ import time
 from typing import List
 
 import win32event
-from sdk.pyAndorSDK2.pyAndorSDK2 import atmcd, atmcd_codes, atmcd_errors, atmcd_capabilities
+from pyAndorSDK2 import atmcd, atmcd_codes, atmcd_errors, atmcd_capabilities
 import logging
 
 from common.mast_logging import init_log
@@ -156,7 +156,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.activate_cooler: bool | None = None
         self.exposure: float | None = None
 
-        if not self.switch.detected:
+        if not self.power_switch.detected:
             return
 
         self.sdk = atmcd()
@@ -252,19 +252,24 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
     @property
     def operational(self) -> bool:
-        return (self.switch.detected and self.detected and not
+        return (self.power_switch.detected and self.detected and not
             (self.is_active(NewtonActivities.CoolingDown) or self.is_active(NewtonActivities.WarmingUp)))
 
     @property
     def why_not_operational(self) -> List[str]:
         ret = []
         label = 'highspec:'
-        if not self.detected:
-            ret.append(f"{label} camera not detected")
-        if self.is_active(NewtonActivities.CoolingDown):
-            ret.append(f"{label} camera is CoolingDown")
-        if self.is_active(NewtonActivities.WarmingUp):
-            ret.append(f"{label} camera is WarmingUp")
+        if not self.power_switch.detected:
+            ret.append(f"{label} {self.power_switch} not detected")
+        elif self.is_off():
+            ret.append(f"{label} {self.power_switch}:{self.outlet_name} is OFF")
+        else:
+            if not self.detected:
+                ret.append(f"{label} camera not detected")
+            if self.is_active(NewtonActivities.CoolingDown):
+                ret.append(f"{label} camera is CoolingDown")
+            if self.is_active(NewtonActivities.WarmingUp):
+                ret.append(f"{label} camera is WarmingUp")
         return ret
 
     def event_handler(self, event_handle):
@@ -638,7 +643,7 @@ def show_camera():
         'cooler_mode': camera.cooler_mode,
 
         'power': {
-            'switch': camera.switch.ipaddr,
+            'switch': camera.power_switch.ipaddr,
             'outlet': camera.outlet_name,
             'state':  'ON' if camera.is_on() else 'OFF',
         },
@@ -694,7 +699,7 @@ router = APIRouter()
 camera = NewtonEMCCD()
 
 router.add_api_route(base_path, tags=[tag], endpoint=show_camera)
-router.add_api_route(base_path + '/expose', tags=[tag], endpoint=camera.expose)
+# router.add_api_route(base_path + '/expose', tags=[tag], endpoint=camera.expose)
 router.add_api_route(base_path + '/status', tags=[tag], endpoint=camera.status)
 router.add_api_route(base_path + '/set-modes', tags=[tag], endpoint=set_camera_modes)
 router.add_api_route(base_path + '/startup', tags=[tag], endpoint=camera.startup)
