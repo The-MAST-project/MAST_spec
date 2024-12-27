@@ -1,6 +1,6 @@
 import zaber_motion
 import zaber_motion.ascii
-from common.utils import Component, BASE_SPEC_PATH
+from common.utils import Component, BASE_SPEC_PATH, CanonicalResponse
 from common.mast_logging import init_log
 import logging
 from enum import IntFlag, auto, Enum
@@ -9,7 +9,7 @@ from typing import List, get_args
 from common.config import Config
 from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 from common.networking import NetworkedDevice
-from common.spec import GratingsStageLiteral, CameraStageLiteral, StageLiteral
+from common.spec import StageLiteral, StageNames
 
 logger = logging.getLogger('mast.spec.stage')
 init_log(logger)
@@ -37,7 +37,11 @@ class StageStatus:
 
 class Stage(Component):
 
-    def __init__(self, name: str, presets_literal: GratingsStageLiteral | CameraStageLiteral, controller=None):
+    def __init__(self,
+                 name: str,
+                 peripheral: str,
+                 controller: zaber_motion.ascii.Device,
+                 ):
         Component.__init__(self)
 
         self._was_shut_down = False
@@ -48,19 +52,22 @@ class Stage(Component):
             return
 
         self.name = name
-        self.controller = controller
-        self.presets_literal = presets_literal
+        self.controller: zaber_motion.ascii.Device = controller
         self.logger = logging.getLogger(f"mast.spec.stage.{self.name}")
         init_log(self.logger)
 
-        try:
-            self.axis_id = int(self.conf['axis_id'])
-        except ValueError:
-            raise f"Bad or missing configuration item '[stages.{self.name}] -> axis_id"
+        self._detected = False
+        self.axis: zaber_motion.ascii.Axis | None = None
+        for i in range(self.controller.axis_count):
+            axis: zaber_motion.ascii.Axis = self.controller.get_axis(i+1) # axes are numbered from 1
+            if axis.axis_type == zaber_motion.ascii.AxisType.UNKNOWN:
+                continue
+            if axis.peripheral_name.startswith(peripheral):
+                self.axis = axis
+                self._detected = True
+                break
 
-        self.presets = dict()
-        for key in self.conf['presets'].keys():
-            self.presets[key] = self.conf['presets'][key]
+        self.presets = self.conf['presets']
 
         self.startup_position: float | None = None
         if 'startup' in self.conf:
@@ -73,29 +80,15 @@ class Stage(Component):
         self.target: float | None = None
         self.target_units: zaber_motion.Units | None = None
 
-        self._detected = False
-        self.axis = None
-        if self.controller and self.controller.detected:
-            try:
-                self.axis = self.controller.device.get_axis(self.axis_id)
-                if self.axis.axis_type == zaber_motion.ascii.AxisType.UNKNOWN:
-                    self.logger.info(f"No stage name='{self.name}', axis_id={self.axis_id}")
-                    self.axis = None
-                    return
-                self._detected = True
+        if self.detected:
+            self.logger.info(f"found '{self.name}' stage, axis_number={self.axis.axis_number}, type={self.axis.axis_type}, "
+                         f"peripheral='{self.axis.identity.peripheral_name}'")
 
-                t = str(self.axis.axis_type).replace('AxisType.', '')
-                self.logger.info(f"Found stage name='{self.name}', axis_id={self.axis.axis_number}, type={t}, "
-                                 f"peripheral='{self.axis.identity.peripheral_name}'")
-
-                if self.axis.is_parked():
-                    self.axis.unpark()
-                elif not self.axis.is_homed():
-                    self.start_activity(StageActivities.Homing)
-                    self.axis.home(wait_until_idle=False)
-
-            except Exception as ex:
-                self.logger.error(f"Exception: {ex}")
+            if self.axis.is_parked():
+                self.axis.unpark()
+            elif not self.axis.is_homed():
+                self.start_activity(StageActivities.Homing)
+                self.axis.home(wait_until_idle=False)
 
 
     @property
@@ -110,12 +103,6 @@ class Stage(Component):
     def was_shut_down(self) -> bool:
         return self._was_shut_down
 
-    def can_move(self):
-        ret = []
-        if not self.detected:
-            ret.append('not detected')
-        return ret
-
     def name(self) -> str:
         return self.name
 
@@ -128,13 +115,17 @@ class Stage(Component):
         :param microns:
         :return:
         """
+        if not self.detected:
+            return CanonicalResponse(errors=[f"stage '{self.name}' not detected"])
+
         current = self.axis.get_position(unit=zaber_motion.Units.LENGTH_MICROMETRES)
         return abs(current - microns) <= 1
 
     def at_preset(self, preset: StageLiteral) -> bool:
-        if not self.axis or self.axis.is_busy():
-            return False
-        if preset not in get_args(self.presets_literal):
+        if not self.detected:
+            return CanonicalResponse(errors=[f"stage '{self.name}' not detected"])
+
+        if preset not in self.presets:
             return False
         return self.close_enough(self.presets[preset])
 
@@ -166,8 +157,8 @@ class Stage(Component):
             self.logger.error(f"Got unknown event: {e}")
 
     def move_relative(self, amount: float, unit: zaber_motion.Units):
-        if self.axis is None:
-            return
+        if not self.detected:
+            return CanonicalResponse(errors=[f"stage '{self.name}' not detected"])
         self.start_activity(StageActivities.Moving)
         try:
             self.axis.move_relative(amount, unit=unit)
@@ -176,8 +167,8 @@ class Stage(Component):
             self.logger.error(f"Exception {ex}")
 
     def move_absolute(self, position: float, unit: zaber_motion.Units):
-        if self.axis is None:
-            return
+        if not self.detected:
+            return CanonicalResponse(errors=[f"stage '{self.name}' not detected"])
         self.start_activity(StageActivities.Moving)
         try:
             self.axis.move_absolute(position, unit=unit)
@@ -186,10 +177,10 @@ class Stage(Component):
             self.logger.error(f"Exception {ex}")
 
     def move_to_preset(self, preset: StageLiteral):
-        if self.axis is None:
-            return
-        if preset not in get_args(self.presets_literal):
-            raise ValueError(f"Bad preset '{preset}. Valid presets are; {",".join(get_args(self.presets_literal))}")
+        if not self.detected:
+            return CanonicalResponse(errors=[f"stage '{self.name}' not detected"])
+        if preset not in get_args(self.presets):
+            raise ValueError(f"Bad preset '{preset}. Valid presets are; {",".join(self.presets.keys())}")
 
         self.target = self.presets[preset]
         self.target_units = zaber_motion.Units.LENGTH_MICROMETRES
@@ -202,10 +193,12 @@ class Stage(Component):
 
     @property
     def is_moving(self) -> bool:
+        if not self.detected:
+            return False
         return self.is_active(StageActivities.Moving)
 
     def shutdown(self):
-        if self.axis is None:
+        if not self.detected:
             return
         if self.shutdown_position and not self.close_enough(self.shutdown_position):
             self.start_activity(StageActivities.ShuttingDown)
@@ -213,7 +206,7 @@ class Stage(Component):
         self._was_shut_down = True
 
     def startup(self):
-        if self.axis is None:
+        if not self.detected:
             return
         if self.axis.is_parked():
             self.axis.unpark()
@@ -227,14 +220,14 @@ class Stage(Component):
         self._was_shut_down = False
 
     def abort(self):
-        if self.axis is None:
+        if not self.detected:
             return
         self.start_activity(StageActivities.Aborting)
         self.axis.stop(wait_until_idle=False)
 
     @property
     def position(self) -> float | None:
-        if self.axis is None:
+        if not self.detected:
             return float('nan')
         return self.axis.get_position()
 
@@ -244,10 +237,15 @@ class Stage(Component):
             'presets': self.presets,
         }
         if self.detected:
-            ret['activities'] = self.activities
-            ret['activities_verbal'] = self.activities.__repr__()
-            ret['at_preset'] = [preset for preset in self.presets if self.close_enough(preset)]
-            ret['position'] = self.position
+            at_preset = [preset for preset in self.presets if self.at_preset(preset)]
+            at_preset = at_preset[0] if at_preset else None
+
+            ret |= {
+                'activities': self.activities,
+                'activities_verbal': self.activities.__repr__(),
+                'at_preset': at_preset,
+                'position': self.position,
+            }
 
         return ret
 
@@ -285,54 +283,66 @@ class Controller(SwitchedOutlet, NetworkedDevice):
         NetworkedDevice.__init__(self, self.conf)
 
         self.device = None
-        if self.is_on():
-            self.device: zaber_motion.ascii.Device = self.connect()
-        if self.device:
-            self.detected = True
+        if not self.is_on():
+            raise Exception(f"the controller is not powered ON ipaddr={self.power_switch.ipaddr}, outlet={self.outlet_name}")
 
-        for stage_name in [key for key in self.conf.keys() if key != 'controller']:
-            presets_literal = CameraStageLiteral if stage_name == 'camera' else GratingsStageLiteral
-            self.stages.append(Stage(name=stage_name, presets_literal=presets_literal, controller=self))
+        # TODO check why is_on is True and not False?
+        self.device: zaber_motion.ascii.Device | None = self.connect()
+        if not self.device:
+            raise Exception(f"zaber controller not detected")
+        if self.device.axis_count < 3:
+            raise Exception(f"the detected stage controller has too few axes ({self.device.axis_count} instead of 3)")
+        self.detected = True
+
+        self.fiber_stage = Stage(name='fiber', peripheral='???', controller=self.device)
+        self.camera_stage = Stage(name='camera', peripheral='LRM025', controller=self.device)
+        self.gratings_stage = Stage(name='gratings', peripheral='LRT0500', controller=self.device)
+
+        self.stages: List[Stage] = [self.fiber_stage, self.camera_stage, self.gratings_stage]
+
 
     @staticmethod
     def on_error(arg):
         logger.error(f"on_error: {arg}")
 
-    def on_completion(self, e: zaber_motion.ascii.AlertEvent):
+    def on_completion(self, event: zaber_motion.ascii.AlertEvent):
         for st in self.stages:
-            if st.axis_id == e.axis_number:
-                st.on_event(e)
+            if st.detected and st.axis.axis_number == event.axis_number:
+                st.on_event(event)
                 return
 
-    def on_next(self, e: zaber_motion.ascii.AlertEvent):
+    def on_next(self, event: zaber_motion.ascii.AlertEvent):
         for st in self.stages:
-            if st.axis_id == e.axis_number:
-                st.on_event(e)
+            if st.detected and st.axis.axis_number == event.axis_number:
+                st.on_event(event)
                 return
 
-    def connect(self) -> zaber_motion.ascii.Device:
-        dev: zaber_motion.ascii.Device
+    def connect(self) -> zaber_motion.ascii.Device | None:
+        ret: zaber_motion.ascii.Device
 
-        conn = zaber_motion.ascii.Connection.open_tcp(host_name=self.network.address)
+        try:
+            conn = zaber_motion.ascii.Connection.open_tcp(host_name=self.network.ipaddr)
+        except zaber_motion.ConnectionFailedException as ex:
+            logger.error(f"cannot connect to '{self.network.ipaddr}' (error: {ex})")
+            self.detected = False
+            return None
+
         devices = conn.detect_devices(identify_devices=True)
         if len(devices) < 1:
-            raise f"No Zaber devices (controllers)"
+            raise Exception(f"no Zaber controllers")
 
         conn.enable_alerts()
         conn.alert.subscribe(on_error=self.on_error, on_completed=self.on_completion, on_next=self.on_next)
-        dev = conn.get_device(1)
-        dev.identify()
+        ret = conn.get_device(1)
+        ret.identify()
 
-        return dev
+        return ret
 
-
-zaber_controller: Controller = Controller()
-
-stages_dict = {}
-for stage in zaber_controller.stages:
-    stages_dict[stage.name] = stage.label
-
-StageNames = Enum('StageNames', stages_dict)
+zaber_controller: Controller | None = None
+try:
+    zaber_controller = Controller()
+except zaber_motion.ConnectionFailedException as e:
+    logger.error(f"cannot connect to Zaber controller (error: {e})")
 
 units_dict = {}
 reverse_units_dict = {}
@@ -345,129 +355,68 @@ UnitNames = Enum('UnitNames', units_dict)
 
 
 # FastApi stuff
-def list_stages():
-    response = {}
-    for s in zaber_controller.stages:
-        response[s.name] = {
-            'device': f"{s.axis}",
-            'axis_id': s.axis_id,
-            'presets': s.presets,
-            'startup': s.startup_position,
-            'shutdown': s.shutdown_position,
-        }
-    return response
-
-
-def stage_by_name(name: str) -> Stage | None:
-    found = [s for s in zaber_controller.stages if s.name == name]
-    if len(found) == 1:
-        return found[0]
-    else:
-        return None
-
-
-def get_position(stage_name: StageNames):
-    st = stage_by_name(stage_name.value)
-    if st:
-        return st.position
-    else:
-        return {
-            'Error': f"No physical stage for '{stage_name.value}'"
-        }
+def get_position(stage_name: StageNames) -> float:
+    stage = [s for s in zaber_controller.stages if s.name == stage_name][0]
+    if not stage.detected:
+        return CanonicalResponse(errors=[f"stage '{stage_name}' not detected"])
+    return stage.position
 
 
 def get_status(stage_name: StageNames):
-    st = stage_by_name(stage_name.value)
-    if st:
-        return st.status()
-    else:
-        return {
-            'Error': f"No physical stage for '{stage_name}'"
-        }
+    stage = [s for s in zaber_controller.stages if s.name == stage_name][0]
+    if not stage.detected:
+        return CanonicalResponse(value={'detected': False})
+    return stage.status()
 
 
 def move_absolute(stage_name: StageNames, position: float, units: UnitNames):
-    st = stage_by_name(stage_name.value)
-    if st:
-        st.move_absolute(position, reverse_units_dict[units.value])
-    else:
-        return {
-            'Error': f"No physical stage for '{stage_name}'"
-        }
+    stage = [s for s in zaber_controller.stages if s.name == stage_name][0]
+    if not stage.detected:
+        return CanonicalResponse(errors=[f"stage '{stage_name}' not detected"])
+    stage.move_absolute(position, reverse_units_dict[units.value])
 
 
 def move_relative(stage_name: StageNames, position: float, units: UnitNames):
-    st = stage_by_name(stage_name.value)
-    if st:
-        st.move_relative(position, reverse_units_dict[units.value])
-    else:
-        return {
-            'Error': f"No physical stage for '{stage_name}'"
-        }
+    stage = [s for s in zaber_controller.stages if s.name == stage_name][0]
+    if not stage.detected:
+        return CanonicalResponse(errors=[f"stage '{stage_name}' not detected"])
+    stage.move_relative(position, reverse_units_dict[units.value])
 
 
-PresetNames = Enum('PresetNames', {
-    'Ca': 'Ca',
-    'Mg': 'Mg',
-    'Halpha': 'Halpha',
-    'DeepSpec': 'DeepSpec',
-    'HighSpec': 'HighSpec'
-})
+def move_to_preset(stage_name: StageNames, preset: StageLiteral):
+    stage = [s for s in zaber_controller.stages if s.name == stage_name][0]
+    if not stage.detected:
+        return CanonicalResponse(errors=[f"stage '{stage_name}' not detected"])
+    if preset not in stage.presets:
+        return CanonicalResponse(errors=[f"bad preset '{preset}'. must be one of {stage.presets.keys()}"])
 
-
-def move_to_preset(stage_name: StageNames, preset: PresetNames):
-    st = stage_by_name(stage_name.value)
-    if st and st.axis:
-        if (preset.value == 'HighSpec' or preset.value == 'DeepSpec') and st.name != 'fiber':
-            return {
-                'Error': f"Only the 'fiber' stage has presets named 'DeepSpec' or 'HighSpec'"
-            }
-        if (preset.value == 'Ca' or preset.value == 'Mg' or preset.value == 'Halpha') and st.name == 'fiber':
-            return {
-                'Error': f"The 'fiber' stage has presets named 'DeepSpec' or 'HighSpec'"
-            }
-
-        st.move_to_preset(preset.value)
-    else:
-        return {
-            'Error': f"No physical stage for '{stage_name}'"
-        }
+    stage.move_to_preset(preset.value)
 
 
 def startup(stage_name: StageNames):
-    st = stage_by_name(stage_name.value)
-    if st.axis is not None:
-        st.startup()
-    else:
-        return {
-            'Error': f"No physical stage for '{stage_name}'"
-        }
+    stage = [s for s in zaber_controller.stages if s.name == stage_name][0]
+    if not stage.detected:
+        return CanonicalResponse(errors=[f"stage '{stage_name}' not detected"])
+    stage.startup()
 
 
 def shutdown(stage_name: StageNames):
-    st = stage_by_name(stage_name.value)
-    if st.axis is not None:
-        st.shutdown()
-    else:
-        return {
-            'Error': f"No physical stage for '{stage_name}'"
-        }
+    stage = [s for s in zaber_controller.stages if s.name == stage_name][0]
+    if not stage.detected:
+        return CanonicalResponse(errors=[f"stage '{stage_name}' not detected"])
+    stage.shutdown()
 
 
 def abort(stage_name: StageNames):
-    st = stage_by_name(stage_name.value)
-    if st.axis is not None:
-        st.abort()
-    else:
-        return {
-            'Error': f"No physical stage for '{stage_name}'"
-        }
+    stage = [s for s in zaber_controller.stages if s.name == stage_name][0]
+    if not stage.detected:
+        return CanonicalResponse(errors=[f"stage '{stage_name}' not detected"])
+    stage.abort()
 
 base_path = BASE_SPEC_PATH + 'stages'
 tag = 'Stages'
 router = APIRouter()
 
-router.add_api_route(base_path, tags=[tag], endpoint=list_stages)
 router.add_api_route(base_path + '/position', tags=[tag], endpoint=get_position)
 router.add_api_route(base_path + '/status', tags=[tag], endpoint=get_status)
 router.add_api_route(base_path + '/move_absolute', tags=[tag], endpoint=move_absolute)
