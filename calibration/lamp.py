@@ -18,7 +18,7 @@ class CalibrationLamp(Component, SwitchedOutlet):
         self._was_shut_down = False
 
     def __repr__(self):
-        return f"<Lamp name={self.name}>"
+        return f"<Lamp>(name={self.name})"
 
     @property
     def detected(self) -> bool:
