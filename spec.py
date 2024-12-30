@@ -1,7 +1,7 @@
 import threading
 
 import cooling.chiller
-from common.utils import BASE_SPEC_PATH, Component, CanonicalResponse, CanonicalResponse_Ok
+from common.utils import BASE_SPEC_PATH, Component, CanonicalResponse, CanonicalResponse_Ok, function_name
 from common.config import Config
 from common.mast_logging import init_log
 from typing import List, Dict, Optional
@@ -48,9 +48,9 @@ class Spec(Component):
         self.highspec: NewtonEMCCD = highspec_camera
 
         # convenience fields for the stages
-        self.fiber_stage = stage_controller.fiber_stage
-        self.camera_stage = stage_controller.camera_stage
-        self.gratings_stage = stage_controller.gratings_stage
+        self.fiber_stage = stage_controller.fiber_stage if hasattr(stage_controller, 'fiber_stage') else None
+        self.camera_stage = stage_controller.camera_stage if hasattr(stage_controller, 'camera_stage') else None
+        self.gratings_stage = stage_controller.gratings_stage if hasattr(stage_controller, 'gratings_stage') else None
 
         self.wheels: List[Wheel] = filter_wheeler.wheels
         self.thar_wheel = [w for w in self.wheels if w.name == 'ThAr'][0]   # convenience wheel field
@@ -66,8 +66,8 @@ class Spec(Component):
             'chiller': self.chiller,
             'power_switches': self.power_switches,
             'lamps': self.lamps,
-            'deepspec': self.deepspec,
-            'highspec': self.highspec,
+            'deepspec': self.deepspec if hasattr(self, 'deepspec') else None,
+            'highspec': self.highspec if hasattr(self, 'highspec') else None,
             'stages': stage_controller.stages,
             'wheels': self.wheels,
         }
@@ -106,7 +106,7 @@ class Spec(Component):
         ret = self.traverse_components_and_return('status')
         ret |= {
             'activities': self.activities,
-            'activities_verbal': self.activities.__repr__(),
+            'activities_verbal': 'Idle' if self.activities == 0 else self.activities.__repr__(),
             'operational': self.operational,
             'why_not_operational': self.why_not_operational,
         }
@@ -124,17 +124,23 @@ class Spec(Component):
         self.traverse_components_and_call('abort')
 
     def traverse_components_and_call(self, method_name: str):
+        op = function_name()
+
         for key, component in self.components_dict.items():
             if isinstance(component, list):
                 for comp in component:
                     if comp:
                         getattr(comp, method_name)()
                     else:
-                        self.logger.error(f"component is None")
+                        self.logger.error(f"{op}: {key=}, {method_name=} - component is None")
+            elif component is None:
+                self.logger.error(f"{op}: {key=}, {method_name=} - component is None")
             else:
                 getattr(component, method_name)()
 
     def traverse_components_and_return(self, method_name: str) -> dict:
+        op = function_name()
+
         ret = {}
         for key, component in self.components_dict.items():
             if isinstance(component, list):
@@ -151,8 +157,10 @@ class Spec(Component):
                     except Exception as e:
                         self.logger.error(f"exception: {e} ({comp=}, {method_name=}")
                         pass
-            else:
+            elif component is not None:
                 ret[key] = getattr(component, method_name)()
+            else:
+                self.logger.error(f"{op}: {key=}, {method_name=} - component is None")
         return ret
 
     @property
@@ -163,6 +171,8 @@ class Spec(Component):
     def why_not_operational(self) -> List[str]:
         ret = []
         for comp in self.components:
+            if comp is None:
+                continue
             for reason in comp.why_not_operational:
                 ret.append(reason)
         return ret
