@@ -157,7 +157,7 @@ class Wheel(Component, SwitchedOutlet):
 
         self.positions = dict()
         for i in range(1, 7):
-            self.positions[i] = self.conf[str(i)]
+            self.positions[i] = self.conf['filters'][str(i)]
         if 'default' in self.conf:
             self.default_position = self.conf["default"]
         else:
@@ -240,7 +240,7 @@ class Wheel(Component, SwitchedOutlet):
             ret['serial_number'] = self.serial_number
             ret['id'] = self.id
             ret['activities'] = self.activities
-            ret['activities_verbal'] = self.activities.__repr__()
+            ret['activities_verbal'] = 'Idle' if self.activities == 0 else self.activities.__repr__()
             ret['idle'] = self.is_idle()
             ret['position'] = self.position
             ret['speed_mode'] = self.speed_mode
@@ -327,8 +327,8 @@ class Wheel(Component, SwitchedOutlet):
             if self.is_active(WheelActivities.ShuttingDown):
                 self.end_activity(WheelActivities.ShuttingDown)
 
-    # def __repr__(self):
-    #     return f"<Wheel-{self.id}>(name='{self.name}', serial='{self.serial_number}')"
+    def __repr__(self):
+        return f"<Wheel>(name='{self.name}')"
 
     @property
     def is_moving(self) -> bool:
