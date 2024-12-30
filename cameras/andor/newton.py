@@ -135,6 +135,8 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
         # NOTE: The power to this camera is switched on by spec.startup()
         SwitchedOutlet.__init__(self, outlet_name='Highspec', domain=OutletDomain.Spec)
+        if self.power_switch.detected and not self.is_on():
+            self.power_on()
 
         self._initialized = False
         self.logger = logging.getLogger('mast.spec.highspec.camera')
@@ -161,7 +163,11 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
         self.sdk = atmcd()
 
-        ret = self.sdk.Initialize(os.path.join(os.path.dirname(__file__), 'sdk', 'pyAndorSDK2', 'pyAndorSDK2'))
+        print(f"{os.path.realpath(os.curdir)=}")
+        sdk_dir = os.path.join(os.path.dirname(__file__), 'sdk', 'pyAndorSDK2', 'pyAndorSDK2', 'libs')
+        print(f"{sdk_dir=}")
+        ret = self.sdk.Initialize(sdk_dir)
+        # ret = self.sdk.Initialize('C:\\Users\\mast\\PycharmProjects\\MAST_spec\\.venv\\Lib\\site-packages\\pyAndorSDK2\\libs')
         if atmcd_errors.Error_Codes.DRV_SUCCESS != ret:
             self.logger.error(f"Could not initialize SDK (code={error_code(ret)})")
             return
@@ -600,7 +606,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         }
         if self.detected:
             ret['activities'] = self.activities
-            ret['activities_verbal'] = self.activities.__repr__()
+            ret['activities_verbal'] = 'Idle' if self.activities == 0 else self.activities.__repr__()
             ret['idle'] = self.is_idle()
             ret['temperature'] = self.get_temperature()
 
