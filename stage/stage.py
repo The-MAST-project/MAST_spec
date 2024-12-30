@@ -1,6 +1,6 @@
 import zaber_motion
 import zaber_motion.ascii
-from common.utils import Component, BASE_SPEC_PATH, CanonicalResponse
+from common.utils import Component, BASE_SPEC_PATH, CanonicalResponse, function_name
 from common.mast_logging import init_log
 import logging
 from enum import IntFlag, auto, Enum
@@ -242,7 +242,7 @@ class Stage(Component):
 
             ret |= {
                 'activities': self.activities,
-                'activities_verbal': self.activities.__repr__(),
+                'activities_verbal': 'Idle' if self.activities == 0 else self.activities.__repr__(),
                 'at_preset': at_preset,
                 'position': self.position,
             }
@@ -271,34 +271,43 @@ class Controller(SwitchedOutlet, NetworkedDevice):
         return cls._instance
 
     def __init__(self):
+        op = function_name()
+
         self.conf = Config().get_specs()['stage']['controller']
         self.stages: List = list()
 
         self.detected = False
 
         SwitchedOutlet.__init__(self, domain=OutletDomain.Spec, outlet_name='Stage')
-        if not self.is_on():
-            self.power_on()
+        powered = False
+        if self.power_switch.detected:
+            if not self.is_on():
+                self.power_on()
+            if not self.is_on():
+                logger.error(f"could not power ON outlet {self.power_switch}:{self.outlet_name}")
+                powered = False
+            else:
+                powered = True
+        else:
+            logger.error(f"power switch {self.power_switch} not detected")
+            powered = False
 
         NetworkedDevice.__init__(self, self.conf)
 
         self.device = None
-        if not self.is_on():
-            raise Exception(f"the controller is not powered ON ipaddr={self.power_switch.ipaddr}, outlet={self.outlet_name}")
+        if powered:
+            self.device: zaber_motion.ascii.Device | None = self.connect()
+            if not self.device:
+                logger.error(f"{op}: stage controller not detected")
+            elif self.device.axis_count < 3:
+                logger.error(f"{op}:stage controller has too few axes ({self.device.axis_count} instead of 3)")
+            else:
+                self.detected = True
+                self.fiber_stage = Stage(name='fiber', peripheral='???', controller=self.device)
+                self.camera_stage = Stage(name='camera', peripheral='LRM025', controller=self.device)
+                self.gratings_stage = Stage(name='gratings', peripheral='LRT0500', controller=self.device)
 
-        # TODO check why is_on is True and not False?
-        self.device: zaber_motion.ascii.Device | None = self.connect()
-        if not self.device:
-            raise Exception(f"zaber controller not detected")
-        if self.device.axis_count < 3:
-            raise Exception(f"the detected stage controller has too few axes ({self.device.axis_count} instead of 3)")
-        self.detected = True
-
-        self.fiber_stage = Stage(name='fiber', peripheral='???', controller=self.device)
-        self.camera_stage = Stage(name='camera', peripheral='LRM025', controller=self.device)
-        self.gratings_stage = Stage(name='gratings', peripheral='LRT0500', controller=self.device)
-
-        self.stages: List[Stage] = [self.fiber_stage, self.camera_stage, self.gratings_stage]
+                self.stages: List[Stage] = [self.fiber_stage, self.camera_stage, self.gratings_stage]
 
 
     @staticmethod
