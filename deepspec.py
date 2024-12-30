@@ -1,6 +1,6 @@
 from typing import List, Literal, Optional
 
-from cameras.greateyes.greateyes import GreatEyes, Band
+from cameras.greateyes.greateyes import GreatEyes, Band, cameras as greateyes_cameras
 
 from common.utils import Component, BASE_SPEC_PATH
 from common.config import Config
@@ -25,9 +25,7 @@ class Deepspec(Component):
         self.conf = Config().get_specs()['deepspec']
         Component.__init__(self)
 
-        self.cameras = {}
-        for band in Band.__members__.keys():
-            self.cameras[band] = GreatEyes(band, self.conf[band])
+        self.cameras = greateyes_cameras
 
         self._initialized = True
 
@@ -73,9 +71,10 @@ class Deepspec(Component):
     def status(self):
         return {
             'activities': self.activities,
-            'activities_verbal': self.activities.__repr__(),
+            'activities_verbal': 'Idle' if self.activities == 0 else self.activities.__repr__(),
             'operational': self.operational,
             'why_not_operational': self.why_not_operational,
+            'cameras': {key: self.cameras[key].status() for key in self.cameras}
         }
 
     def abort(self):
