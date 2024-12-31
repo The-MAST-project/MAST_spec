@@ -162,12 +162,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             return
 
         self.sdk = atmcd()
-
-        print(f"{os.path.realpath(os.curdir)=}")
-        sdk_dir = os.path.join(os.path.dirname(__file__), 'sdk', 'pyAndorSDK2', 'pyAndorSDK2', 'libs')
-        print(f"{sdk_dir=}")
-        ret = self.sdk.Initialize(sdk_dir)
-        # ret = self.sdk.Initialize('C:\\Users\\mast\\PycharmProjects\\MAST_spec\\.venv\\Lib\\site-packages\\pyAndorSDK2\\libs')
+        ret = self.sdk.Initialize("")
         if atmcd_errors.Error_Codes.DRV_SUCCESS != ret:
             self.logger.error(f"Could not initialize SDK (code={error_code(ret)})")
             return
@@ -258,7 +253,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
     @property
     def operational(self) -> bool:
-        return (self.power_switch.detected and self.detected and not
+        return (self.power_switch.detected and self.is_on() and self.detected and not
             (self.is_active(NewtonActivities.CoolingDown) or self.is_active(NewtonActivities.WarmingUp)))
 
     @property
@@ -367,7 +362,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             if 'set-point' in conf else defaults['set-point']
 
         self.cooler_mode = cooler_mode if cooler_mode is not None else conf['cooler-mode'] if 'cooler-mode' in conf \
-            else defaults['cooler-mode']
+            else defaults['cooler-mode'].value[0]
 
         self.gain = gain if gain is not None else conf['gain'] if 'gain' in conf else defaults['gain']
 
@@ -394,9 +389,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.activate_cooler = activate_cooler if activate_cooler is not None else conf['activate-cooler'] \
             if 'activate-cooler' in conf else defaults['activate-cooler']
 
-        ret = self.sdk.SetAcquisitionMode(self.acquisition_mode)
+        ret = self.sdk.SetAcquisitionMode(self.acquisition_mode.value)
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"Set acquisition mode to {atmcd_capabilities.acquistionModes(self.acquisition_mode)}")
+            self.logger.info(f"Set acquisition mode to {atmcd_capabilities.acquistionModes(self.acquisition_mode.value)}")
         else:
             self.logger.error(f"Could not set acquisition mode to SINGLE_SCAN (code={error_code(ret)})")
 
