@@ -39,7 +39,6 @@ class Stage(Component):
 
     def __init__(self,
                  name: str,
-                 peripheral: str,
                  controller: zaber_motion.ascii.Device,
                  ):
         Component.__init__(self)
@@ -53,6 +52,7 @@ class Stage(Component):
 
         self.name = name
         self.controller: zaber_motion.ascii.Device = controller
+        self.peripheral = self.conf['peripheral']   # The Zaber model name of this stage
         self.logger = logging.getLogger(f"mast.spec.stage.{self.name}")
         init_log(self.logger)
 
@@ -62,7 +62,7 @@ class Stage(Component):
             axis: zaber_motion.ascii.Axis = self.controller.get_axis(i+1) # axes are numbered from 1
             if axis.axis_type == zaber_motion.ascii.AxisType.UNKNOWN:
                 continue
-            if axis.peripheral_name.startswith(peripheral):
+            if axis.peripheral_name == self.peripheral:
                 self.axis = axis
                 self._detected = True
                 break
@@ -82,7 +82,7 @@ class Stage(Component):
 
         if self.detected:
             self.logger.info(f"found '{self.name}' stage, axis_number={self.axis.axis_number}, type={self.axis.axis_type}, "
-                         f"peripheral='{self.axis.identity.peripheral_name}'")
+                         f"peripheral='{self.peripheral}'")
 
             if self.axis.is_parked():
                 self.axis.unpark()
@@ -303,9 +303,9 @@ class Controller(SwitchedOutlet, NetworkedDevice):
                 logger.error(f"{op}:stage controller has too few axes ({self.device.axis_count} instead of 3)")
             else:
                 self.detected = True
-                self.fiber_stage = Stage(name='fiber', peripheral='???', controller=self.device)
-                self.camera_stage = Stage(name='camera', peripheral='LRM025', controller=self.device)
-                self.gratings_stage = Stage(name='gratings', peripheral='LRT0500', controller=self.device)
+                self.fiber_stage = Stage(name='fiber', controller=self.device)
+                self.camera_stage = Stage(name='camera', controller=self.device)
+                self.gratings_stage = Stage(name='gratings', controller=self.device)
 
                 self.stages: List[Stage] = [self.fiber_stage, self.camera_stage, self.gratings_stage]
 
