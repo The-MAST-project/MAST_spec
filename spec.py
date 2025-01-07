@@ -10,7 +10,10 @@ from common.spec import SpecId, SpecName
 import time
 import logging
 from common.dlipowerswitch import SwitchedOutlet, OutletDomain, DliPowerSwitch, PowerSwitchFactory
-from common.spec import SpecCameraExposureSettings, SpecActivities, SpecAcquisitionSettings, SpecGrating
+from common.spec import SpecExposureSettings, SpecActivities, SpecAcquisitionSettings, SpecGrating
+from common.activities import HighspecActivities
+import os
+from astropy.io import fits
 
 spec_conf = None
 if not spec_conf:
@@ -228,7 +231,7 @@ class Spec(Component):
                     time.sleep(.5)
                 self.end_activity(SpecActivities.Positioning)
 
-        exposure_settings = SpecCameraExposureSettings(
+        exposure_settings = SpecExposureSettings(
             exposure_duration=acquisition_settings.exposure_duration,
             number_of_exposures=acquisition_settings.number_of_exposures,
             x_binning=acquisition_settings.x_binning,

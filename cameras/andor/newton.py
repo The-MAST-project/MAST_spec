@@ -12,7 +12,7 @@ from common.mast_logging import init_log
 from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 from enum import IntFlag, auto, Enum
 from common.config import Config
-from common.spec import SpecCameraExposureSettings
+from common.spec import SpecExposureSettings
 from common.filer import Filer
 
 from fastapi import APIRouter, Query
@@ -192,7 +192,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.min_temp = min_temp
             self.max_temp = max_temp
 
-        self.latest_settings: SpecCameraExposureSettings | None = None
+        self.latest_settings: SpecExposureSettings | None = None
 
         self.logger.info(f"Found camera SN: {self.serial_number}, {self.x_pixels=}, {self.y_pixels=}")
         self.set_modes()  # initial values
@@ -493,10 +493,10 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                 self.is_active(NewtonActivities.ReadingOut) or
                 self.is_active(NewtonActivities.Saving))
 
-    def start_exposure(self, settings: SpecCameraExposureSettings):
-        self.expose(settings=settings)
+    def start_acquisition(self, settings: SpecExposureSettings):
+        self.acquire(settings=settings)
 
-    def expose(self, settings: SpecCameraExposureSettings):
+    def acquire(self, settings: SpecExposureSettings):
         """
         Starts an exposure.
         :param settings: exposure settings
@@ -717,7 +717,7 @@ if __name__ == '__main__':
         camera.logger.debug(f"waiting for NewtonActivities.StartingUp to end ...")
         time.sleep(5)
 
-    camera.expose(SpecCameraExposureSettings(exposure_duration=5, number_of_exposures=1, output_folder='c:/tmp'))
+    camera.acquire(SpecExposureSettings(exposure_duration=5, number_of_exposures=1, output_folder='c:/tmp'))
     while camera.is_active(NewtonActivities.Exposing):
         camera.logger.debug(f"waiting for NewtonActivities.Exposing to end ...")
         time.sleep(5)

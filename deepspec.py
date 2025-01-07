@@ -5,7 +5,7 @@ from cameras.greateyes.greateyes import GreatEyes, Band, cameras as greateyes_ca
 from common.utils import Component, BASE_SPEC_PATH
 from common.config import Config
 from common.activities import DeepspecActivities
-from common.spec import SpecCameraExposureSettings
+from common.spec import SpecExposureSettings, BinningLiteral
 from fastapi.routing import APIRouter
 
 class Deepspec(Component):
@@ -82,7 +82,7 @@ class Deepspec(Component):
             for band in self.cameras.keys():
                 self.cameras[band].abort()
 
-    def start_exposure(self, settings: SpecCameraExposureSettings):
+    def start_exposure(self, settings: SpecExposureSettings):
         for band in self.cameras.keys():
             self.cameras[band].expose(settings=settings)
 
@@ -99,7 +99,7 @@ class Deepspec(Component):
                x_binning: Allowed_binning_values,
                y_binning: Allowed_binning_values,
                number_of_exposures: Optional[int] = 1):
-        settings: SpecCameraExposureSettings = SpecCameraExposureSettings(
+        settings: SpecExposureSettings = SpecExposureSettings(
             exposure_duration=seconds,
             number_of_exposures=number_of_exposures,
             x_binning=x_binning,

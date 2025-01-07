@@ -7,7 +7,7 @@ from fastapi import Query
 
 from common.config import Config
 from common.dlipowerswitch import SwitchedOutlet, OutletDomain
-from common.spec import SpecCameraExposureSettings, DeepspecBands
+from common.spec import SpecExposureSettings, DeepspecBands
 from common.filer import Filer
 import sys
 import os
@@ -195,7 +195,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.model = None
         self.firmware_version = None
 
-        self.latest_settings: SpecCameraExposureSettings | None = None
+        self.latest_settings: SpecExposureSettings | None = None
 
         self.min_temp = None
         self.max_temp = None
@@ -489,7 +489,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if save:
             pass
 
-    def expose(self, settings: SpecCameraExposureSettings):
+    def expose(self, settings: SpecExposureSettings):
         # TODO: get acquisition folder as parameter
 
         self.errors = []
