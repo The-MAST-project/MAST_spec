@@ -1,4 +1,7 @@
 import threading
+from threading import Thread
+
+import zaber_motion.units
 
 import cooling.chiller
 from common.utils import BASE_SPEC_PATH, Component, CanonicalResponse, CanonicalResponse_Ok, function_name
@@ -7,6 +10,8 @@ from common.mast_logging import init_log
 from typing import List, Dict, Optional
 from fastapi import APIRouter
 from common.spec import SpecId, SpecName
+from common.filer import Filer
+from common.paths import PathMaker
 import time
 import logging
 from common.dlipowerswitch import SwitchedOutlet, OutletDomain, DliPowerSwitch, PowerSwitchFactory
@@ -31,6 +36,8 @@ from stage.stage import zaber_controller as stage_controller, Stage
 from filter_wheel.wheel import filter_wheeler, Wheel
 from calibration.lamp import CalibrationLamp
 
+logger = logging.getLogger('spec')
+init_log(logger)
 
 class Spec(Component):
     """
@@ -244,12 +251,12 @@ class Spec(Component):
         if acquisition_settings.number_of_exposures > 1:
             for i in range(acquisition_settings.number_of_exposures):
                 exposure_settings.number_in_sequence = i
-                working_spec.start_exposure(exposure_settings)
+                working_spec.start_acquisition(exposure_settings)
                 while working_spec.is_working:
                     time.sleep(2)
         else:
             exposure_settings.number_in_sequence = None
-            working_spec.start_exposure(exposure_settings)
+            working_spec.start_acquisition(exposure_settings)
             while working_spec.is_working:
                 time.sleep(2)
 
@@ -397,9 +404,9 @@ def expose(spec_name: SpecName,
 
     spec_id = SpecId[spec_name]
     spectrograph = spec.deepspec if spec_id == SpecId.Deepspec else spec.highspec
-    settings = SpecCameraExposureSettings(exposure_duration=duration, number_of_exposures=number_of_exposures,
-                                          x_binning=x_binning, y_binning=y_binning, output_folder=output_folder)
-    spectrograph.expose(settings)
+    settings = SpecExposureSettings(exposure_duration=duration, number_of_exposures=number_of_exposures,
+                                    x_binning=x_binning, y_binning=y_binning, output_folder=output_folder)
+    spectrograph.acquire(settings)
 
 
 def status():
@@ -414,6 +421,7 @@ def startup():
 
 def shutdown():
     spec.shutdown()
+
 
 base_path = BASE_SPEC_PATH
 tag = 'Spec'
