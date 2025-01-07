@@ -225,11 +225,10 @@ class Stage(Component):
         self.start_activity(StageActivities.Aborting)
         self.axis.stop(wait_until_idle=False)
 
-    @property
-    def position(self) -> float | None:
+    def position(self, unit: zaber_motion.units.Units = zaber_motion.units.Units.NATIVE) -> float | None:
         if not self.detected:
             return float('nan')
-        return self.axis.get_position()
+        return self.axis.get_position(unit=unit)
 
     def status(self):
         ret = {
@@ -364,11 +363,11 @@ UnitNames = Enum('UnitNames', units_dict)
 
 
 # FastApi stuff
-def get_position(stage_name: StageNames) -> float:
+def get_position(stage_name: StageNames, units: UnitNames) -> float:
     stage = [s for s in zaber_controller.stages if s.name == stage_name][0]
     if not stage.detected:
         return CanonicalResponse(errors=[f"stage '{stage_name}' not detected"])
-    return stage.position
+    return stage.position(unit=reverse_units_dict[units.value])
 
 
 def get_status(stage_name: StageNames):
