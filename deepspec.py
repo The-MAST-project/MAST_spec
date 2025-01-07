@@ -96,8 +96,8 @@ class Deepspec(Component):
     Allowed_binning_values = Literal[1, 2, 4]
     def expose(self,
                seconds: float,
-               x_binning: Allowed_binning_values,
-               y_binning: Allowed_binning_values,
+               x_binning: BinningLiteral,
+               y_binning: BinningLiteral,
                number_of_exposures: Optional[int] = 1):
         settings: SpecExposureSettings = SpecExposureSettings(
             exposure_duration=seconds,
