@@ -518,7 +518,14 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.logger.error(f"Could not set exposure time to {settings.exposure_duration=:.2f} (code={error_code(ret)})")
             return
 
-        # TODO: set binning from settings
+        ret = self.sdk.SetImage(settings.x_binning, settings.y_binning,
+                                1, self.x_pixels, 1, self.y_pixels)
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            self.logger.info(f"Set image to ({self.horizontal_binning=}, {self.vertical_binning=}, " +
+                             f"1, {self.x_pixels=}, 1, {self.y_pixels=})")
+        else:
+            self.logger.error(f"Could not set image (code={error_code(ret)})")
+            return
 
         ret = self.sdk.StartAcquisition()
         if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
