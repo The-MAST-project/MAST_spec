@@ -2,6 +2,7 @@ import datetime
 import os
 import threading
 import time
+from sys import settrace
 from typing import List
 
 import win32event
@@ -65,6 +66,7 @@ class NewtonActivities(IntFlag):
     ShuttingDown = auto()
     CoolingDown = auto()
     WarmingUp = auto()
+    Acquiring = auto()
     Exposing = auto()
     ReadingOut = auto()
     Saving = auto()
@@ -489,7 +491,8 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
     @property
     def is_working(self) -> bool:
-        return (self.is_active(NewtonActivities.Exposing) or
+        return (self.is_active(NewtonActivities.Acquiring) or
+                self.is_active(NewtonActivities.Exposing) or
                 self.is_active(NewtonActivities.ReadingOut) or
                 self.is_active(NewtonActivities.Saving))
 
@@ -527,6 +530,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.logger.error(f"Could not set image (code={error_code(ret)})")
             return
 
+        self.start_activity(NewtonActivities.Acquiring)
         ret = self.sdk.StartAcquisition()
         if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.logger.error(f"Could not StartAcquisition() (code={error_code(ret)})")
@@ -539,17 +543,22 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         if not self.detected:
             self.logger.error(f"camera not detected")
             return
-        filename = os.path.join(Filer().ram.root, self.latest_settings.output_folder, f"{self.name}")
+        file_name = self.latest_settings.image_file if self.latest_settings.image_file else self.name
+        path = os.path.join(Filer().ram.root, self.latest_settings.output_folder, file_name)
         if self.latest_settings.number_in_sequence:
-            filename += f"_{self.latest_settings.number_in_sequence}"
-        filename += ".fits"
-        ret = self.sdk.SaveAsFITS(filename, typ=1)
+            path += f"_{self.latest_settings.number_in_sequence:03}"
+        path += ".fits"
+        self.latest_settings.image_full_path = path
+        os.makedirs(os.path.dirname(self.latest_settings.image_full_path), exist_ok=True)
+        self.start_activity(NewtonActivities.ReadingOut)
+        ret = self.sdk.SaveAsFITS(self.latest_settings.image_full_path, typ=0)
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"saved {filename}")
-            Filer().move_ram_to_shared(filename)
+            self.logger.info(f"saved {self.latest_settings.image_full_path}")
+            # Filer().move_ram_to_shared(self.latest_settings.image_full_path)
         else:
-            self.logger.error(f"failed sdk.SaveAsFITS({filename}, typ=1) (ret={ret}")
-        self.end_activity(NewtonActivities.Exposing)
+            self.logger.error(f"failed sdk.SaveAsFITS({self.latest_settings.image_full_path}, typ=0) (ret={ret}")
+        self.end_activity(NewtonActivities.ReadingOut)
+        self.end_activity(NewtonActivities.Acquiring)
 
     def startup(self):
         if not self.detected:
