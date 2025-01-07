@@ -306,6 +306,83 @@ class Spec(Component):
         self.highspec_exposure_seconds = highspec_seconds
         self.deepspec_exposure_seconds = deepspec_seconds
 
+    def take_highspec_exposures_for_focus(self,
+                                          exposure_duration: float,
+                                          iterations: int,
+                                          x_binning: int,
+                                          y_binning: int,
+                                          stage_start_position_microns: float,
+                                          stage_microns_per_step: float):
+        """
+        ### Take Highspec exposures for focus training
+        Moves the Highspec focusing stage to a starting position then
+         starts a series of exposures, moving the stage in between by a specified
+         amount (microns)
+        - exposure_duration - seconds (may be fractional)
+        - iterations - How many steps in the series
+        - x_binning - horizontal binning
+        - y_binning - vertical binning
+        - stage_start_position_microns - starting position for the focusing stage (float, microns)
+        - stage_microns_per_step - how much to move the stage between exposures (float, microns)
+        """
+        Thread(target=self.do_take_highspec_exposures_for_focus, args=[
+            exposure_duration, iterations,
+            x_binning, y_binning,
+            stage_start_position_microns, stage_microns_per_step
+        ]).start()
+
+    def do_take_highspec_exposures_for_focus(self,
+                                          exposure_duration: float,
+                                          iterations: int,
+                                          x_binning: int,
+                                          y_binning: int,
+                                          stage_start_position_microns: float,
+                                          stage_microns_per_step: float):
+
+        self.start_activity(HighspecActivities.Focusing)
+        logger.info(f"moving stage to starting position {stage_start_position_microns} ...")
+        self.camera_stage.move_absolute(stage_start_position_microns, unit=zaber_motion.units.Units.LENGTH_MICROMETRES)
+        while self.camera_stage.is_moving:
+            time.sleep(1)
+        logger.info(f"stage arrived to {self.camera_stage.position(unit=zaber_motion.units.Units.LENGTH_MICROMETRES)}...")
+
+        folder = os.path.join(
+            PathMaker().make_daily_folder_name(Filer().shared.root),
+            'highspec_focus')
+        folder = os.path.join(folder, PathMaker().make_seq(folder, None, start_with=1))
+
+        settings = SpecExposureSettings(
+            exposure_duration=exposure_duration,
+            number_of_exposures=1,
+            x_binning=x_binning,
+            y_binning=y_binning,
+            output_folder=folder,
+        )
+
+        for exposure_number in range(iterations):
+            settings.image_file = f"stage_position={int(self.camera_stage.position(unit=zaber_motion.units.Units.LENGTH_MICROMETRES))}"
+            self.highspec.start_acquisition(settings)
+            while self.highspec.is_working:
+                logger.info(f"highspec is still working ...")
+                time.sleep(exposure_duration / 5)
+
+            with fits.open(self.highspec.latest_settings.image_full_path, mode='update') as hdul:
+                header = hdul[0].header
+                header['FOCUS_NATIVE'] = (
+                    self.camera_stage.position(unit=zaber_motion.units.Units.NATIVE),
+                    'Focus position in native units')
+                header['FOCUS_MICROMETER'] = (
+                    self.camera_stage.position(unit=zaber_motion.units.Units.LENGTH_MICROMETRES),
+                    'Focus position in micrometers')
+                hdul.flush()
+
+            self.camera_stage.move_relative(stage_microns_per_step, unit=zaber_motion.units.Units.LENGTH_MICROMETRES)
+            while self.camera_stage.is_moving:
+                time.sleep(1)
+            logger.info(f"camera stage now at {self.camera_stage.position}")
+
+        self.end_activity(HighspecActivities.Focusing)
+
 
 spec = Spec()
 
@@ -348,3 +425,4 @@ router.add_api_route(path=base_path + 'shutdown', endpoint=spec.shutdown, tags=[
 router.add_api_route(path=base_path + 'setparams', endpoint=set_params, tags=[tag])
 # router.add_api_route(path=base_path + 'expose', endpoint=expose, tags=[tag])
 router.add_api_route(path=base_path + 'acquire', endpoint=spec.acquire, tags=[tag])
+router.add_api_route(path=base_path + 'take_highspec_exposures_for_focus', endpoint=spec.take_highspec_exposures_for_focus, tags=[tag])
