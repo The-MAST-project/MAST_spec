@@ -84,7 +84,7 @@ class Deepspec(Component):
 
     def start_exposure(self, settings: SpecExposureSettings):
         for band in self.cameras.keys():
-            self.cameras[band].expose(settings=settings)
+            self.cameras[band].acquire(settings=settings)
 
     @property
     def is_working(self) -> bool:
@@ -93,7 +93,6 @@ class Deepspec(Component):
                 return True
         return False
 
-    Allowed_binning_values = Literal[1, 2, 4]
     def expose(self,
                seconds: float,
                x_binning: BinningLiteral,
@@ -107,7 +106,7 @@ class Deepspec(Component):
             output_folder=None,
         )
         for band in self.cameras.keys():
-            self.cameras[band].expose(settings)
+            self.cameras[band].acquire(settings)
 
 deepspec = Deepspec()
 base_path = BASE_SPEC_PATH + 'deepspec'
@@ -118,4 +117,4 @@ router.add_api_route(base_path + '/status', tags=[tag], endpoint=deepspec.status
 router.add_api_route(base_path + '/startup', tags=[tag], endpoint=deepspec.startup)
 router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=deepspec.shutdown)
 router.add_api_route(base_path + '/abort', tags=[tag], endpoint=deepspec.abort)
-router.add_api_route(base_path + '/expose', tags=[tag], endpoint=deepspec.expose)
+router.add_api_route(base_path + '/expose', tags=[tag], endpoint=deepspec.expose, response_model=None)
