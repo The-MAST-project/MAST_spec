@@ -17,6 +17,7 @@ import logging
 from common.dlipowerswitch import SwitchedOutlet, OutletDomain, DliPowerSwitch, PowerSwitchFactory
 from common.spec import SpecExposureSettings, SpecActivities, SpecAcquisitionSettings, SpecGrating
 from common.activities import HighspecActivities
+from common.tasks.models import SpectrographAssignment
 import os
 from astropy.io import fits
 
@@ -390,6 +391,14 @@ class Spec(Component):
 
         self.end_activity(HighspecActivities.Focusing)
 
+    def do_perform_assignment(self, assignment: SpectrographAssignment):
+        pass
+
+    def receive_assignment(self, assignment: SpectrographAssignment):
+        if not self.operational:
+            return CanonicalResponse(errors=self.why_not_operational)
+        self.do_perform_assignment(assignment)
+
 
 spec = Spec()
 
@@ -431,6 +440,6 @@ router.add_api_route(path=base_path + 'status', endpoint=status, tags=[tag])
 router.add_api_route(path=base_path + 'startup', endpoint=spec.startup, tags=[tag])
 router.add_api_route(path=base_path + 'shutdown', endpoint=spec.shutdown, tags=[tag])
 router.add_api_route(path=base_path + 'setparams', endpoint=set_params, tags=[tag])
-# router.add_api_route(path=base_path + 'expose', endpoint=expose, tags=[tag])
 router.add_api_route(path=base_path + 'acquire', endpoint=spec.acquire, tags=[tag])
 router.add_api_route(path=base_path + 'take_highspec_exposures_for_focus', endpoint=spec.take_highspec_exposures_for_focus, tags=[tag])
+router.add_api_route(path=base_path + 'receive_assignment', endpoint=spec.receive_assignment, tags=[tag])
