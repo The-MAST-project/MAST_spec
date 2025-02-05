@@ -119,10 +119,6 @@ class GreatEyesActivities(IntFlag):
     SettingParameters = auto()
     Probing = auto()
 
-class ShutterSettingsModel(BaseModel):
-    automatic: bool
-    open_time: int      # [1..255]ms - before start exposure for shutter to open
-    close_time: int     # [1..255]ms - after exposure and before readout for shutter to close
 
 
 class ExposureTiming:
