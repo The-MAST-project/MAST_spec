@@ -17,7 +17,7 @@ import logging
 from common.dlipowerswitch import SwitchedOutlet, OutletDomain, DliPowerSwitch, PowerSwitchFactory
 from common.spec import SpecExposureSettings, SpecActivities, SpecAcquisitionSettings, SpecGrating
 from common.activities import HighspecActivities
-from common.tasks.models import SpectrographAssignment
+from common.tasks.models import SpectrographAssignmentModel
 import os
 from astropy.io import fits
 
@@ -391,10 +391,10 @@ class Spec(Component):
 
         self.end_activity(HighspecActivities.Focusing)
 
-    def do_perform_assignment(self, assignment: SpectrographAssignment):
+    def do_perform_assignment(self, assignment: SpectrographAssignmentModel):
         pass
 
-    def receive_assignment(self, assignment: SpectrographAssignment):
+    def receive_assignment(self, assignment: SpectrographAssignmentModel):
         if not self.operational:
             return CanonicalResponse(errors=self.why_not_operational)
         self.do_perform_assignment(assignment)
