@@ -193,19 +193,54 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.min_temp = min_temp
             self.max_temp = max_temp
+        else:
+            self.logger.error(f"Could not GetTemperatureRange() (code={error_code(ret)})")
+
+        (ret, max_exposure_time) = self.sdk.GetMaximumExposure()
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            self.max_exposure_time = max_exposure_time
+        else:
+            self.logger.error(f"Could not GetMaximumExposure() (code={error_code(ret)})")
+
+        (ret, capabilities) = self.sdk.GetCapabilities()
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            self.capabilities = capabilities
+            self.parse_camera_capabilities()
+        else:
+            self.logger.error(f"Could not GetCapabilities() (code={error_code(ret)})")
+
+        (ret, low, high) = self.sdk.GetEMGainRange()
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            self.lowest_gain = low
+            self.highest_gain = high
+        else:
+            self.logger.error(f"could not GetEMGainRange() ({ret=})")
+
+        # TODO: check if our camera can generate ESD events
 
         self.latest_settings: SpecExposureSettings | None = None
 
         self.logger.info(f"Found camera SN: {self.serial_number}, {self.x_pixels=}, {self.y_pixels=}")
         self.set_modes()  # initial values
 
-        event_handle = win32event.CreateEvent(None, 0, 0, None)
-        ret = self.sdk.SetDriverEvent(event_handle.handle)
+        driver_event_handle = win32event.CreateEvent(None, 0, 0, None)
+        ret = self.sdk.SetDriverEvent(driver_event_handle.handle)
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"Set event handler")
+            self.logger.info(f"Set driver event handler")
             self._terminated = False
             self.event_handler_thread = threading.Thread(name='event-handler-thread',
-                                                         target=self.event_handler, args=(event_handle,))
+                                                         target=self.driver_event_handler, args=(driver_event_handle,))
+            self.event_handler_thread.start()
+        else:
+            self.logger.error(f"Could not set event handler (code={error_code(ret)})")
+
+        tec_event_handle = win32event.CreateEvent(None, 0, 0, None)
+        ret = self.sdk.SetTECEvent(tec_event_handle.handle)
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            self.logger.info(f"Set TEC event handler")
+            self._terminated = False
+            self.event_handler_thread = threading.Thread(name='tec-event-handler-thread',
+                                                         target=self.tec_event_handler, args=(tec_event_handle,))
             self.event_handler_thread.start()
         else:
             self.logger.error(f"Could not set event handler (code={error_code(ret)})")
@@ -214,6 +249,13 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self._was_shut_down = False
 
         self._initialized = True
+
+    def parse_camera_capabilities(self):
+        """
+        Parse and print capabilities returned by sdk GetCapabilities()
+        :return:
+        """
+        pass
 
     def start_cooldown(self):
         self.turn_cooler(True)
@@ -275,9 +317,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                 ret.append(f"{label} camera is WarmingUp")
         return ret
 
-    def event_handler(self, event_handle):
+    def driver_event_handler(self, event_handle):
         """
-        Handles Win32 events from the SDK
+        Handles Driver Win32 events from the SDK
         :param event_handle:
         :return:
         """
@@ -335,6 +377,31 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
                 win32event.ResetEvent(event_handle)
                 # self.sdk.SetDriverEvent(0)
+            else:
+                self.logger.error(f"failed to win32event.WaitForSingleObject() ({result=}")
+
+    def tec_event_handler(self, event_handle):
+        """
+        Handles TEC Win32 events from the SDK
+        :param event_handle:
+        :return:
+        """
+        while not self._terminated:
+            result = win32event.WaitForSingleObject(event_handle, win32event.INFINITE)
+            if result == win32event.WAIT_OBJECT_0:
+
+                # when an event arrives, we get the status and temperature status and act accordingly
+                (ret_code, status_code) = self.sdk.GetTECStatus()
+                if ret_code == atmcd_errors.Error_Codes.DRV_SUCCESS:
+                    if status_code == 1:
+                        self.logger.error(f">>>> TEC overheat <<<<")
+                    elif status_code == 0:
+                        self.logger.info(f">>> TEC Normal <<<")
+                else:
+                    self.logger.error(f"Could not GetTECStatus() (code={error_code(ret_code)})")
+
+                win32event.ResetEvent(event_handle)
+                # self.sdk.SetTECEvent(0)
             else:
                 self.logger.error(f"failed to win32event.WaitForSingleObject() ({result=}")
 
@@ -423,6 +490,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         else:
             self.logger.error(f"Could not set image (code={error_code(ret)})")
 
+        if self.lowest_gain >= self.gain >= self.highest_gain:
+            raise ValueError(f"bad {self.gain=}, must be between {self.lowest_gain=} and {self.highest_gain=}")
+
         if 0 <= self.gain <= 255:
             ret = self.sdk.SetEMGainMode(0)
             if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
@@ -453,6 +523,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.logger.info(f"Set set-point to {self._set_point:.2f}")
         else:
             self.logger.error(f"Could not set set-point to {self._set_point:.2f}")
+
+        if self.exposure > self.max_exposure_time:
+            raise ValueError(f"exposure time is over {self.max_exposure_time=}")
 
         ret = self.sdk.SetExposureTime(self.exposure)
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
