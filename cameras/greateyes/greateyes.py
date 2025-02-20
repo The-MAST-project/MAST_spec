@@ -15,7 +15,7 @@ import logging
 from common.utils import Component, function_name
 from common.mast_logging import init_log
 from common.networking import NetworkedDevice
-from typing import List, get_args, Callable
+from typing import List, get_args, Callable, Optional
 from common.utils import RepeatTimer, BASE_SPEC_PATH
 from enum import IntFlag, auto, Enum, IntEnum
 from common.models.greateyes import GreateyesSettingsModel, ReadoutSpeed
@@ -139,6 +139,7 @@ class Exposure:
     timing: ExposureTiming
 
     def __init__(self):
+        self.timing = ExposureTiming()
         self.timing.start = datetime.datetime.now()
         self.timing.start_utc = self.timing.start.astimezone(timezone.utc)
 
@@ -154,7 +155,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.band = band
         self.conf = Config().get_specs()['deepspec'][self.band]    # specific to this camera instance
         self.settings: GreateyesSettingsModel = GreateyesSettingsModel(**self.conf['settings'])
-        self.latest_settings: GreateyesSettingsModel | None = None
+        self.latest_settings: Optional[GreateyesSettingsModel] = None
         self.ge_device = self.conf['device']
         self._name = f"Deepspec-{self.band}"
         self.outlet_name = f"Deepspec{self.band}"
@@ -287,12 +288,15 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         self.pixel_size_microns = ge.GetSizeOfPixel(addr=self.ge_device)
 
-        ret = ge.SetBitDepth(self.settings.bytes_per_pixel, addr=self.ge_device)
-        if not ret:
-            self.error(f"FAILED - ge.SetBitDepth({self.settings.bytes_per_pixel}, addr={self.ge_device}) ({ret=})")
-        self.info(f"OK - ge.SetBitDepth({self.settings.bytes_per_pixel}, addr={self.ge_device})")
+        self.info(f"greateyes: ipaddr='{self.network.ipaddr}', size={self.x_size}x{self.y_size}, " +
+                  f"model_id={self.model_id}, model='{self.model}, fw_version={self.firmware_version}")
 
-        self.info(f"greateyes: ipaddr='{self.network.ipaddr}', fw_version={self.firmware_version}, size={self.x_size}x{self.y_size}, model_id={self.model_id}, model='{self.model}")
+        default_settings = GreateyesSettingsModel(**self.conf['settings'])
+        self.apply_settings(default_settings)
+        # ret = ge.SetBitDepth(self.settings.bytes_per_pixel, addr=self.ge_device)
+        # if not ret:
+        #     self.error(f"FAILED - ge.SetBitDepth({self.settings.bytes_per_pixel}, addr={self.ge_device}) ({ret=})")
+        # self.info(f"OK - ge.SetBitDepth({self.settings.bytes_per_pixel}, addr={self.ge_device})")
 
         self.set_led(False)
         self.end_activity(GreatEyesActivities.Probing)
@@ -403,15 +407,13 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if ret:
             self.info(f"OK - {op}")
         else:
-            self.append_error(f"FAILED - {op}")
+            # ge.UpdateStatus()
+            self.append_error(f"FAILED - {op} (status: {ge.StatusMSG} ({ge.Status}))")
 
-    def apply_settings(self, new_settings: GreateyesSettingsModel):
+    def apply_settings(self, settings: GreateyesSettingsModel):
         """
-        Enforces settings onto this specific camera.
-        * The camera has default settings (from configuration)
-        * The default settings are updated with the supplied settings
-        * The resulting (combined) settings are applied to the camera
-        :param new_settings: e.g. from an assignment
+        Enforces settings from an assignment onto this specific camera.
+        :param settings: e.g. from an assignment
         :return:
         """
 
@@ -420,15 +422,13 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.errors.append(f"not detected")
             return
 
-        d = deep_update(self.settings.model_dump(), new_settings.model_dump())
-        settings: GreateyesSettingsModel = GreateyesSettingsModel(**d)
-
+        print(settings.model_dump_json(indent=2))
         self.start_activity(GreatEyesActivities.SettingParameters)
         self._apply_setting(ge.SetupSensorOutputMode, settings.readout.amplifiers)
         self._apply_setting(ge.SetBinningMode, (settings.binning.x, settings.binning.y))
         self._apply_setting(ge.SetupGain, settings.gain)
         self._apply_setting(ge.SetBitDepth, settings.bytes_per_pixel)
-        self._apply_setting(ge.SetReadOutSpeed, settings.readout.speed)
+        self._apply_setting(ge.SetReadOutSpeed, settings.readout.speed.value)
         if settings.crop.enabled:
             self._apply_setting(ge.SetupCropMode2D, (settings.crop.col, settings.crop.line))
             self._apply_setting(ge.ActivateCropMode, True)
@@ -439,38 +439,6 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         self.latest_settings = settings
         self.end_activity(GreatEyesActivities.SettingParameters)
-
-        # op = f"OK - ge.SetBinningMode({settings.binning.x=}, {settings.binning.y=})"
-        # ret = ge.SetBinningMode(settings.binning.x, settings.binning.y, addr=self.ge_device)
-        # if ret:
-        #     self.info(f"OK - {op}")
-        # else:
-        #     self.append_error(f"FAILED - {op} ({ret=})")
-
-        # op = f"ge.SetupGain({settings.gain})"
-        # ret = ge.SetupGain(settings.gain, addr=self.ge_device)
-        # if ret:
-        #     self.info(f"OK - {op}")
-        # else:
-        #     self.append_error(f"FAILED - {op} ({ret=})")
-
-        # op = f"ge.SetBitDepth({settings.bytes_per_pixel})"
-        # ret = ge.SetBitDepth(settings.bytes_per_pixel, addr=self.ge_device)
-        # if ret:
-        #     self.info(f"OK - {op}")
-        # else:
-        #     self.append_error(f"FAILED - {op} ({ret=})")
-
-        # f"ge.SetReadOutSpeed({settings.readout.speed})"
-        # ret = ge.SetReadOutSpeed(settings.readout.speed, addr=self.ge_device)
-        # if ret:
-        #     self.info(f"OK - {op}")
-        # else:
-        #     self.append_error(f"FAILED - {op} ({ret=})")
-
-        # self.end_activity(GreatEyesActivities.SettingParameters)
-        # if save:
-        #     pass
 
     def expose(self, settings: SpecExposureSettings):
         # TODO: get acquisition folder as parameter
@@ -509,15 +477,13 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.append_error(f"could not ge.SetExposure({settings.duration=}, addr={self.ge_device}) ({ret=})")
             return
 
-        shutter_state = 1       # open
-        if self.latest_settings.shutter.automatic:
-            shutter_state = 2   # automatic
-        ret = ge.OpenShutter(2, addr=self.ge_device)
-        if not ret:
-            self.append_error(f"could not open shutter with ge.OpenShutter({shutter_state})")
-            return
+        if not self.latest_settings.shutter.automatic:
+            ret = ge.OpenShutter(1, addr=self.ge_device)
+            if not ret:
+                self.append_error(f"could not open shutter with ge.OpenShutter(1)")
+                # return
 
-        ret = ge.StartMeasurement_DynBitDepth(addr=self.ge_device)
+        ret = ge.StartMeasurement_DynBitDepth(addr=self.ge_device, showShutter=self.settings.shutter.automatic)
         if ret:
             self.start_activity(GreatEyesActivities.Exposing)
             self.latest_exposure.timing.start_utc = datetime.datetime.now(datetime.UTC)
@@ -612,6 +578,9 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         Called periodically by a timer.
         Checks if any in-progress activities can be ended.
         """
+
+        if not self.settings.enabled:
+            return
 
         if (not self.is_active(GreatEyesActivities.Probing) and
                 not self.detected and

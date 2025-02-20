@@ -3,10 +3,10 @@ import os
 import threading
 import time
 from sys import settrace
-from typing import List
+from typing import List, Callable,Optional
 
 import win32event
-from pyAndorSDK2 import atmcd, atmcd_codes, atmcd_errors, atmcd_capabilities
+from pyAndorSDK2 import atmcd, atmcd_codes, atmcd_errors, atmcd_capabilities, CameraCapabilities
 import logging
 
 from common.mast_logging import init_log
@@ -18,6 +18,7 @@ from common.filer import Filer
 
 from fastapi import APIRouter, Query
 from common.utils import BASE_SPEC_PATH, Component
+from common.models.newton import NewtonCameraSettingsModel
 
 logger = logging.getLogger("mast.highspec.camera")
 init_log(logger)
@@ -26,7 +27,7 @@ codes = atmcd_codes
 
 
 def current_exposure():
-    return camera.exposure
+    return camera.exposure_duration
 
 
 def current_acquisition_mode():
@@ -50,7 +51,7 @@ def current_activate_cooler():
 
 
 def current_gain():
-    return camera.gain
+    return camera.em_gain
 
 
 def current_horizontal_binning():
@@ -70,6 +71,7 @@ class NewtonActivities(IntFlag):
     Exposing = auto()
     ReadingOut = auto()
     Saving = auto()
+    SettingParameters = auto()
     
     
 class AcquisitionMode(Enum):
@@ -106,16 +108,32 @@ cooler_modes = Enum('CoolerModes', list(zip(
 )))
 
 defaults = {
-    'exposure': 10,
+    'exposure_duration': 10,
     'acquisition-mode': AcquisitionMode.SINGLE_SCAN,
     'read-mode': ReadMode.IMAGE,
     'set-point': -60,
-    'gain': 200,
+    'em_gain': 200,
     'horizontal-binning': 1,
     'vertical-binning': 1,
     'cooler-mode': CoolerMode.RETURN_TO_AMBIENT,
     'activate-cooler': True,
 }
+
+class Capabilities:
+    ulAcqModes: atmcd_capabilities.acquistionModes
+    ulCameraType: atmcd_capabilities.cameratype
+    ulEMGainCapability: atmcd_capabilities.EmGainModes
+    ulFTReadModes: atmcd_capabilities.readmodes
+    ulFeatures: atmcd_capabilities.Features
+    ulFeatures2: atmcd_capabilities.Features2
+    ulGetFunctions: atmcd_capabilities.GetFunctions
+    ulPCICcard: int
+    ulPixelModes: atmcd_capabilities.PixelModes
+    ulReadModes: atmcd_capabilities.readmodes
+    ulSetFunctions: atmcd_capabilities.SetFunctions
+    ulSize: int
+    ulTriggerModes: atmcd_capabilities.triggermodes
+
 
 
 class NewtonEMCCD(Component, SwitchedOutlet):
@@ -150,24 +168,27 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.CoolerVolts = float('nan')
         self.last_temp_log: datetime = datetime.datetime.min
 
-        self._set_point: int | None = None
-        self.acquisition_mode: AcquisitionMode | None = None
+        self._set_point: Optional[int] = None
+        self.acquisition_mode: Optional[AcquisitionMode] = None
         self.read_mode: ReadMode | None = None
-        self.cooler_mode: int | None = None
-        self.gain: int | None = None
-        self.horizontal_binning: int | None = None
-        self.vertical_binning: int | None = None
-        self.activate_cooler: bool | None = None
-        self.exposure: float | None = None
+        self.cooler_mode: Optional[int] = None
+        self.em_gain: Optional[int] = None
+        self.horizontal_binning: Optional[int] = None
+        self.vertical_binning: Optional[int] = None
+        self.activate_cooler:Optional[bool] = None
+        self.exposure_duration: Optional[float] = None
 
         if not self.power_switch.detected:
             return
 
+        self.errors = []
         self.sdk = atmcd()
         ret = self.sdk.Initialize("")
         if atmcd_errors.Error_Codes.DRV_SUCCESS != ret:
             self.logger.error(f"Could not initialize SDK (code={error_code(ret)})")
             return
+
+        self.parse_camera_capabilities()
 
         (ret, serial_number) = self.sdk.GetCameraSerialNumber()
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
@@ -178,6 +199,21 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.sdk.ShutDown()
             return
 
+        (ret, capabilities) = self.sdk.GetCapabilities()
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            self.caps: Capabilities = capabilities
+        else:
+            self.logger.error(f"Could not GetCapabilities() (code={error_code(ret)})")
+
+        if not self.caps.ulCameraType & atmcd_capabilities.cameratype.AC_CAMERATYPE_NEWTON:
+            raise Exception(f"the camera is not a NEWTON")
+
+        self.logger.info(f"found a NEWTON camera, SN: {self.serial_number}")
+        if not self.caps.ulSetFunctions & atmcd_capabilities.SetFunctions.AC_SETFUNCTION_EMADVANCED:
+            self.logger.warn(f"no AC_SETFUNCTION_EMADVANCED capability")
+        if not self.caps.ulSetFunctions & atmcd_capabilities.SetFunctions.AC_SETFUNCTION_EMCCDGAIN:
+            self.logger.warn(f"no AC_SETFUNCTION_EMCCDGAIN capability")
+
         (ret, x_pixels, y_pixels) = self.sdk.GetDetector()
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.x_pixels = x_pixels
@@ -186,6 +222,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.logger.error(f"Could not GetDetector() (code={error_code(ret)})")
             self.sdk.ShutDown()
             return
+        self.logger.info(f"detector size: {self.x_pixels}x{self.y_pixels}")
 
         self.min_temp: float | None = None
         self.max_temp: float | None = None
@@ -193,73 +230,76 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.min_temp = min_temp
             self.max_temp = max_temp
+            self.logger.info(f"got temperature range: {self.min_temp}, {self.max_temp}")
         else:
-            self.logger.error(f"Could not GetTemperatureRange() (code={error_code(ret)})")
+            self.logger.error(f"could not GetTemperatureRange() (code={error_code(ret)})")
+
+        (ret, n_pre_amp_gains) = self.sdk.GetNumberPreAmpGains()
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            self.n_pre_amp_gains = n_pre_amp_gains
+            self.logger.info(f"got n_gains: {self.n_pre_amp_gains}")
+        else:
+            self.logger.error(f"could not GetNumberPreAmpGains() (code={error_code(ret)})")
 
         (ret, max_exposure_time) = self.sdk.GetMaximumExposure()
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.max_exposure_time = max_exposure_time
+            self.logger.info(f"got max exposure_duration time: {self.max_exposure_time}")
         else:
-            self.logger.error(f"Could not GetMaximumExposure() (code={error_code(ret)})")
+            self.logger.error(f"could not GetMaximumExposure() (code={error_code(ret)})")
 
-        (ret, capabilities) = self.sdk.GetCapabilities()
-        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.capabilities = capabilities
-            self.parse_camera_capabilities()
-        else:
-            self.logger.error(f"Could not GetCapabilities() (code={error_code(ret)})")
-
+        self._apply_setting(self.sdk.SetOutputAmplifier, 0)
+        # self._apply_setting(self.sdk.SetEMAdvanced, 1)
+        # self._apply_setting(self.sdk.SetEMGainMode, 1)
         (ret, low, high) = self.sdk.GetEMGainRange()
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.lowest_gain = low
-            self.highest_gain = high
+            self.lowest_em_gain = low
+            self.highest_em_gain = high
+            self.logger.info(f"got em gain range: {self.lowest_em_gain}, {self.highest_em_gain}")
         else:
             self.logger.error(f"could not GetEMGainRange() ({ret=})")
 
         # TODO: check if our camera can generate ESD events
 
-        self.latest_settings: SpecExposureSettings | None = None
+        self.latest_exposure_settings: SpecExposureSettings | None = None
 
-        self.logger.info(f"Found camera SN: {self.serial_number}, {self.x_pixels=}, {self.y_pixels=}")
-        self.set_modes()  # initial values
+        default_camera_settings: NewtonCameraSettingsModel = (
+            NewtonCameraSettingsModel(**Config().get_specs()['highspec']['settings']))
+        self.latest_camera_settings: NewtonCameraSettingsModel | None = None
+        self.apply_settings(default_camera_settings)
 
         driver_event_handle = win32event.CreateEvent(None, 0, 0, None)
         ret = self.sdk.SetDriverEvent(driver_event_handle.handle)
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"Set driver event handler")
+            self.logger.info(f"set driver event handler")
             self._terminated = False
-            self.event_handler_thread = threading.Thread(name='event-handler-thread',
-                                                         target=self.driver_event_handler, args=(driver_event_handle,))
-            self.event_handler_thread.start()
+            self.driver_event_handler_thread = threading.Thread(name='event-handler-thread',
+                                                                target=self.driver_event_handler, args=(driver_event_handle,))
+            self.driver_event_handler_thread.start()
         else:
-            self.logger.error(f"Could not set event handler (code={error_code(ret)})")
-
-        tec_event_handle = win32event.CreateEvent(None, 0, 0, None)
-        ret = self.sdk.SetTECEvent(tec_event_handle.handle)
-        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"Set TEC event handler")
-            self._terminated = False
-            self.event_handler_thread = threading.Thread(name='tec-event-handler-thread',
-                                                         target=self.tec_event_handler, args=(tec_event_handle,))
-            self.event_handler_thread.start()
-        else:
-            self.logger.error(f"Could not set event handler (code={error_code(ret)})")
+            self.logger.error(f"Could not set driver event handler (code={error_code(ret)})")
 
         self.start_cooldown()
         self._was_shut_down = False
 
         self._initialized = True
 
+    def append_error(self, err: str):
+        self.errors.append(err)
+        self.logger.error(err)
+
     def parse_camera_capabilities(self):
         """
         Parse and print capabilities returned by sdk GetCapabilities()
         :return:
         """
-        pass
+        helper = CameraCapabilities.CapabilityHelper(self.sdk)
+        print('capabilities')
+        helper.print_all()
 
     def start_cooldown(self):
         self.turn_cooler(True)
-        target_temp = self.set_point
+        target_temp = self.latest_camera_settings.temperature.set_point
         ret = self.sdk.SetTemperature(target_temp)
         if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.logger.error(f"failed to set temperature to {target_temp} degrees (code={error_code(ret)})")
@@ -338,7 +378,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                     elif self.is_active(NewtonActivities.CoolingDown) or self.is_active(NewtonActivities.WarmingUp):
                         (temp_code, temp) = self.sdk.GetTemperatureF()
                         if temp_code == atmcd_errors.Error_Codes.DRV_TEMPERATURE_STABILIZED:
-                            self.logger.info(f"Temperature has stabilized at {temp:.2f} degrees")
+                            self.logger.info(f"temperature has stabilized at {temp:.2f} degrees")
 
                             if self.is_active(NewtonActivities.CoolingDown):
                                 self.end_activity(NewtonActivities.CoolingDown)
@@ -370,6 +410,8 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                     elif status_code == atmcd_errors.Error_Codes.DRV_ACQ_DOWNFIFO_FULL:
                         self.logger.error(f"Driver cannot read data fast enough to prevent FIFO overflow " +
                                           f"(code={error_code(status_code)})")
+                    elif status_code == atmcd_errors.Error_Codes.DRV_IDLE:
+                        self.logger.error(f"Driver became IDLE: status_code={error_code(status_code)}")
                     else:
                         self.logger.error(f"Unhandled case: status_code={error_code(status_code)}")
                 else:
@@ -380,46 +422,46 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             else:
                 self.logger.error(f"failed to win32event.WaitForSingleObject() ({result=}")
 
-    def tec_event_handler(self, event_handle):
-        """
-        Handles TEC Win32 events from the SDK
-        :param event_handle:
-        :return:
-        """
-        while not self._terminated:
-            result = win32event.WaitForSingleObject(event_handle, win32event.INFINITE)
-            if result == win32event.WAIT_OBJECT_0:
-
-                # when an event arrives, we get the status and temperature status and act accordingly
-                (ret_code, status_code) = self.sdk.GetTECStatus()
-                if ret_code == atmcd_errors.Error_Codes.DRV_SUCCESS:
-                    if status_code == 1:
-                        self.logger.error(f">>>> TEC overheat <<<<")
-                    elif status_code == 0:
-                        self.logger.info(f">>> TEC Normal <<<")
-                else:
-                    self.logger.error(f"Could not GetTECStatus() (code={error_code(ret_code)})")
-
-                win32event.ResetEvent(event_handle)
-                # self.sdk.SetTECEvent(0)
-            else:
-                self.logger.error(f"failed to win32event.WaitForSingleObject() ({result=}")
+    # def tec_event_handler(self, event_handle):
+    #     """
+    #     Handles TEC Win32 events from the SDK
+    #     :param event_handle:
+    #     :return:
+    #     """
+    #     while not self._terminated:
+    #         result = win32event.WaitForSingleObject(event_handle, win32event.INFINITE)
+    #         if result == win32event.WAIT_OBJECT_0:
+    #
+    #             # when an event arrives, we get the status and temperature status and act accordingly
+    #             (ret_code, status_code) = self.sdk.GetTECStatus()
+    #             if ret_code == atmcd_errors.Error_Codes.DRV_SUCCESS:
+    #                 if status_code == 1:
+    #                     self.logger.error(f"TEC event: OVERHEAT")
+    #                 elif status_code == 0:
+    #                     self.logger.info(f"TEC event: normal")
+    #             else:
+    #                 self.logger.error(f"Could not GetTECStatus() (code={error_code(ret_code)})")
+    #
+    #             win32event.ResetEvent(event_handle)
+    #             # self.sdk.SetTECEvent(0)
+    #         else:
+    #             self.logger.error(f"failed to win32event.WaitForSingleObject() ({result=}")
 
     def set_modes(self,
-                  exposure: float | None = None,
+                  exposure_duration: float | None = None,
                   acquisition_mode: AcquisitionMode | None = None,
                   read_mode: ReadMode | None = None,
                   set_point: float | None = None,
                   cooler_mode: CoolerMode | None = None,
                   activate_cooler: bool | None = None,
-                  gain: int | None = None,
+                  em_gain: int | None = None,
                   horizontal_binning: int | None = None,
                   vertical_binning: int | None = None,
                   save: bool = False):
 
         conf = self.conf
-        self.exposure = exposure if exposure is not None else conf['exposure'] \
-            if 'exposure' in conf else defaults['exposure']
+        self.exposure_duration = exposure_duration if exposure_duration is not None else conf['exposure_duration'] \
+            if 'exposure_duration' in conf else defaults['exposure_duration']
 
         self.acquisition_mode = acquisition_mode if acquisition_mode is not None else conf['acquisition-mode'] if\
             'acquisition-mode' in conf else defaults['acquisition-mode']
@@ -433,7 +475,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.cooler_mode = cooler_mode if cooler_mode is not None else conf['cooler-mode'] if 'cooler-mode' in conf \
             else defaults['cooler-mode'].value[0]
 
-        self.gain = gain if gain is not None else conf['gain'] if 'gain' in conf else defaults['gain']
+        self.em_gain = em_gain if em_gain is not None else conf['em_gain'] if 'em_gain' in conf else defaults['em_gain']
 
         self.horizontal_binning = horizontal_binning if horizontal_binning is not None else conf['h-bin'] \
             if 'h-bin' in conf else defaults['horizontal-binning']
@@ -460,78 +502,78 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
         ret = self.sdk.SetAcquisitionMode(self.acquisition_mode.value)
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"Set acquisition mode to {atmcd_capabilities.acquistionModes(self.acquisition_mode.value)}")
+            self.logger.info(f"set acquisition mode to {atmcd_capabilities.acquistionModes(self.acquisition_mode.value)}")
         else:
-            self.logger.error(f"Could not set acquisition mode to SINGLE_SCAN (code={error_code(ret)})")
+            self.logger.error(f"could not set acquisition mode to SINGLE_SCAN (code={error_code(ret)})")
 
         ret = self.sdk.SetCoolerMode(self.cooler_mode)
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"Set cooler mode to {self.cooler_mode}")
+            self.logger.info(f"set cooler mode to {self.cooler_mode}")
         else:
-            self.logger.error(f"Could not set cooler mode to {self.cooler_mode} (code={error_code(ret)})")
+            self.logger.error(f"could not set cooler mode to {self.cooler_mode} (code={error_code(ret)})")
 
         ret = self.sdk.SetReadMode(codes.Read_Mode.IMAGE)
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"Set read mode to {codes.Read_Mode.IMAGE}")
+            self.logger.info(f"set read mode to {codes.Read_Mode.IMAGE}")
         else:
-            self.logger.error(f"Could not set acquisition mode to {codes.Read_Mode.IMAGE} (code={error_code(ret)})")
+            self.logger.error(f"could not set acquisition mode to {codes.Read_Mode.IMAGE} (code={error_code(ret)})")
 
         ret = self.sdk.SetTriggerMode(codes.Trigger_Mode.INTERNAL)
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"Set trigger mode to {codes.Read_Mode.IMAGE}")
+            self.logger.info(f"set trigger mode to {codes.Read_Mode.IMAGE}")
         else:
-            self.logger.error(f"Could not set trigger mode to {codes.Trigger_Mode.INTERNAL} (code={error_code(ret)})")
+            self.logger.error(f"could not set trigger mode to {codes.Trigger_Mode.INTERNAL} (code={error_code(ret)})")
 
         ret = self.sdk.SetImage(self.horizontal_binning, self.vertical_binning,
                                 1, self.x_pixels, 1, self.y_pixels)
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"Set image to ({self.horizontal_binning=}, {self.vertical_binning=}, " +
+            self.logger.info(f"set image to ({self.horizontal_binning=}, {self.vertical_binning=}, " +
                              f"1, {self.x_pixels=}, 1, {self.y_pixels=})")
         else:
-            self.logger.error(f"Could not set image (code={error_code(ret)})")
+            self.logger.error(f"could not set image (code={error_code(ret)})")
 
-        if self.lowest_gain >= self.gain >= self.highest_gain:
-            raise ValueError(f"bad {self.gain=}, must be between {self.lowest_gain=} and {self.highest_gain=}")
+        if self.lowest_em_gain > self.em_gain >= self.highest_em_gain:
+            raise ValueError(f"bad {self.em_gain=}, must be between {self.lowest_em_gain=} and {self.highest_em_gain=}")
 
-        if 0 <= self.gain <= 255:
+        if 0 <= self.em_gain <= 255:
             ret = self.sdk.SetEMGainMode(0)
             if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-                self.logger.info(f"Set EMGainMode to 0")
+                self.logger.info(f"set EMGainMode to 0")
             else:
-                self.logger.error(f"Could not set EMGainMode to 0, (code={error_code(ret)})")
-        elif 256 <= self.gain <= 4095:
+                self.logger.error(f"could not set EMGainMode to 0, (code={error_code(ret)})")
+        elif 256 <= self.em_gain <= 4095:
             ret = self.sdk.SetEMAdvanced(1)
             if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
                 ret = self.sdk.SetEMGainMode(1)
                 if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-                    self.logger.info(f"Set EMGainMode to 1")
+                    self.logger.info(f"set EMGainMode to 1")
                 else:
-                    self.logger.error(f"Could not set EMGainMode to 1 (code={error_code(ret)})")
+                    self.logger.error(f"could not set EMGainMode to 1 (code={error_code(ret)})")
             else:
-                self.logger.error(f"Could not set EMAdvanced to 1 (code={error_code(ret)})")
+                self.logger.error(f"could not set EMAdvanced to 1 (code={error_code(ret)})")
         else:
-            raise Exception(f"Cannot set gain to {self.gain} (allowed: 0 >= gain <= 4095)")
+            raise Exception(f"Cannot set em_gain to {self.em_gain} (allowed: 0 >= em_gain <= 4095)")
 
-        ret = self.sdk.SetEMCCDGain(self.gain)
+        ret = self.sdk.SetEMCCDGain(self.em_gain)
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"Set gain to {self.gain}")
+            self.logger.info(f"set em_gain to {self.em_gain}")
         else:
-            self.logger.error(f"Could not set gain to {self.gain} (code={error_code(ret)})")
+            self.logger.error(f"could not set em_gain to {self.em_gain} (code={error_code(ret)})")
 
         ret = self.sdk.SetTemperature(self._set_point)
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"Set set-point to {self._set_point:.2f}")
+            self.logger.info(f"set set-point to {self._set_point:.2f}")
         else:
-            self.logger.error(f"Could not set set-point to {self._set_point:.2f}")
+            self.logger.error(f"could not set set-point to {self._set_point:.2f}")
 
-        if self.exposure > self.max_exposure_time:
-            raise ValueError(f"exposure time is over {self.max_exposure_time=}")
+        if self.exposure_duration > self.max_exposure_time:
+            raise ValueError(f"exposure_duration is over {self.max_exposure_time=}")
 
-        ret = self.sdk.SetExposureTime(self.exposure)
+        ret = self.sdk.SetExposureTime(self.exposure_duration)
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"Set exposure time to {self.exposure}")
+            self.logger.info(f"set exposure_duration to {self.exposure_duration}")
         else:
-            self.logger.error(f"Could not set exposure time to {self.exposure} (code={error_code(ret)})")
+            self.logger.error(f"could not set exposure_duration to {self.exposure_duration} (code={error_code(ret)})")
 
         if self.activate_cooler:
             self.start_activity(NewtonActivities.CoolingDown)
@@ -560,7 +602,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.logger.info(f"turned the cooler {'ON' if on_off else 'OFF'}")
         else:
-            self.logger.error(f"Could not turn the Cooler {'ON' if on_off else 'OFF'} (code={error_code(ret)})")
+            self.logger.error(f"could not turn the Cooler {'ON' if on_off else 'OFF'} (code={error_code(ret)})")
 
     @property
     def is_working(self) -> bool:
@@ -568,6 +610,55 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                 self.is_active(NewtonActivities.Exposing) or
                 self.is_active(NewtonActivities.ReadingOut) or
                 self.is_active(NewtonActivities.Saving))
+
+    def _apply_setting(self, func: Callable, arg):
+        op = f"sdk.{func.__name__ if hasattr(func, '__name__') else str(func)}({arg})"
+        ret = func(*arg) if isinstance(arg, (tuple, list)) else func(arg)
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            self.logger.info(f"OK - {op}")
+        else:
+            code = atmcd_errors.Error_Codes(ret)
+            self.append_error(f"FAILED - {op} (error code: {code.name} ({code.value}))")
+        return ret
+
+    def apply_settings(self, settings: NewtonCameraSettingsModel):
+        self.start_activity(NewtonActivities.SettingParameters)
+        self._apply_setting(self.sdk.SetExposureTime, settings.exposure_duration)
+
+        if settings.roi.hend == -1:
+            settings.roi.hend = self.x_pixels
+        if settings.roi.vend == -1:
+            settings.roi.vend = self.y_pixels
+        self._apply_setting(self.sdk.SetImage, (settings.binning.x, settings.binning.y,
+                                                settings.roi.hstart, settings.roi.hend, settings.roi.vstart, settings.roi.vend))
+
+        self.set_gain(settings)
+
+        self._apply_setting(self.sdk.SetAcquisitionMode, settings.acquisition_mode)
+        self._apply_setting(self.sdk.SetShutter, (0, 0, settings.shutter.closing_time, settings.shutter.opening_time))
+
+        self._apply_setting(self.sdk.SetTemperature, settings.temperature.set_point)
+        self._apply_setting(self.sdk.SetCoolerMode, settings.temperature.cooler_mode)
+
+        self.latest_camera_settings = settings
+
+        self.end_activity(NewtonActivities.SettingParameters)
+
+    def set_gain(self, settings: NewtonCameraSettingsModel):
+        if 0 <= settings.em_gain <= 255:
+            self._apply_setting(self.sdk.SetEMGainMode, 0)
+        elif 256 <= settings.em_gain <= 4095:
+            ret = self._apply_setting(self.sdk.SetEMAdvanced, 1)
+            if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+                self._apply_setting(self.sdk.SetEMGainMode, 1)
+
+        self._apply_setting(self.sdk.SetEMCCDGain, settings.em_gain)
+
+        if 0 <= settings.pre_amp_gain >= self.n_pre_amp_gains:
+            self.logger.error(f"bad {settings.pre_amp_gain=}, allowed range(0, {self.n_pre_amp_gains=})")
+        else:
+            self._apply_setting(self.sdk.SetPreAmpGain, settings.pre_amp_gain)
+
 
     def start_acquisition(self, settings: SpecExposureSettings):
         self.acquire(settings=settings)
@@ -586,27 +677,12 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.logger.error(f"not initialized")
             return
 
-        self.latest_settings = settings
-        ret = self.sdk.SetExposureTime(settings.exposure_duration)
-        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"Set exposure time to {settings.exposure_duration=:.2f}")
-        else:
-            self.logger.error(f"Could not set exposure time to {settings.exposure_duration=:.2f} (code={error_code(ret)})")
-            return
-
-        ret = self.sdk.SetImage(settings.x_binning, settings.y_binning,
-                                1, self.x_pixels, 1, self.y_pixels)
-        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"Set image to ({self.horizontal_binning=}, {self.vertical_binning=}, " +
-                             f"1, {self.x_pixels=}, 1, {self.y_pixels=})")
-        else:
-            self.logger.error(f"Could not set image (code={error_code(ret)})")
-            return
+        self.latest_exposure_settings = settings
 
         self.start_activity(NewtonActivities.Acquiring)
         ret = self.sdk.StartAcquisition()
         if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.error(f"Could not StartAcquisition() (code={error_code(ret)})")
+            self.logger.error(f"could not StartAcquisition() (code={error_code(ret)})")
             return
         self.logger.info(f"started exposure with sdk.StartAcquisition()")
 
@@ -616,20 +692,14 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         if not self.detected:
             self.logger.error(f"camera not detected")
             return
-        file_name = self.latest_settings.image_file if self.latest_settings.image_file else self.name
-        path = os.path.join(Filer().ram.root, self.latest_settings.output_folder, file_name)
-        if self.latest_settings.number_in_sequence:
-            path += f"_{self.latest_settings.number_in_sequence:03}"
-        path += ".fits"
-        self.latest_settings.image_full_path = path
-        os.makedirs(os.path.dirname(self.latest_settings.image_full_path), exist_ok=True)
+
+        os.makedirs(os.path.dirname(self.latest_exposure_settings.image_file), exist_ok=True)
         self.start_activity(NewtonActivities.ReadingOut)
-        ret = self.sdk.SaveAsFITS(self.latest_settings.image_full_path, typ=0)
+        ret = self.sdk.SaveAsFITS(self.latest_exposure_settings.image_file, typ=0)
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.logger.info(f"saved {self.latest_settings.image_full_path}")
-            # Filer().move_ram_to_shared(self.latest_settings.image_full_path)
+            self.logger.info(f"saved {self.latest_exposure_settings.image_file}")
         else:
-            self.logger.error(f"failed sdk.SaveAsFITS({self.latest_settings.image_full_path}, typ=0) (ret={ret}")
+            self.logger.error(f"failed sdk.SaveAsFITS({self.latest_exposure_settings.image_file}, typ=0) (ret={ret}")
         self.end_activity(NewtonActivities.ReadingOut)
         self.end_activity(NewtonActivities.Acquiring)
 
@@ -726,8 +796,8 @@ def show_camera():
         'acquisition_mode': camera.acquisition_mode,
         'set_point': camera.set_point,
         'read_mode': camera.read_mode,
-        'gain': camera.gain,
-        'exposure': camera.exposure,
+        'em_gain': camera.em_gain,
+        'exposure_duration': camera.exposure_duration,
 
         'activate_cooler': camera.activate_cooler,
         'cooler_mode': camera.cooler_mode,
@@ -742,25 +812,25 @@ def show_camera():
 
 def camera_modes() -> dict:
     return {
-        'exposure': camera.exposure,
+        'exposure_duration': camera.exposure_duration,
         'acquisition_mode': camera.acquisition_mode,
         'read_mode': camera.read_mode,
         'horizontal_binning': camera.horizontal_binning,
         'vertical_binning': camera.vertical_binning,
-        'gain': camera.gain,
+        'em_gain': camera.em_gain,
         'set_point': camera.set_point,
         'save': False,
     }
 
 
 def set_camera_modes(
-        exposure: float = Query(description="Exposure length (seconds)", default=defaults['exposure']),
+        exposure_duration: float = Query(description="Exposure length (seconds)", default=defaults['exposure_duration']),
         acquisition_mode: acquisition_modes = Query(description='Select a pre-defined acquisition modes',
                                                     default=defaults['acquisition-mode'].name),
         read_mode: read_modes = Query(description='Select a pre-defined read mode',
                                       default=defaults['read-mode'].name),
         set_point: float = Query(default=defaults['set-point'], description='Target temperature'),
-        gain: int = Query(default=defaults['gain'], ge=1, le=4095),
+        em_gain: int = Query(default=defaults['em_gain'], ge=1, le=4095),
         horizontal_binning: int = Query(default=defaults['horizontal-binning'], ge=1, le=1600),
         vertical_binning: int = Query(default=defaults['vertical-binning'], ge=1, le=400),
         activate_cooler: bool = Query(default=defaults['activate-cooler']),
@@ -768,18 +838,11 @@ def set_camera_modes(
                                           description='What to do about temperature at shutdown?'),
         save: bool = Query(description='Save these settings as defaults?', default=False),
 ):
-    camera.set_modes(
-        exposure=exposure,
-        acquisition_mode=getattr(AcquisitionMode, acquisition_mode.value),
-        read_mode=getattr(ReadMode, read_mode.value),
-        set_point=set_point,
-        gain=gain,
-        horizontal_binning=horizontal_binning,
-        vertical_binning=vertical_binning,
-        activate_cooler=activate_cooler,
-        cooler_mode=getattr(CoolerMode, cooler_mode.value),
-        save=save,
-    )
+    camera.set_modes(exposure_duration=exposure, acquisition_mode=getattr(AcquisitionMode, acquisition_mode.value),
+                     read_mode=getattr(ReadMode, read_mode.value), set_point=set_point,
+                     cooler_mode=getattr(CoolerMode, cooler_mode.value), activate_cooler=activate_cooler,
+                     em_gain=em_gain, horizontal_binning=horizontal_binning, vertical_binning=vertical_binning,
+                     save=save)
 
 
 base_path = BASE_SPEC_PATH + 'highspec/camera'

@@ -2,6 +2,7 @@ import threading
 from threading import Thread
 
 import zaber_motion.units
+from pydantic import ValidationError
 
 import cooling.chiller
 from common.utils import BASE_SPEC_PATH, Component, CanonicalResponse, CanonicalResponse_Ok, function_name
@@ -15,11 +16,15 @@ from common.paths import PathMaker
 import time
 import logging
 from common.dlipowerswitch import SwitchedOutlet, OutletDomain, DliPowerSwitch, PowerSwitchFactory
-from common.spec import SpecExposureSettings, SpecActivities, SpecAcquisitionSettings, SpecGrating
+from common.spec import SpecExposureSettings, SpecActivities, SpecAcquisitionSettings, Disperser
 from common.activities import HighspecActivities
-from common.tasks.models import SpectrographAssignmentModel
+from common.tasks.models import SpectrographModel
+from common.models.assignments import RemoteAssignment, HighSpecAssignment, DeepSpecAssignment, \
+    SpectrographAssignmentModel
+from common.models.calibration import CalibrationModel
 import os
 from astropy.io import fits
+import json
 
 spec_conf = None
 if not spec_conf:
@@ -31,11 +36,12 @@ if highspec_outlet.power_switch.detected:
     if highspec_outlet.is_off():
         highspec_outlet.power_on()
 
-from cameras.andor.newton import camera as highspec_camera, NewtonEMCCD
 from deepspec import deepspec
-from stage.stage import zaber_controller as stage_controller, Stage
+from highspec import highspec
+from stage.stage import zaber_controller as stage_controller
 from filter_wheel.wheel import filter_wheeler, Wheel
 from calibration.lamp import CalibrationLamp
+from shutter.uniblitz import UniblitzController
 
 logger = logging.getLogger('spec')
 init_log(logger)
@@ -56,12 +62,12 @@ class Spec(Component):
             PowerSwitchFactory.get_instance('mast-spec-ps2')
         ]
         self.deepspec = deepspec
-        self.highspec: NewtonEMCCD = highspec_camera
+        self.deepspec.set_parent(self)
+        self.highspec = highspec
+        self.highspec.set_parent(self)
 
         # convenience fields for the stages
         self.fiber_stage = stage_controller.fiber_stage if hasattr(stage_controller, 'fiber_stage') else None
-        self.camera_stage = stage_controller.camera_stage if hasattr(stage_controller, 'camera_stage') else None
-        self.gratings_stage = stage_controller.gratings_stage if hasattr(stage_controller, 'gratings_stage') else None
 
         self.wheels: List[Wheel] = filter_wheeler.wheels
         self.thar_wheel = [w for w in self.wheels if w.name == 'ThAr'][0]   # convenience wheel field
@@ -73,6 +79,9 @@ class Spec(Component):
         ]
         self.thar_lamp = [l for l in self.lamps if l.name == 'ThAr'][0]
 
+        self.highspec_shutter = UniblitzController(outlet_name='HighShutter')
+        self.deepspec_shutter = UniblitzController(outlet_name='DeepShutter')
+
         self.components_dict: Dict[str, Component | List[Component]] = {
             'chiller': self.chiller,
             'power_switches': self.power_switches,
@@ -81,6 +90,7 @@ class Spec(Component):
             'highspec': self.highspec if hasattr(self, 'highspec') else None,
             'stages': stage_controller.stages,
             'wheels': self.wheels,
+            'shutters': [self.highspec_shutter, self.deepspec_shutter],
         }
 
         self.components = []
@@ -210,13 +220,13 @@ class Spec(Component):
                 self.start_activity(SpecActivities.Positioning)
                 self.fiber_stage.move_to_preset('Highspec')
 
-            if not self.gratings_stage.at_preset(acquisition_settings.grating):
-                self.start_activity(SpecActivities.Positioning, existing_ok=True)
-                self.gratings_stage.move_to_preset(acquisition_settings.grating)
-
-            if not self.camera_stage.at_preset(acquisition_settings.grating):
-                self.start_activity(SpecActivities.Positioning, existing_ok=True)
-                self.camera_stage.move_to_preset(acquisition_settings.grating)
+            # if not self.gratings_stage.at_preset(acquisition_settings.grating):
+            #     self.start_activity(SpecActivities.Positioning, existing_ok=True)
+            #     self.gratings_stage.move_to_preset(acquisition_settings.grating)
+            #
+            # if not self.camera_stage.at_preset(acquisition_settings.grating):
+            #     self.start_activity(SpecActivities.Positioning, existing_ok=True)
+            #     self.camera_stage.move_to_preset(acquisition_settings.grating)
 
             if acquisition_settings.lamp_on:
                 if not self.thar_wheel.at_filter(acquisition_settings.filter_name):
@@ -268,7 +278,7 @@ class Spec(Component):
                 exposure_duration: float,
                 lamp_on: bool,
                 number_of_exposures: Optional[int] = 1,
-                grating: Optional[SpecGrating] = None,
+                disperser: Optional[Disperser] = None,
                 filter_name: Optional[str] = None,
                 x_binning: Optional[int] = 1,
                 y_binning: Optional[int] = 2,
@@ -291,7 +301,7 @@ class Spec(Component):
                                                                                 exposure_duration=exposure_duration,
                                                                                 filter_name=filter_name,
                                                                                 number_of_exposures=number_of_exposures,
-                                                                                grating=grating,
+                                                                                grating=disperser,
                                                                                 x_binning=x_binning,
                                                                                 y_binning=y_binning,
                                                                                 output_folder=output_folder)
@@ -374,7 +384,7 @@ class Spec(Component):
                 logger.info(f"highspec is still working ...")
                 time.sleep(exposure_duration / 5)
 
-            with fits.open(self.highspec.latest_settings.image_full_path, mode='update') as hdul:
+            with fits.open(self.highspec.latest_exposure_settings.image_full_path, mode='update') as hdul:
                 header = hdul[0].header
                 header['FOCUS_NATIVE'] = (
                     self.camera_stage.position(unit=zaber_motion.units.Units.NATIVE),
@@ -391,13 +401,53 @@ class Spec(Component):
 
         self.end_activity(HighspecActivities.Focusing)
 
-    def do_perform_assignment(self, assignment: SpectrographAssignmentModel):
-        pass
+    def do_execute_assignment(self, remote_assignment: RemoteAssignment):
+        spec_assignment = remote_assignment.assignment.spec
+        if isinstance(spec_assignment, dict):
+            try:
+                spec_assignment = SpectrographModel(**spec_assignment)
+            except ValidationError as e:
+                print('ValidationError(s)')
+                for err in e.errors():
+                    print("  "  + json.dumps(err, indent=2))
+                raise
 
-    def receive_assignment(self, assignment: SpectrographAssignmentModel):
-        if not self.operational:
+        calibration: CalibrationModel = spec_assignment.calibration
+        thar_lamp = [lamp for lamp in self.lamps if lamp.name == 'ThAr'][0]
+        thar_wheel = [wheel for wheel in self.wheels if wheel.name == 'ThAr'][0]
+
+        if calibration.lamp_on:
+            if not thar_lamp.is_on():
+                thar_lamp.power_on()
+            if calibration.filter and not self.thar_wheel.at_filter(calibration.filter):
+                thar_wheel.move_to_filter(calibration.filter)
+        else:
+            thar_lamp.power_off()
+
+        if self.fiber_stage and not self.fiber_stage.at_preset(spec_assignment.instrument):
+            self.fiber_stage.move_to_preset(spec_assignment.instrument)
+
+        executor = self.highspec if spec_assignment.instrument == 'highspec' else self.deepspec
+        executor.execute_assignment(spec_assignment, self)
+
+    @property
+    def is_moving(self) -> bool:
+        if not self.thar_wheel or not self.fiber_stage:
+            return False
+        return self.thar_wheel.is_moving or self.fiber_stage.is_moving
+
+
+    async def execute_assignment(self, remote_assignment: RemoteAssignment):
+        initiator = remote_assignment.assignment.initiator
+        what = f"remote assignment: from='{initiator.hostname}' ({initiator.ipaddr}), task='{remote_assignment.assignment.task.ulid}'"
+
+        if remote_assignment.assignment.task.production and not self.operational:
+            logger.info(f"REJECTED {what} (not operational: {self.why_not_operational})")
             return CanonicalResponse(errors=self.why_not_operational)
-        self.do_perform_assignment(assignment)
+
+        logger.info(f"ACCEPTED: {what}")
+        Thread(target=self.do_execute_assignment, args=[remote_assignment]).start()
+        return CanonicalResponse_Ok
 
 
 spec = Spec()
@@ -415,7 +465,7 @@ def expose(spec_name: SpecName,
     spectrograph = spec.deepspec if spec_id == SpecId.Deepspec else spec.highspec
     settings = SpecExposureSettings(exposure_duration=duration, number_of_exposures=number_of_exposures,
                                     x_binning=x_binning, y_binning=y_binning, output_folder=output_folder)
-    spectrograph.acquire(settings)
+    # spectrograph.acquire(settings,,
 
 
 def status():
@@ -436,10 +486,10 @@ base_path = BASE_SPEC_PATH
 tag = 'Spec'
 
 router = APIRouter()
-router.add_api_route(path=base_path + 'status', endpoint=status, tags=[tag])
-router.add_api_route(path=base_path + 'startup', endpoint=spec.startup, tags=[tag])
-router.add_api_route(path=base_path + 'shutdown', endpoint=spec.shutdown, tags=[tag])
-router.add_api_route(path=base_path + 'setparams', endpoint=set_params, tags=[tag])
-router.add_api_route(path=base_path + 'acquire', endpoint=spec.acquire, tags=[tag])
-router.add_api_route(path=base_path + 'take_highspec_exposures_for_focus', endpoint=spec.take_highspec_exposures_for_focus, tags=[tag])
-router.add_api_route(path=base_path + 'receive_assignment', endpoint=spec.receive_assignment, tags=[tag])
+router.add_api_route(path=base_path + '/status', endpoint=status, tags=[tag])
+router.add_api_route(path=base_path + '/startup', endpoint=spec.startup, tags=[tag])
+router.add_api_route(path=base_path + '/shutdown', endpoint=spec.shutdown, tags=[tag])
+router.add_api_route(path=base_path + '/setparams', endpoint=set_params, tags=[tag])
+router.add_api_route(path=base_path + '/acquire', endpoint=spec.acquire, tags=[tag])
+router.add_api_route(path=base_path + '/take_highspec_exposures_for_focus', endpoint=spec.take_highspec_exposures_for_focus, tags=[tag])
+router.add_api_route(path=base_path + '/execute_assignment', methods=['PUT'], endpoint=spec.execute_assignment, tags=[tag])

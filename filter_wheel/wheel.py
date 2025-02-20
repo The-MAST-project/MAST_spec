@@ -332,6 +332,8 @@ class Wheel(Component, SwitchedOutlet):
 
     @property
     def is_moving(self) -> bool:
+        if not self.detected:
+            return False
         return self.is_active(WheelActivities.Moving)
 
     @property

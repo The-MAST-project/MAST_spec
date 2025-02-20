@@ -303,10 +303,10 @@ class Controller(SwitchedOutlet, NetworkedDevice):
             else:
                 self.detected = True
                 self.fiber_stage = Stage(name='fiber', controller=self.device)
-                self.camera_stage = Stage(name='camera', controller=self.device)
-                self.gratings_stage = Stage(name='gratings', controller=self.device)
+                self.focusing_stage = Stage(name='focusing', controller=self.device)
+                self.disperser_stage = Stage(name='disperser', controller=self.device)
 
-                self.stages: List[Stage] = [self.fiber_stage, self.camera_stage, self.gratings_stage]
+                self.stages: List[Stage] = [self.fiber_stage, self.focusing_stage, self.disperser_stage]
 
 
     @staticmethod
@@ -331,7 +331,7 @@ class Controller(SwitchedOutlet, NetworkedDevice):
         try:
             conn = zaber_motion.ascii.Connection.open_tcp(host_name=self.network.ipaddr)
         except zaber_motion.ConnectionFailedException as ex:
-            logger.error(f"cannot connect to '{self.network.ipaddr}' (error: {ex})")
+            logger.error(f"cannot connect to stage controller at '{self.network.ipaddr}' (error: {ex})")
             self.detected = False
             return None
 
