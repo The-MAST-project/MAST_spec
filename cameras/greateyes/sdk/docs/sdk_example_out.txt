@@ -1,0 +1,131 @@
+C:\Users\mast\PycharmProjects\MAST_spec\.venv\Scripts\python.exe -X pycache_prefix=C:\Users\mast\AppData\Local\JetBrains\PyCharmCE2024.3\cpython-cache "C:/Program Files/JetBrains/PyCharm Community Edition 2024.3/plugins/python-ce/helpers/pydev/pydevd.py" --multiprocess --qt-support=auto --port 29781 --file Z:\Downloads\Greateyes\sdk\python\22.5\greateyes_example.py
+Backend tkagg is interactive backend. Turning interactive mode on.
+DLL Version:
+22.3.2109.8
+
+-----------------------------------------------------
+
+setting up connection
+using TCP connection on ip address: 192.168.1.232
+   ok
+
+-----------------------------------------------------
+
+attempting to connect to camera
+   1 camera(s) detected
+
+-----------------------------------------------------
+
+connecting
+   connected to camera GE 1024 1024 BI DD
+
+-----------------------------------------------------
+
+initializing camera
+Status:camera detected and ok
+   ok
+Switching off LED: True
+
+-----------------------------------------------------
+
+Gathering Camera information:
+   Firmware Version: 22
+   Image Size: [1056, 1027]
+   Digital Resolution: 32 bit
+   Pixel Size:  13 um
+   Camera is busy: False
+   max. Exposure time: 2147483647 ms
+   max. binning x: 1056 y: 1027
+   camera supports capacity mode: False
+   camera supports horizontal hardware binning: True
+   camera supports horizontal hardware cropping: True
+   camera provides the following output mode(s):
+      mode 0: 1 Amp (OSR)
+      mode 1: 1 Amp (OSL)
+      mode 2: 2 Amp (OSR & OSL)
+
+-----------------------------------------------------
+
+setting measurement parameters:
+   exposure time set to 1 ms
+
+-----------------------------------------------------
+
+taking single shot non-blocking:
+   measurement started
+   waiting, while DLL is busy
+   ...finished
+
+   measurement time:     0.666 seconds
+   mean intensity:      9646.888 ADU
+   standard deviation:  3057.962 ADU
+
+-----------------------------------------------------
+
+taking single shot blocking:
+   measurement started
+   ...finished
+
+   measurement time:     0.680 seconds
+   mean intensity:      9645.402 ADU
+   standard deviation:  3058.664 ADU
+
+-----------------------------------------------------
+
+testing available camera modes
+
+   Burst Mode
+   image size:          (5135, 1056)
+   measurement time:     3.179 seconds
+   checked: burst mode with 5 Images
+
+   Binning Modes
+   1 x 1 binning   measurement time:  0.661 seconds   image size: (1027, 1056)
+   2 x 2 binning   measurement time:  0.346 seconds   image size: (513, 528)
+   3 x 3 binning   measurement time:  0.263 seconds   image size: (342, 352)
+   4 x 4 binning   measurement time:  0.212 seconds   image size: (256, 264)
+   5 x 5 binning   measurement time:  0.173 seconds   image size: (205, 210)
+   6 x 6 binning   measurement time:  0.166 seconds   image size: (171, 176)
+   7 x 7 binning   measurement time:  0.125 seconds   image size: (146, 150)
+   8 x 8 binning   measurement time:  0.149 seconds   image size: (128, 132)
+   9 x 9 binning   measurement time:  0.141 seconds   image size: (114, 116)
+   10 x 10 binning   measurement time:  0.111 seconds   image size: (102, 104)
+   checked: binning modes 1-10
+
+   Crop Mode
+   image size:          (100, 500)
+   measurement time:     0.100 seconds
+   checked: crop mode with 500 columns and 100 lines
+
+
+   500 kHz readout
+   measurement time:     1.236 seconds
+   checked: 500 kHz pixel frequency
+
+   Gain Mode
+   Setup Gain function returned False.
+   Supposably this camera does not support gain switching.
+
+   Capacity Mode
+   Setup capacity mode function returned False.
+   Supposably this camera does not support capacity mode switching.
+
+   Output Modes
+   mode 0: 1 Amp (OSR)
+   measurement time:     1.211 seconds
+   standard deviation:  3058.664 ADU
+   mode 1: 1 Amp (OSL)
+   measurement time:     1.211 seconds
+   standard deviation:  3058.664 ADU
+   mode 2: 2 Amp (OSR & OSL)
+   measurement time:     0.656 seconds
+   standard deviation:  3058.664 ADU
+   checked: output modes
+
+-----------------------------------------------------
+
+disconnecting
+   done
+   CameraServer connection closed
+
+Process finished with exit code 0

@@ -215,7 +215,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         else:
             self.cycle()
 
-        boot_delay = self.conf['boot_delay'] if 'boot_delay' in self.conf else 20
+        boot_delay = self.conf['probing']['boot_delay'] if 'boot_delay' in self.conf['probing'] else 20
         self.info(f"waiting for the camera to boot ({boot_delay} seconds) ...")
         time.sleep(boot_delay)
 
@@ -585,7 +585,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if (not self.is_active(GreatEyesActivities.Probing) and
                 not self.detected and
                 (self.last_probe_time is None or
-                 datetime.datetime.now() - self.last_probe_time > datetime.timedelta(seconds=self.settings.probe_interval))):
+                 datetime.datetime.now() - self.last_probe_time > datetime.timedelta(seconds=self.settings.probing.interval))):
             self.last_probe_time = datetime.datetime.now()
             self.probe()
             return
