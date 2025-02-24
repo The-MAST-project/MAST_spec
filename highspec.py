@@ -110,9 +110,6 @@ class Highspec(Component):
     def start_exposure(self, settings: SpecExposureSettings):
         pass
 
-    @property
-    def is_working(self) -> bool:
-        return self.camera.is_working
 
     def expose(self,
                seconds: float,
@@ -128,6 +125,10 @@ class Highspec(Component):
         )
         # self.camera.acquire(settings,,
 
+    @property
+    def is_working(self) -> bool:
+        return self.is_active(HighspecActivities.Acquiring)
+
     def do_execute_assignment(self, assignment: SpectrographAssignmentModel, spec):
         """
         Executes a highspec spectrograph assignment (runs in a separate Thread)
@@ -135,6 +136,7 @@ class Highspec(Component):
         :param spec: the parent spectrograph object
         :return:
         """
+        self.start_activity(HighspecActivities.Acquiring)
         highspec_model: HighspecModel = assignment.spec   # the highspec-specific part of the Union
 
         disperser_name = highspec_model.disperser
@@ -168,6 +170,14 @@ class Highspec(Component):
                 hdr['PROGRAM'] = 'MAST'
                 hdr['INSTRUMENT'] = 'Highspec'
                 hdul.flush()
+        self.end_activity(HighspecActivities.Acquiring)
+
+    def can_execute(self, assignment: SpectrographAssignmentModel):
+        if self.camera and self.camera.detected:
+            return True, None
+        else:
+            return False, 'no camera detected'
+
 
     def execute_assignment(self, assignment: SpectrographAssignmentModel, spec):
         Thread(name='newton-acquisition', target=self.do_execute_assignment, args=[assignment, spec]).start()
