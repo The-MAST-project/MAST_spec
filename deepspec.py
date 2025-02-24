@@ -133,6 +133,22 @@ class Deepspec(Component):
             if self.cameras[band]:
                 pass
 
+    def can_execute(self, assignment: SpectrographAssignmentModel):
+        """
+        do we have at least one operational camera?
+        :param assignment:
+        :return:
+        """
+        errors = []
+        for band in self.cameras.keys():
+            if self.cameras[band] is None or not self.cameras[band].detected:
+                continue
+            if not self.cameras[band].operational:
+                for err in self.cameras[band].why_not_operational:
+                    errors.append(err)
+                continue
+        return (False, errors) if  errors else (True, None)
+
     def execute_assignment(self, assignment: SpectrographAssignmentModel, spec: 'Spec' = None):
         deepspec_model: DeepspecModel = assignment.spec
 
