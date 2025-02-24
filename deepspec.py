@@ -161,11 +161,12 @@ class Deepspec(Component):
 
         notification: TaskAcquisitionPathNotification = TaskAcquisitionPathNotification(
             initiator=Initiator.local_machine(),
-            path=str(acquisition_folder),
-            task_id=assignment.task.ulid
+            task_id=assignment.task.ulid,
+            src=str(acquisition_folder),
+            link='spec'
         )
         controller_api = common.api.ControllerApi()
-        controller_api.client.get('task_acquisition_path_notification', {'notice': notification})
+        controller_api.client.put('task_acquisition_path_notification', data=notification)
 
         self.start_activity(DeepspecActivities.Acquiring)
         for band in list(self.cameras.keys()):

@@ -161,11 +161,12 @@ class Highspec(Component):
 
         notification: TaskAcquisitionPathNotification = TaskAcquisitionPathNotification(
             initiator=Initiator.local_machine(),
-            path=str(acquisition_folder),
-            task_id=assignment.task.ulid
+            task_id=assignment.task.ulid,
+            src=str(acquisition_folder),
+            link='spec',
         )
         controller_api = common.api.ControllerApi()
-        controller_api.client.get('task_acquisition_path_notification', {'notice': notification})
+        controller_api.client.put('task_acquisition_path_notification', data=notification)
 
         spec_exposure_settings = SpecExposureSettings(exposure_duration=999)    # dummy exposure_duration, temporary
         logger.info(f"taking {highspec_model.camera.number_of_exposures} exposures")
