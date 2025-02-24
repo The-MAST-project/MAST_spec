@@ -4,6 +4,7 @@ from threading import Thread
 import zaber_motion.units
 from pydantic import ValidationError
 
+import common.api
 import cooling.chiller
 from common.utils import BASE_SPEC_PATH, Component, CanonicalResponse, CanonicalResponse_Ok, function_name
 from common.config import Config
@@ -18,9 +19,9 @@ import logging
 from common.dlipowerswitch import SwitchedOutlet, OutletDomain, DliPowerSwitch, PowerSwitchFactory
 from common.spec import SpecExposureSettings, SpecActivities, SpecAcquisitionSettings, Disperser
 from common.activities import HighspecActivities
-from common.tasks.models import SpectrographModel
+from common.tasks.models import SpectrographModel, TaskAcquisitionPathNotification
 from common.models.assignments import RemoteAssignment, HighSpecAssignment, DeepSpecAssignment, \
-    SpectrographAssignmentModel
+    SpectrographAssignmentModel, Initiator
 from common.models.calibration import CalibrationModel
 import os
 from astropy.io import fits
@@ -411,6 +412,7 @@ class Spec(Component):
                 for err in e.errors():
                     print("  "  + json.dumps(err, indent=2))
                 raise
+        executor = self.highspec if spec_assignment.instrument == 'highspec' else self.deepspec
 
         calibration: CalibrationModel = spec_assignment.calibration
         thar_lamp = [lamp for lamp in self.lamps if lamp.name == 'ThAr'][0]
@@ -427,8 +429,9 @@ class Spec(Component):
         if self.fiber_stage and not self.fiber_stage.at_preset(spec_assignment.instrument):
             self.fiber_stage.move_to_preset(spec_assignment.instrument)
 
-        executor = self.highspec if spec_assignment.instrument == 'highspec' else self.deepspec
         executor.execute_assignment(spec_assignment, self)
+        while executor.is_working:
+            time.sleep(1)
 
     @property
     def is_moving(self) -> bool:
@@ -444,6 +447,12 @@ class Spec(Component):
         if remote_assignment.assignment.task.production and not self.operational:
             logger.info(f"REJECTED {what} (not operational: {self.why_not_operational})")
             return CanonicalResponse(errors=self.why_not_operational)
+
+        executor = self.highspec if remote_assignment.assignment.spec.instrument == 'highspec' else self.deepspec
+        can_execute, reasons = executor.can_execute(remote_assignment.assignment.spec)
+        if not can_execute:
+            logger.info(f"REJECTED {what} (reasons: {reasons})")
+            return CanonicalResponse(errors=reasons)
 
         logger.info(f"ACCEPTED: {what}")
         Thread(target=self.do_execute_assignment, args=[remote_assignment]).start()
