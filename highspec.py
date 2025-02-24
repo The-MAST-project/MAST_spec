@@ -3,6 +3,7 @@ import os.path
 import time
 from typing import List, Optional
 
+import common.api
 from cameras.andor.newton import camera as highspec_camera, NewtonActivities
 from common.models.highspec import HighspecModel
 
@@ -10,10 +11,10 @@ from common.utils import Component, BASE_SPEC_PATH, CanonicalResponse_Ok
 from common.config import Config
 from common.activities import HighspecActivities, SpecActivities
 from common.spec import SpecExposureSettings, BinningLiteral
-from common.tasks.models import AssignedTaskModel, SpectrographModel, SpectrographAssignmentModel
+from common.tasks.models import AssignedTaskModel, SpectrographModel, SpectrographAssignmentModel, TaskAcquisitionPathNotification
 from fastapi.routing import APIRouter
 from stage.stage import zaber_controller as stage_controller, Stage
-from common.models.assignments import HighSpecAssignment
+from common.models.assignments import HighSpecAssignment, Initiator
 from filter_wheel.wheel import Wheel, WheelActivities
 from logging import Logger
 from common.mast_logging import init_log
@@ -155,11 +156,21 @@ class Highspec(Component):
 
         self.camera.apply_settings(highspec_model.camera)
 
-        acquisition_settings = HighspecAcquisitionSettings()                    # sets the output folder
+        acquisition_folder: Path = Path(PathMaker().make_spec_acquisitions_folder(spec_name='highspec'))
+        acquisition_folder = acquisition_folder / PathMaker.make_seq(str(acquisition_folder))
+
+        notification: TaskAcquisitionPathNotification = TaskAcquisitionPathNotification(
+            initiator=Initiator.local_machine(),
+            path=str(acquisition_folder),
+            task_id=assignment.task.ulid
+        )
+        controller_api = common.api.ControllerApi()
+        controller_api.client.get('task_acquisition_path_notification', {'notice': notification})
+
         spec_exposure_settings = SpecExposureSettings(exposure_duration=999)    # dummy exposure_duration, temporary
         logger.info(f"taking {highspec_model.camera.number_of_exposures} exposures")
         for seq in range(1, highspec_model.camera.number_of_exposures+1):
-            spec_exposure_settings.image_file = os.path.join(acquisition_settings.folder, f'exposure#{seq:03}.fits')
+            spec_exposure_settings.image_file = os.path.join(acquisition_folder, f'exposure#{seq:03}.fits')
             self.camera.acquire(spec_exposure_settings)
             logger.info(f'waiting for end of exposure#{seq:03} ...')
             while self.camera.is_active(NewtonActivities.Acquiring):

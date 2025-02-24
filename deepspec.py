@@ -1,17 +1,21 @@
 import time
 from typing import List, Literal, Optional
 
-from cameras.greateyes.greateyes import GreatEyes, Band, cameras as greateyes_cameras
+import common.api
+from cameras.greateyes.greateyes import GreatEyes, cameras as greateyes_cameras
 
 from common.utils import Component, BASE_SPEC_PATH
 from common.config import Config
 from common.activities import DeepspecActivities
 from common.spec import SpecExposureSettings, BinningLiteral
 from fastapi.routing import APIRouter
-from common.models.assignments import DeepSpecAssignment, SpectrographAssignmentModel
+from common.models.assignments import DeepSpecAssignment, SpectrographAssignmentModel, Initiator
 from common.models.deepspec import DeepspecModel
 from common.mast_logging import init_log
+from common.paths import PathMaker
+from common.tasks.models import TaskAcquisitionPathNotification
 import logging
+from pathlib import Path
 
 logger = logging.Logger('deepspec')
 init_log(logger)
@@ -100,7 +104,7 @@ class Deepspec(Component):
         }
 
     def abort(self):
-        if self.is_active(DeepspecActivities.Exposing):
+        if self.is_active(DeepspecActivities.Acquiring):
             for band in self.cameras.keys():
                 if self.cameras[band]:
                     self.cameras[band].abort()
@@ -112,10 +116,7 @@ class Deepspec(Component):
 
     @property
     def is_working(self) -> bool:
-        for cam in self.cameras.values():
-            if cam.is_working:
-                return True
-        return False
+        return self.is_active(DeepspecActivities.Acquiring)
 
     def expose(self,
                seconds: float,
@@ -155,18 +156,29 @@ class Deepspec(Component):
         while spec.is_moving:   # the fiber stage
             time.sleep(0.5)
 
-        # TODO:
-        #  foreach camera:
-        #    enforce camera settings from assignment (including saving folder)
-        #    start a series of exposures, for each exposure
-        #      set the image path in the settings
-        #      wait for end of exposure
-        #
+
+        acquisition_folder = Path(PathMaker().make_spec_acquisitions_folder(spec_name='deepspec'))
+
+        notification: TaskAcquisitionPathNotification = TaskAcquisitionPathNotification(
+            initiator=Initiator.local_machine(),
+            path=str(acquisition_folder),
+            task_id=assignment.task.ulid
+        )
+        controller_api = common.api.ControllerApi()
+        controller_api.client.get('task_acquisition_path_notification', {'notice': notification})
+
+        self.start_activity(DeepspecActivities.Acquiring)
         for band in list(self.cameras.keys()):
-            if not self.cameras[band]:
+            camera = self.cameras[band]
+            if not camera or not camera.detected:
                 continue
-            self.cameras[band].apply_settings(deepspec_model.camera[band])
-        pass
+
+            folder: Path = acquisition_folder / band
+            self.cameras[band].execute_assignment(assignment=assignment, folder=folder)
+
+        while any([(cam is not None and cam.is_working) for cam in self.cameras]):
+            time.sleep(1)
+        self.end_activity(DeepspecActivities.Acquiring)
 
 deepspec = Deepspec()
 base_path = BASE_SPEC_PATH + 'deepspec'
