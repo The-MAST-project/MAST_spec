@@ -687,7 +687,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.apply_settings(settings=settings)
 
         for exposure_number in range(1, settings.number_of_exposures+1):
-            settings.image_file = os.path.join(folder, f"exposure#{exposure_number:03}.fits")
+            settings.image_file = os.path.join(folder, f"exposure-{exposure_number:03}.fits")
             self.expose(settings)
             while self.is_active(GreatEyesActivities.Acquiring):
                 time.sleep(.5)
