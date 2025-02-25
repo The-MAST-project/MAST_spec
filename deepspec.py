@@ -9,11 +9,11 @@ from common.config import Config
 from common.activities import DeepspecActivities
 from common.spec import SpecExposureSettings, BinningLiteral
 from fastapi.routing import APIRouter
-from common.models.assignments import DeepSpecAssignment, SpectrographAssignmentModel, Initiator
+from common.models.assignments import DeepSpecAssignment, SpectrographAssignmentModel, Initiator, RemoteAssignment
 from common.models.deepspec import DeepspecModel
 from common.mast_logging import init_log
 from common.paths import PathMaker
-from common.tasks.models import TaskAcquisitionPathNotification
+from common.tasks.notifications import notify_controller_about_task_acquisition_path
 import logging
 from pathlib import Path
 
@@ -150,8 +150,8 @@ class Deepspec(Component):
                 continue
         return (False, errors) if  errors else (True, None)
 
-    def execute_assignment(self, assignment: SpectrographAssignmentModel, spec: 'Spec' = None):
-        deepspec_model: DeepspecModel = assignment.spec
+    def execute_assignment(self, remote_assignment: RemoteAssignment, spec: 'Spec' = None):
+        deepspec_model: DeepspecModel = remote_assignment.assignment.spec
 
         while spec.is_moving:   # the fiber stage
             time.sleep(0.5)
@@ -159,14 +159,8 @@ class Deepspec(Component):
 
         acquisition_folder = Path(PathMaker().make_spec_acquisitions_folder(spec_name='deepspec'))
 
-        notification: TaskAcquisitionPathNotification = TaskAcquisitionPathNotification(
-            initiator=Initiator.local_machine(),
-            task_id=assignment.task.ulid,
-            src=str(acquisition_folder),
-            link='spec'
-        )
-        controller_api = common.api.ControllerApi()
-        controller_api.client.put('task_acquisition_path_notification', data=notification)
+        notify_controller_about_task_acquisition_path(task_id=remote_assignment.assignment.task.ulid,
+                                                      src=acquisition_folder, link='deepspec')
 
         self.start_activity(DeepspecActivities.Acquiring)
         for band in list(self.cameras.keys()):
@@ -175,9 +169,12 @@ class Deepspec(Component):
                 continue
 
             folder: Path = acquisition_folder / band
-            self.cameras[band].execute_assignment(assignment=assignment, folder=folder)
+            self.cameras[band].execute_assignment(
+                assignment=remote_assignment.assignment.spec,
+                folder=acquisition_folder / band
+            )
 
-        while any([(cam is not None and cam.is_working) for cam in self.cameras]):
+        while {band: cam for band, cam in self.cameras.items() if cam.is_working}:
             time.sleep(1)
         self.end_activity(DeepspecActivities.Acquiring)
 
