@@ -11,10 +11,11 @@ from common.utils import Component, BASE_SPEC_PATH, CanonicalResponse_Ok
 from common.config import Config
 from common.activities import HighspecActivities, SpecActivities
 from common.spec import SpecExposureSettings, BinningLiteral
-from common.tasks.models import AssignedTaskModel, SpectrographModel, SpectrographAssignmentModel, TaskAcquisitionPathNotification
+from common.tasks.models import AssignedTaskModel, SpectrographModel, SpectrographAssignmentModel
+from common.tasks.notifications import notify_controller_about_task_acquisition_path
 from fastapi.routing import APIRouter
 from stage.stage import zaber_controller as stage_controller, Stage
-from common.models.assignments import HighSpecAssignment, Initiator
+from common.models.assignments import HighSpecAssignment, Initiator, RemoteAssignment
 from filter_wheel.wheel import Wheel, WheelActivities
 from logging import Logger
 from common.mast_logging import init_log
@@ -130,17 +131,17 @@ class Highspec(Component):
     def is_working(self) -> bool:
         return self.is_active(HighspecActivities.Acquiring)
 
-    def do_execute_assignment(self, assignment: SpectrographAssignmentModel, spec):
+    def do_execute_assignment(self, remote_assignment: RemoteAssignment, spec):
         """
         Executes a highspec spectrograph assignment (runs in a separate Thread)
-        :param assignment: the assignment, as received from the controller
+        :param remote_assignment: the assignment, as received from the controller
         :param spec: the parent spectrograph object
         :return:
         """
         self.start_activity(HighspecActivities.Acquiring)
-        highspec_model: HighspecModel = assignment.spec   # the highspec-specific part of the Union
+        highspec_assignment: HighspecModel = remote_assignment.assignment.spec   # the highspec-specific part of the Union
 
-        disperser_name = highspec_model.disperser
+        disperser_name = highspec_assignment.disperser
         if self.disperser_stage and not self.disperser_stage.at_preset(disperser_name):
             self.start_activity(HighspecActivities.Positioning, existing_ok=True)
             self.disperser_stage.move_to_preset(disperser_name)
@@ -154,26 +155,23 @@ class Highspec(Component):
                 time.sleep(0.5)
             self.end_activity(HighspecActivities.Positioning)
 
-        self.camera.apply_settings(highspec_model.camera)
+        self.camera.apply_settings(highspec_assignment.camera)
 
         acquisition_folder: Path = Path(PathMaker().make_spec_acquisitions_folder(spec_name='highspec'))
         acquisition_folder = acquisition_folder / PathMaker.make_seq(str(acquisition_folder))
 
-        notification: TaskAcquisitionPathNotification = TaskAcquisitionPathNotification(
-            initiator=Initiator.local_machine(),
-            task_id=assignment.task.ulid,
-            src=str(acquisition_folder),
-            link='spec',
+        notify_controller_about_task_acquisition_path(
+            task_id=remote_assignment.assignment.task.file,
+            src=acquisition_folder,
+            link='highspec'
         )
-        controller_api = common.api.ControllerApi()
-        controller_api.client.put('task_acquisition_path_notification', data=notification)
 
         spec_exposure_settings = SpecExposureSettings(exposure_duration=999)    # dummy exposure_duration, temporary
-        logger.info(f"taking {highspec_model.camera.number_of_exposures} exposures")
-        for seq in range(1, highspec_model.camera.number_of_exposures+1):
-            spec_exposure_settings.image_file = os.path.join(acquisition_folder, f'exposure#{seq:03}.fits')
+        logger.info(f"taking {highspec_assignment.camera.number_of_exposures} exposures")
+        for seq in range(1, highspec_assignment.camera.number_of_exposures + 1):
+            spec_exposure_settings.image_file = os.path.join(acquisition_folder, f'exposure-{seq:03}.fits')
             self.camera.acquire(spec_exposure_settings)
-            logger.info(f'waiting for end of exposure#{seq:03} ...')
+            logger.info(f'waiting for end of exposure-{seq:03} ...')
             while self.camera.is_active(NewtonActivities.Acquiring):
                 time.sleep(0.5)
 
@@ -191,8 +189,8 @@ class Highspec(Component):
             return False, 'no camera detected'
 
 
-    def execute_assignment(self, assignment: SpectrographAssignmentModel, spec):
-        Thread(name='newton-acquisition', target=self.do_execute_assignment, args=[assignment, spec]).start()
+    def execute_assignment(self, remote_assignment: RemoteAssignment, spec):
+        Thread(name='newton-acquisition', target=self.do_execute_assignment, args=[remote_assignment, spec]).start()
         return CanonicalResponse_Ok
 
 
