@@ -79,7 +79,7 @@ class GreatEyesActivities(IntFlag):
 
 
 
-class ExposureTiming:
+class ExposureTiming():
     start: datetime.datetime
     start_utc: datetime.datetime
 
@@ -93,13 +93,19 @@ class ExposureTiming:
 
 
 class Exposure:
-    settings: GreateyesSettingsModel
-    timing: ExposureTiming
+    settings: Optional[GreateyesSettingsModel] = None
+    timing: Optional[ExposureTiming] = None
 
     def __init__(self):
         self.timing = ExposureTiming()
         self.timing.start = datetime.datetime.now()
         self.timing.start_utc = self.timing.start.astimezone(timezone.utc)
+
+    def to_dict(self):
+        return {
+            'settings': self.settings.model_dump() if self.settings else None,
+            'timing': self.timing.__dict__ if self.timing else None,
+        }
 
 
 class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
@@ -333,7 +339,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
              'front_temperature': ge.TemperatureControl_GetTemperature(thermistor=0, addr=self.ge_device),
              'back_temperature': ge.TemperatureControl_GetTemperature(thermistor=1, addr=self.ge_device),
              'errors': self.errors,
-             'latest_exposure': self.latest_exposure,
+             'latest_exposure': self.latest_exposure.to_dict(),
              'latest_settings': self.latest_settings,
             }
         return ret
@@ -394,7 +400,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.errors.append(f"not detected")
             return
 
-        print("apply_settings:\n" + settings.model_dump_json(indent=2))
+        # print("apply_settings:\n" + settings.model_dump_json(indent=2))
         self.start_activity(GreatEyesActivities.SettingParameters)
         self._apply_setting(ge.SetBitDepth, settings.bytes_per_pixel)
         self._apply_setting(ge.SetupSensorOutputMode, settings.readout.mode.value)
