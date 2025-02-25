@@ -494,7 +494,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         hdr.append(Card('TEMPGOAL', self.settings.temp.target_cool, 'GOAL DETECTOR TEMPERATURE'))
         hdr.append(Card('TEMPFLAG', self.backside_temp_safe, 'DETECTOR BACKSIDE TEMPERATURE SAFETY FLAG'))
         hdr.append(Card('DATE-OBS', self.latest_exposure.timing.mid_utc.strftime(FITS_DATE_FORMAT), 'OBSERVATION DATE'))
-        # hdr.append(Card('MJD-OBS', atime.Time(self.latest_exposure.timing.mid_utc).strftime(FITS_DATE_FORMAT), 'MJD OF OBSERVATION MIDPOINT'))
+        hdr.append(Card('MJD-OBS', self.latest_exposure.timing.mid_utc.strftime(FITS_DATE_FORMAT), 'MJD OF OBSERVATION MIDPOINT'))
         hdr.append(Card('RDSPEED', readout_speed_names[self.latest_exposure.settings.readout.speed], 'PIXEL READOUT FREQUENCY'))
         hdr.append(Card('CDELT1', self.latest_exposure.settings.binning.x, 'BINNING IN THE X DIRECTION'))
         hdr.append(Card('CDELT2', self.latest_exposure.settings.binning.y, 'BINNING IN THE Y DIRECTION'))
