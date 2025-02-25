@@ -19,7 +19,7 @@ import logging
 from common.dlipowerswitch import SwitchedOutlet, OutletDomain, DliPowerSwitch, PowerSwitchFactory
 from common.spec import SpecExposureSettings, SpecActivities, SpecAcquisitionSettings, Disperser
 from common.activities import HighspecActivities
-from common.tasks.models import SpectrographModel, TaskAcquisitionPathNotification
+from common.tasks.models import SpectrographModel
 from common.models.assignments import RemoteAssignment, HighSpecAssignment, DeepSpecAssignment, \
     SpectrographAssignmentModel, Initiator
 from common.models.calibration import CalibrationModel
@@ -404,14 +404,6 @@ class Spec(Component):
 
     def do_execute_assignment(self, remote_assignment: RemoteAssignment):
         spec_assignment = remote_assignment.assignment.spec
-        if isinstance(spec_assignment, dict):
-            try:
-                spec_assignment = SpectrographModel(**spec_assignment)
-            except ValidationError as e:
-                print('ValidationError(s)')
-                for err in e.errors():
-                    print("  "  + json.dumps(err, indent=2))
-                raise
         executor = self.highspec if spec_assignment.instrument == 'highspec' else self.deepspec
 
         calibration: CalibrationModel = spec_assignment.calibration
@@ -429,7 +421,7 @@ class Spec(Component):
         if self.fiber_stage and not self.fiber_stage.at_preset(spec_assignment.instrument):
             self.fiber_stage.move_to_preset(spec_assignment.instrument)
 
-        executor.execute_assignment(spec_assignment, self)
+        executor.execute_assignment(remote_assignment, self)
         while executor.is_working:
             time.sleep(1)
 
@@ -438,7 +430,6 @@ class Spec(Component):
         if not self.thar_wheel or not self.fiber_stage:
             return False
         return self.thar_wheel.is_moving or self.fiber_stage.is_moving
-
 
     async def execute_assignment(self, remote_assignment: RemoteAssignment):
         initiator = remote_assignment.assignment.initiator
@@ -501,4 +492,6 @@ router.add_api_route(path=base_path + '/shutdown', endpoint=spec.shutdown, tags=
 router.add_api_route(path=base_path + '/setparams', endpoint=set_params, tags=[tag])
 router.add_api_route(path=base_path + '/acquire', endpoint=spec.acquire, tags=[tag])
 router.add_api_route(path=base_path + '/take_highspec_exposures_for_focus', endpoint=spec.take_highspec_exposures_for_focus, tags=[tag])
+
+tag = 'Assignments'
 router.add_api_route(path=base_path + '/execute_assignment', methods=['PUT'], endpoint=spec.execute_assignment, tags=[tag])
