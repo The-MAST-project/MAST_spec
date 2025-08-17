@@ -1,18 +1,21 @@
+from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from common.config import Config
-from spec import startup as spec_startup, shutdown as spec_shutdown, router as spec_router
 from fastapi.responses import ORJSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from contextlib import asynccontextmanager
 
-from stage.stage import router as stage_router
-from filter_wheel.wheel import router as filter_wheel_router
-from cameras.andor.newton import router as highspec_camera_router
-from cameras.greateyes.greateyes import router as deepspec_camera_router
-from deepspec import router as deepspec_router
-from cooling.chiller import router as chiller_router
+from common.config import Config
+from cooling.chiller import Chiller
+from deepspec import Deepspec
+from filter_wheel.wheel import FilterWheels
+from highspec import Highspec
+from spec import shutdown as spec_shutdown
+from spec import spec
+from spec import startup as spec_startup
+from stage.stage import Controller as StageController
+
 
 @asynccontextmanager
 async def lifespan(fast_app: FastAPI):
@@ -20,8 +23,9 @@ async def lifespan(fast_app: FastAPI):
     yield
     spec_shutdown()
 
+
 app = FastAPI(
-    docs_url='/docs',
+    docs_url="/docs",
     redocs_url=None,
     lifespan=lifespan,
     # openapi_url='/openapi.json',
@@ -51,8 +55,12 @@ app.include_router(Deepspec(spec).api_router)
 def read_favicon():
     return RedirectResponse(url="/static/favicon.ico")
 
-if __name__ == '__main__':
-    server_conf = Config().get_service(service_name='spec')
-    uvicorn_config = uvicorn.Config(app=app, host=server_conf['listen_on'], port=server_conf['port'])
+
+if __name__ == "__main__":
+    server_conf = Config().get_service(service_name="spec")
+    assert server_conf is not None
+    uvicorn_config = uvicorn.Config(
+        app=app, host=server_conf.listen_on, port=server_conf.port
+    )
 
     uvicorn.Server(config=uvicorn_config).run()
