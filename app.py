@@ -39,12 +39,13 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-app.include_router(spec_router)
-app.include_router(highspec_camera_router)
-app.include_router(deepspec_router)
-app.include_router(stage_router)
-app.include_router(filter_wheel_router)
-app.include_router(chiller_router)
+app.include_router(spec.api_router)
+app.include_router(Highspec(spec).api_router)
+app.include_router(StageController(spec).api_router)
+app.include_router(FilterWheels(spec).api_router)
+app.include_router(Chiller().api_router)
+app.include_router(Deepspec(spec).api_router)
+
 
 @app.get("/favicon.ico")
 def read_favicon():
