@@ -11,17 +11,17 @@ from cooling.chiller import Chiller
 from deepspec import Deepspec
 from filter_wheel.wheel import FilterWheels
 from highspec import Highspec
-from spec import shutdown as spec_shutdown
-from spec import spec
-from spec import startup as spec_startup
-from stage.stage import Controller as StageController
+from spec import Spec
+from stage.stage import StageController as StageController
+
+spec = Spec()
 
 
 @asynccontextmanager
 async def lifespan(fast_app: FastAPI):
-    spec_startup()
+    spec.startup()
     yield
-    spec_shutdown()
+    spec.shutdown()
 
 
 app = FastAPI(
