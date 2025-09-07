@@ -18,3 +18,4 @@ nosetests.xml
 **/__pycache__
 greateyes/
 dlipower/
+cameras/greateyes/sdk/
