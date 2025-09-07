@@ -17,3 +17,4 @@ nosetests.xml
 /pytest_*.xml
 **/__pycache__
 greateyes/
+dlipower/
