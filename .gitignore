@@ -1,6 +1,6 @@
 dlipower/package_metadata.json
 *.pyc
-.idea
+.idea/
 dist
 build
 .tox
