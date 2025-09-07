@@ -1,51 +1,60 @@
-import threading
-from threading import Thread
+from __future__ import annotations
 
-import zaber_motion.units
-from pydantic import ValidationError
-
-import common.api
-import cooling.chiller
-from common.utils import BASE_SPEC_PATH, Component, CanonicalResponse, CanonicalResponse_Ok, function_name
-from common.config import Config
-from common.mast_logging import init_log
-from typing import List, Dict, Optional
-from fastapi import APIRouter
-from common.spec import SpecId, SpecName
-from common.filer import Filer
-from common.paths import PathMaker
-import time
 import logging
-from common.dlipowerswitch import SwitchedOutlet, OutletDomain, DliPowerSwitch, PowerSwitchFactory
-from common.spec import SpecExposureSettings, SpecActivities, SpecAcquisitionSettings, Disperser
-from common.activities import HighspecActivities
-from common.tasks.models import SpectrographModel
-from common.models.assignments import RemoteAssignment, HighSpecAssignment, DeepSpecAssignment, \
-    SpectrographAssignmentModel, Initiator
-from common.models.calibration import CalibrationModel
-import os
-from astropy.io import fits
-import json
+import threading
+import time
+from threading import Thread
+from typing import Dict, List
 
-spec_conf = None
-if not spec_conf:
-    spec_conf = Config().get_specs()
+from fastapi import APIRouter
+
+import cooling.chiller
+from calibration.lamp import CalibrationLamp
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+
+# from common.config import Config
+from common.const import Const
+from common.dlipowerswitch import (
+    DliPowerSwitch,
+    OutletDomain,
+    PowerSwitchFactory,
+    SwitchedOutlet,
+)
+from common.interfaces.components import Component
+from common.mast_logging import init_log
+from common.models.assignments import (
+    SpectrographAssignmentModel,
+    TransmittedAssignment,
+)
+from common.models.calibration import CalibrationModel
+from common.spec import (
+    Disperser,
+    SpecAcquisitionSettings,
+    SpecActivities,
+    SpecExposureSettings,
+    SpecId,
+    SpecName,
+)
+from common.utils import function_name
+from deepspec import Deepspec
+from filter_wheel.wheel import FilterWheels, Wheel
+from highspec import Highspec
+from shutter.uniblitz import UniblitzController
+from stage.stage import StageController
 
 # The Newton HighSpec camera must be switched on before the Newton.startup() is called
-highspec_outlet = SwitchedOutlet(domain=OutletDomain.Spec, outlet_name='Highspec')
+highspec_outlet = SwitchedOutlet(
+    domain=OutletDomain.SpecOutlets, outlet_name="Highspec"
+)
+assert highspec_outlet.power_switch is not None
 if highspec_outlet.power_switch.detected:
     if highspec_outlet.is_off():
         highspec_outlet.power_on()
 
-from deepspec import deepspec
-from highspec import highspec
-from stage.stage import zaber_controller as stage_controller
-from filter_wheel.wheel import filter_wheeler, Wheel
-from calibration.lamp import CalibrationLamp
-from shutter.uniblitz import UniblitzController
 
-logger = logging.getLogger('spec')
+logger = logging.getLogger("spec")
 init_log(logger)
+
 
 class Spec(Component):
     """
@@ -53,45 +62,57 @@ class Spec(Component):
       stages, power switches, etc.
     """
 
+    _instance: Spec | None = None
+    _initialized: bool = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(Spec, cls).__new__(cls)
+        return cls._instance
+
     def __init__(self):
+        if self._initialized:
+            return
+
         Component.__init__(self)
-        self.logger = logging.Logger('spec')
+        self.logger = logging.Logger("spec")
         init_log(self.logger)
 
         self.power_switches: List[DliPowerSwitch] = [
-            PowerSwitchFactory.get_instance('mast-spec-ps1'),
-            PowerSwitchFactory.get_instance('mast-spec-ps2')
+            PowerSwitchFactory.get_instance("mast-spec-ps1"),
+            PowerSwitchFactory.get_instance("mast-spec-ps2"),
         ]
-        self.deepspec = deepspec
-        self.deepspec.set_parent(self)
-        self.highspec = highspec
-        self.highspec.set_parent(self)
+        self.deepspec = Deepspec(self)
+        self.highspec = Highspec(self)
 
         # convenience fields for the stages
-        self.fiber_stage = stage_controller.fiber_stage if hasattr(stage_controller, 'fiber_stage') else None
+        stage_controller = StageController(self)
+        self.fiber_stage = stage_controller.fiber_stage
+        self.disperser_stage = stage_controller.disperser_stage
+        self.focusing_stage = stage_controller.focusing_stage
 
-        self.wheels: List[Wheel] = filter_wheeler.wheels
-        self.thar_wheel = [w for w in self.wheels if w.name == 'ThAr'][0]   # convenience wheel field
+        self.wheels: List[Wheel] = FilterWheels(self).wheels
+        self.thar_wheel = [w for w in self.wheels if w.name == "ThAr"][0]
 
         self.chiller = cooling.chiller.Chiller()
         self.lamps: List[CalibrationLamp] = [
-            CalibrationLamp('ThAr'),
-            CalibrationLamp('qTh'),
+            CalibrationLamp(name="ThAr", spec=self),
+            CalibrationLamp(name="qTh", spec=self),
         ]
-        self.thar_lamp = [l for l in self.lamps if l.name == 'ThAr'][0]
+        self.thar_lamp = [lamp for lamp in self.lamps if lamp.name == "ThAr"][0]
 
-        self.highspec_shutter = UniblitzController(outlet_name='HighShutter')
-        self.deepspec_shutter = UniblitzController(outlet_name='DeepShutter')
+        self.highspec_shutter = UniblitzController(spec=self, outlet_name="HighShutter")
+        self.deepspec_shutter = UniblitzController(spec=self, outlet_name="DeepShutter")
 
-        self.components_dict: Dict[str, Component | List[Component]] = {
-            'chiller': self.chiller,
-            'power_switches': self.power_switches,
-            'lamps': self.lamps,
-            'deepspec': self.deepspec if hasattr(self, 'deepspec') else None,
-            'highspec': self.highspec if hasattr(self, 'highspec') else None,
-            'stages': stage_controller.stages,
-            'wheels': self.wheels,
-            'shutters': [self.highspec_shutter, self.deepspec_shutter],
+        self.components_dict: Dict[str, Component | List[Component]] = {  # type: ignore
+            "chiller": self.chiller,
+            "power_switches": self.power_switches,
+            "lamps": self.lamps,
+            "deepspec": self.deepspec if hasattr(self, "deepspec") else None,
+            "highspec": self.highspec if hasattr(self, "highspec") else None,
+            "stages": stage_controller.stages,
+            "wheels": self.wheels,
+            "shutters": [self.highspec_shutter, self.deepspec_shutter],
         }
 
         self.components = []
@@ -105,7 +126,10 @@ class Spec(Component):
         self.highspec_exposure_seconds = 15
         self.deepspec_exposure_seconds = 10
 
+        self._name = "spec"
+
         self._was_shut_down = False
+        self._initialized = True
 
     @property
     def detected(self) -> bool:
@@ -121,29 +145,34 @@ class Spec(Component):
 
     @property
     def name(self) -> str:
-        return 'spec'
+        return self._name
 
-    @property
+    @name.setter
+    def name(self, value):
+        self._name = value
+
     def status(self):
-        ret = self.traverse_components_and_return('status')
+        ret = self.traverse_components_and_return("status")
         ret |= {
-            'activities': self.activities,
-            'activities_verbal': 'Idle' if self.activities == 0 else self.activities.__repr__(),
-            'operational': self.operational,
-            'why_not_operational': self.why_not_operational,
+            "activities": self.activities,
+            "activities_verbal": "Idle"
+            if self.activities == 0
+            else self.activities.__repr__(),
+            "operational": self.operational,
+            "why_not_operational": self.why_not_operational,
         }
         return ret
-    
+
     def startup(self):
-        self.traverse_components_and_call('startup')
+        self.traverse_components_and_call("startup")
         self._was_shut_down = False
-    
+
     def shutdown(self):
-        self.traverse_components_and_call('shutdown')
+        self.traverse_components_and_call("shutdown")
         self._was_shut_down = True
 
     def abort(self):
-        self.traverse_components_and_call('abort')
+        self.traverse_components_and_call("abort")
 
     def traverse_components_and_call(self, method_name: str):
         op = function_name()
@@ -154,7 +183,9 @@ class Spec(Component):
                     if comp:
                         getattr(comp, method_name)()
                     else:
-                        self.logger.error(f"{op}: {key=}, {method_name=} - component is None")
+                        self.logger.error(
+                            f"{op}: {key=}, {method_name=} - component is None"
+                        )
             elif component is None:
                 self.logger.error(f"{op}: {key=}, {method_name=} - component is None")
             else:
@@ -165,10 +196,22 @@ class Spec(Component):
 
         ret = {}
         for key, component in self.components_dict.items():
+            if component is None:
+                ret[key] = None
+                continue
+
             if isinstance(component, list):
+                if len(component) == 0:
+                    ret[key] = []
+                    continue
+
                 ret[key] = {}
-                name = ''
+                name = ""
                 for comp in component:
+                    if comp is None:
+                        ret[key] = None
+                        continue
+
                     if isinstance(comp.name, str):
                         name = comp.name
                     elif callable(comp.name):
@@ -217,37 +260,50 @@ class Spec(Component):
             #
             # A Highspec acquisition
             #
-            if not self.fiber_stage.at_preset('Highspec'):
+            assert self.fiber_stage is not None
+            if not self.fiber_stage.at_preset("Highspec"):
                 self.start_activity(SpecActivities.Positioning)
-                self.fiber_stage.move_to_preset('Highspec')
+                self.fiber_stage.move_to_preset("Highspec")
 
             # if not self.gratings_stage.at_preset(acquisition_settings.grating):
             #     self.start_activity(SpecActivities.Positioning, existing_ok=True)
             #     self.gratings_stage.move_to_preset(acquisition_settings.grating)
             #
-            # if not self.camera_stage.at_preset(acquisition_settings.grating):
+            # if not self.focusing_stage.at_preset(acquisition_settings.grating):
             #     self.start_activity(SpecActivities.Positioning, existing_ok=True)
-            #     self.camera_stage.move_to_preset(acquisition_settings.grating)
+            #     self.focusing_stage.move_to_preset(acquisition_settings.grating)
 
+            assert acquisition_settings.filter_name is not None
             if acquisition_settings.lamp_on:
                 if not self.thar_wheel.at_filter(acquisition_settings.filter_name):
                     self.start_activity(SpecActivities.Positioning, existing_ok=True)
                     self.thar_wheel.move_to_filter(acquisition_settings.filter_name)
 
             if self.is_active(SpecActivities.Positioning):
-                while (self.fiber_stage.is_moving or self.camera_stage.is_moving or
-                       self.gratings_stage.is_moving or self.thar_wheel.is_moving):
-                    time.sleep(.5)
+                while any(
+                    [
+                        comp is not None and comp.is_moving
+                        for comp in [
+                            self.fiber_stage,
+                            self.focusing_stage,
+                            self.disperser_stage,
+                            self.thar_wheel,
+                        ]
+                    ]
+                ):
+                    time.sleep(0.5)
                 self.end_activity(SpecActivities.Positioning)
         else:
             #
             # A Deepspec acquisition
             #
-            if not self.fiber_stage.at_preset('Deepspec'):
+            if self.fiber_stage is not None and not self.fiber_stage.at_preset(
+                "Deepspec"
+            ):
                 self.start_activity(SpecActivities.Positioning)
-                self.fiber_stage.move_to_preset('Deepspec')
+                self.fiber_stage.move_to_preset("Deepspec")
                 while self.fiber_stage.is_moving:
-                    time.sleep(.5)
+                    time.sleep(0.5)
                 self.end_activity(SpecActivities.Positioning)
 
         exposure_settings = SpecExposureSettings(
@@ -255,36 +311,42 @@ class Spec(Component):
             number_of_exposures=acquisition_settings.number_of_exposures,
             x_binning=acquisition_settings.x_binning,
             y_binning=acquisition_settings.y_binning,
-            output_folder=acquisition_settings.output_folder,
+            folder=acquisition_settings.output_folder,
         )
 
-        working_spec = self.highspec if acquisition_settings.spec == SpecId.Highspec else self.deepspec
+        selected_spec = (
+            self.highspec
+            if acquisition_settings.spec == SpecId.Highspec
+            else self.deepspec
+        )
         self.start_activity(SpecActivities.Exposing)
+        assert acquisition_settings.number_of_exposures is not None
         if acquisition_settings.number_of_exposures > 1:
             for i in range(acquisition_settings.number_of_exposures):
                 exposure_settings.number_in_sequence = i
-                working_spec.start_acquisition(exposure_settings)
-                while working_spec.is_working:
+                selected_spec.start_acquisition(exposure_settings)
+                while selected_spec.is_working:
                     time.sleep(2)
         else:
             exposure_settings.number_in_sequence = None
-            working_spec.start_acquisition(exposure_settings)
-            while working_spec.is_working:
+            selected_spec.start_acquisition(exposure_settings)
+            while selected_spec.is_working:
                 time.sleep(2)
 
         self.end_activity(SpecActivities.Acquiring)
 
-    def acquire(self,
-                spec_name: SpecName,
-                exposure_duration: float,
-                lamp_on: bool,
-                number_of_exposures: Optional[int] = 1,
-                disperser: Optional[Disperser] = None,
-                filter_name: Optional[str] = None,
-                x_binning: Optional[int] = 1,
-                y_binning: Optional[int] = 2,
-                output_folder: Optional[str] = None,
-                ):
+    def acquire(
+        self,
+        spec_name: SpecName,
+        exposure_duration: float,
+        lamp_on: bool,
+        number_of_exposures: int = 1,
+        disperser: Disperser | None = None,
+        filter_name: str | None = None,
+        x_binning: int = 1,
+        y_binning: int = 1,
+        output_folder: str | None = None,
+    ):
         """
         # Performs a spec acquisition
         * spec_name - One of the two spectrographs
@@ -297,15 +359,17 @@ class Spec(Component):
         * y_binning - vertical binning
         * output_folder - generated by the controller software
         """
-        acquisition_settings: SpecAcquisitionSettings = SpecAcquisitionSettings(spec_name=spec_name,
-                                                                                lamp_on=lamp_on,
-                                                                                exposure_duration=exposure_duration,
-                                                                                filter_name=filter_name,
-                                                                                number_of_exposures=number_of_exposures,
-                                                                                grating=disperser,
-                                                                                x_binning=x_binning,
-                                                                                y_binning=y_binning,
-                                                                                output_folder=output_folder)
+        acquisition_settings: SpecAcquisitionSettings = SpecAcquisitionSettings(
+            spec_name=spec_name,
+            lamp_on=lamp_on,
+            exposure_duration=exposure_duration,
+            filter_name=filter_name,
+            number_of_exposures=number_of_exposures,
+            grating=disperser,
+            x_binning=x_binning,
+            y_binning=y_binning,
+            output_folder=output_folder,
+        )
         self.start_activity(SpecActivities.Checking)
         errors = []
         if lamp_on and filter_name is None:
@@ -318,97 +382,27 @@ class Spec(Component):
             return CanonicalResponse(errors=errors)
         self.end_activity(SpecActivities.Checking)
 
-        threading.Thread(name='spec-acquisition', target=self.do_acquire, args=[acquisition_settings]).start()
+        threading.Thread(
+            name="spec-acquisition", target=self.do_acquire, args=[acquisition_settings]
+        ).start()
         return CanonicalResponse_Ok
 
     def set_params(self, highspec_seconds: float, deepspec_seconds: float):
         self.highspec_exposure_seconds = highspec_seconds
         self.deepspec_exposure_seconds = deepspec_seconds
 
-    def take_highspec_exposures_for_focus(self,
-                                          exposure_duration: float,
-                                          iterations: int,
-                                          x_binning: int,
-                                          y_binning: int,
-                                          stage_start_position_microns: float,
-                                          stage_microns_per_step: float):
-        """
-        ### Take Highspec exposures for focus training
-        Moves the Highspec focusing stage to a starting position then
-         starts a series of exposures, moving the stage in between by a specified
-         amount (microns)
-        - exposure_duration - seconds (may be fractional)
-        - iterations - How many steps in the series
-        - x_binning - horizontal binning
-        - y_binning - vertical binning
-        - stage_start_position_microns - starting position for the focusing stage (float, microns)
-        - stage_microns_per_step - how much to move the stage between exposures (float, microns)
-        """
-        Thread(target=self.do_take_highspec_exposures_for_focus, args=[
-            exposure_duration, iterations,
-            x_binning, y_binning,
-            stage_start_position_microns, stage_microns_per_step
-        ]).start()
+    def do_execute_assignment(self, remote_assignment: TransmittedAssignment):
+        assert isinstance(remote_assignment.assignment, SpectrographAssignmentModel)
 
-    def do_take_highspec_exposures_for_focus(self,
-                                          exposure_duration: float,
-                                          iterations: int,
-                                          x_binning: int,
-                                          y_binning: int,
-                                          stage_start_position_microns: float,
-                                          stage_microns_per_step: float):
-
-        self.start_activity(HighspecActivities.Focusing)
-        logger.info(f"moving stage to starting position {stage_start_position_microns} ...")
-        self.camera_stage.move_absolute(stage_start_position_microns, unit=zaber_motion.units.Units.LENGTH_MICROMETRES)
-        while self.camera_stage.is_moving:
-            time.sleep(1)
-        logger.info(f"stage arrived to {self.camera_stage.position(unit=zaber_motion.units.Units.LENGTH_MICROMETRES)}...")
-
-        folder = os.path.join(
-            PathMaker().make_daily_folder_name(Filer().shared.root),
-            'highspec_focus')
-        folder = os.path.join(folder, PathMaker().make_seq(folder, None, start_with=1))
-
-        settings = SpecExposureSettings(
-            exposure_duration=exposure_duration,
-            number_of_exposures=1,
-            x_binning=x_binning,
-            y_binning=y_binning,
-            output_folder=folder,
+        spec_assignment = remote_assignment.assignment.spec
+        executor = (
+            self.highspec if spec_assignment.instrument == "highspec" else self.deepspec
         )
 
-        for exposure_number in range(iterations):
-            settings.image_file = f"stage_position={int(self.camera_stage.position(unit=zaber_motion.units.Units.LENGTH_MICROMETRES))}"
-            self.highspec.start_acquisition(settings)
-            while self.highspec.is_working:
-                logger.info(f"highspec is still working ...")
-                time.sleep(exposure_duration / 5)
-
-            with fits.open(self.highspec.latest_exposure_settings.image_full_path, mode='update') as hdul:
-                header = hdul[0].header
-                header['FOCUS_NATIVE'] = (
-                    self.camera_stage.position(unit=zaber_motion.units.Units.NATIVE),
-                    'Focus position in native units')
-                header['FOCUS_MICROMETER'] = (
-                    self.camera_stage.position(unit=zaber_motion.units.Units.LENGTH_MICROMETRES),
-                    'Focus position in micrometers')
-                hdul.flush()
-
-            self.camera_stage.move_relative(stage_microns_per_step, unit=zaber_motion.units.Units.LENGTH_MICROMETRES)
-            while self.camera_stage.is_moving:
-                time.sleep(1)
-            logger.info(f"camera stage now at {self.camera_stage.position}")
-
-        self.end_activity(HighspecActivities.Focusing)
-
-    def do_execute_assignment(self, remote_assignment: RemoteAssignment):
-        spec_assignment = remote_assignment.assignment.spec
-        executor = self.highspec if spec_assignment.instrument == 'highspec' else self.deepspec
-
+        assert spec_assignment.calibration is not None
         calibration: CalibrationModel = spec_assignment.calibration
-        thar_lamp = [lamp for lamp in self.lamps if lamp.name == 'ThAr'][0]
-        thar_wheel = [wheel for wheel in self.wheels if wheel.name == 'ThAr'][0]
+        thar_lamp = [lamp for lamp in self.lamps if lamp.name == "ThAr"][0]
+        thar_wheel = [wheel for wheel in self.wheels if wheel.name == "ThAr"][0]
 
         if calibration.lamp_on:
             if not thar_lamp.is_on():
@@ -418,7 +412,9 @@ class Spec(Component):
         else:
             thar_lamp.power_off()
 
-        if self.fiber_stage and not self.fiber_stage.at_preset(spec_assignment.instrument):
+        if self.fiber_stage and not self.fiber_stage.at_preset(
+            spec_assignment.instrument
+        ):
             self.fiber_stage.move_to_preset(spec_assignment.instrument)
 
         executor.execute_assignment(remote_assignment, self)
@@ -431,16 +427,25 @@ class Spec(Component):
             return False
         return self.thar_wheel.is_moving or self.fiber_stage.is_moving
 
-    async def execute_assignment(self, remote_assignment: RemoteAssignment):
+    async def execute_assignment(self, remote_assignment: TransmittedAssignment):
         initiator = remote_assignment.assignment.initiator
         what = f"remote assignment: from='{initiator.hostname}' ({initiator.ipaddr}), task='{remote_assignment.assignment.task.ulid}'"
 
+        assert isinstance(remote_assignment.assignment, SpectrographAssignmentModel)
+
         if remote_assignment.assignment.task.production and not self.operational:
-            logger.info(f"REJECTED {what} (not operational: {self.why_not_operational})")
+            logger.info(
+                f"REJECTED {what} (not operational: {self.why_not_operational})"
+            )
             return CanonicalResponse(errors=self.why_not_operational)
 
-        executor = self.highspec if remote_assignment.assignment.spec.instrument == 'highspec' else self.deepspec
-        can_execute, reasons = executor.can_execute(remote_assignment.assignment.spec)
+        executor = (
+            self.highspec
+            if remote_assignment.assignment.spec.instrument == "highspec"
+            else self.deepspec
+        )
+        assert isinstance(remote_assignment.assignment, SpectrographAssignmentModel)
+        can_execute, reasons = executor.can_execute(remote_assignment.assignment)
         if not can_execute:
             logger.info(f"REJECTED {what} (reasons: {reasons})")
             return CanonicalResponse(errors=reasons)
@@ -449,49 +454,34 @@ class Spec(Component):
         Thread(target=self.do_execute_assignment, args=[remote_assignment]).start()
         return CanonicalResponse_Ok
 
+    @property
+    def api_router(self) -> APIRouter:
+        base_path = Const().BASE_SPEC_PATH
+        tag = "Spec"
 
-spec = Spec()
+        router = APIRouter()
+        router.add_api_route(
+            path=base_path + "/status", endpoint=self.status, tags=[tag]
+        )
+        router.add_api_route(
+            path=base_path + "/startup", endpoint=self.startup, tags=[tag]
+        )
+        router.add_api_route(
+            path=base_path + "/shutdown", endpoint=self.shutdown, tags=[tag]
+        )
+        router.add_api_route(
+            path=base_path + "/acquire", endpoint=self.acquire, tags=[tag]
+        )
 
+        tag = "Assignments"
+        router.add_api_route(
+            path=base_path + "/execute_assignment",
+            methods=["PUT"],
+            endpoint=self.execute_assignment,
+            tags=[tag],
+        )
 
-def expose(spec_name: SpecName,
-           duration: float,
-           number_of_exposures: Optional[int] = 1,
-           x_binning: Optional[int] = 1,
-           y_binning: Optional[int] = 1,
-           output_folder: Optional[str] = None,
-           ):
-
-    spec_id = SpecId[spec_name]
-    spectrograph = spec.deepspec if spec_id == SpecId.Deepspec else spec.highspec
-    settings = SpecExposureSettings(exposure_duration=duration, number_of_exposures=number_of_exposures,
-                                    x_binning=x_binning, y_binning=y_binning, output_folder=output_folder)
-    # spectrograph.acquire(settings,,
-
-
-def status():
-    return CanonicalResponse(value=spec.status)
-
-
-def set_params(highspec_exposure: float, deepspec_exposure: float):
-    spec.set_params(highspec_exposure, deepspec_exposure)
-
-def startup():
-    spec.startup()
-
-def shutdown():
-    spec.shutdown()
+        return router
 
 
-base_path = BASE_SPEC_PATH
-tag = 'Spec'
-
-router = APIRouter()
-router.add_api_route(path=base_path + '/status', endpoint=status, tags=[tag])
-router.add_api_route(path=base_path + '/startup', endpoint=spec.startup, tags=[tag])
-router.add_api_route(path=base_path + '/shutdown', endpoint=spec.shutdown, tags=[tag])
-router.add_api_route(path=base_path + '/setparams', endpoint=set_params, tags=[tag])
-router.add_api_route(path=base_path + '/acquire', endpoint=spec.acquire, tags=[tag])
-router.add_api_route(path=base_path + '/take_highspec_exposures_for_focus', endpoint=spec.take_highspec_exposures_for_focus, tags=[tag])
-
-tag = 'Assignments'
-router.add_api_route(path=base_path + '/execute_assignment', methods=['PUT'], endpoint=spec.execute_assignment, tags=[tag])
+# spec = Spec()

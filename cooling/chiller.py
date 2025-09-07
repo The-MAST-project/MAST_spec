@@ -1,17 +1,22 @@
 from typing import List
 
-from common.dlipowerswitch import SwitchedOutlet, OutletDomain
-from common.utils import Component, BASE_SPEC_PATH
-from common.config import Config
 from fastapi.routing import APIRouter
+
+from common.config import Config
+from common.const import Const
+from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.interfaces.components import Component
 
 
 class Chiller(SwitchedOutlet, Component):
-
     def __init__(self):
-        self.conf = Config().get_specs()['chiller']
-        SwitchedOutlet.__init__(self, domain=OutletDomain.Spec, outlet_name='Chiller')
+        self.conf = Config().get_specs().chiller
+        SwitchedOutlet.__init__(
+            self, domain=OutletDomain.SpecOutlets, outlet_name="Chiller"
+        )
+        self._name = "chiller"
 
+        assert self.power_switch is not None
         if not self.power_switch.detected:
             return
 
@@ -20,7 +25,15 @@ class Chiller(SwitchedOutlet, Component):
         self._was_shut_down = False
 
     def __repr__(self):
-        return f"Chiller"
+        return "Chiller()"
+
+    @property
+    def name(self):
+        return self._name
+
+    @name.setter
+    def name(self, value):
+        self._name = value
 
     def startup(self):
         if not self.is_on():
@@ -50,32 +63,36 @@ class Chiller(SwitchedOutlet, Component):
         return self._was_shut_down
 
     @property
-    def name(self) -> str:
-        return 'chiller'
-
-    @property
     def operational(self) -> bool:
+        assert self.power_switch is not None
         return self.power_switch.detected and self.is_on()
 
     @property
     def why_not_operational(self) -> List[str]:
         ret = []
+        assert self.power_switch is not None
         if not self.power_switch.detected:
-            ret.append(f"chiller: {self.power_switch} not detected")
+            ret.append(f"{self.name}: {self.power_switch} not detected")
         elif self.is_off():
-            ret.append('chiller: {self.power_switch}:{self.outlet_name} is OFF')
+            ret.append(
+                f"{self.name}: {self.power_switch}:{self.outlet_names[0]} is OFF"
+            )
         return ret
 
     def status(self):
         return {
-            'operational': self.operational,
-            'why_not_operational': self.why_not_operational,
+            "operational": self.operational,
+            "why_not_operational": self.why_not_operational,
         }
 
+    @property
+    def api_router(self) -> APIRouter:
+        base_path = Const().BASE_SPEC_PATH + self.name
+        tag = "Chiller"
+        router = APIRouter()
+
+        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
+        return router
+
+
 chiller = Chiller()
-
-base_path = BASE_SPEC_PATH + 'chiller'
-tag = 'Chiller'
-router = APIRouter()
-
-router.add_api_route(base_path + '/status', tags=[tag], endpoint=chiller.status)

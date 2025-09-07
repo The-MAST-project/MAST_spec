@@ -1,15 +1,23 @@
-from typing import List
+from __future__ import annotations
 
-from common.dlipowerswitch import SwitchedOutlet, OutletDomain
-from common.utils import Component
+from typing import TYPE_CHECKING, List
+
+from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.interfaces.components import Component
+
+if TYPE_CHECKING:
+    from spec import Spec
+
 
 class UniblitzController(Component, SwitchedOutlet):
-
-    def __init__(self, outlet_name: str):
+    def __init__(self, outlet_name: str, spec: Spec | None = None):
         self.outlet_name = outlet_name
-        self._name = outlet_name.replace('spec', '')
+        self._name = outlet_name.replace("spec", "")
+        self.spec = spec
 
-        SwitchedOutlet.__init__(self, domain=OutletDomain.Spec, outlet_name=self.outlet_name)
+        SwitchedOutlet.__init__(
+            self, domain=OutletDomain.SpecOutlets, outlet_name=self.outlet_name
+        )
         if not self.is_on():
             self.power_on()
         self._was_shut_down = False
@@ -26,9 +34,7 @@ class UniblitzController(Component, SwitchedOutlet):
         pass
 
     def status(self):
-        return {
-            'powered': self.is_on()
-        }
+        return {"powered": self.is_on()}
 
     @property
     def operational(self) -> bool:

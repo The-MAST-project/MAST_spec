@@ -1,26 +1,55 @@
-from common.utils import Component, Activities, RepeatTimer, BASE_SPEC_PATH
-from common.mast_logging import init_log
-from enum import IntFlag, Enum, auto
-import logging
-from fastapi import APIRouter
-from typing import List, Dict
-from common.config import Config
-from common.dlipowerswitch import SwitchedOutlet, OutletDomain
+from __future__ import annotations
 
-import sys
+import logging
 import os.path
+import sys
+from enum import Enum, IntFlag, auto
+from typing import TYPE_CHECKING
+
+from fastapi import APIRouter
+
+from common.activities import Activities
+from common.config import Config
+from common.const import Const
+from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.interfaces.components import Component
+from common.mast_logging import init_log
+from common.utils import RepeatTimer
+
+if TYPE_CHECKING:
+    from spec import Spec
+
+
 sys.path.append(os.path.dirname(__file__))
-from sdk.FWxC_COMMAND_LIB import *
+from sdk.FWxC_COMMAND_LIB import (
+    FWxCClose,
+    FWxCGetId,
+    FWxCGetPosition,
+    FWxCGetPositionCount,
+    FWxCGetSensorMode,
+    FWxCGetSpeedMode,
+    FWxCListDevices,
+    FWxCOpen,
+    FWxCSave,
+    FWxCSetPosition,
+    FWxCSetSensorMode,
+    FWxCSetSpeedMode,
+)
+
+
+class WheelNames(str, Enum):
+    ThAr = "ThAr"
+    qTh = "qTh"
 
 
 class SpeedMode(int, Enum):
-    Slow = 0,
-    High = 1,
+    Slow = 0
+    High = 1
 
 
 class SensorMode(int, Enum):
-    Off = 0,
-    On = 1,
+    Off = 0
+    On = 1
 
 
 class WheelActivities(IntFlag):
@@ -30,18 +59,20 @@ class WheelActivities(IntFlag):
 
 
 class Wheel(Component, SwitchedOutlet):
-
     def __init__(self, wheel_name: str):
         Activities.__init__(self)
 
-        self._name = wheel_name   # used by self.name
-        self.id: str = ''
+        self._name = wheel_name  # used by self.name
+        self.id: str = ""
         self._detected = False
 
-        self.conf = Config().get_specs()['wheels'][wheel_name]
-        self.filters: Dict = self.conf['filters']
+        self.conf = Config().get_specs().wheels[wheel_name]
+        self.filters: dict = self.conf.filters
 
-        SwitchedOutlet.__init__(self, domain=OutletDomain.Spec, outlet_name=f"{self.name}Wheel")
+        SwitchedOutlet.__init__(
+            self, domain=OutletDomain.SpecOutlets, outlet_name=f"{self.name}Wheel"
+        )
+        assert self.power_switch is not None
         if self.power_switch.detected:
             if self.is_off():
                 self.power_on()
@@ -49,13 +80,8 @@ class Wheel(Component, SwitchedOutlet):
         self.logger = logging.getLogger(f"mast.spec.filter-wheel-{self.name}")
         init_log(self.logger)
 
-        self.serial_number = self.conf['serial_number']
-        self.positions = dict()
+        self.serial_number = self.conf.serial_number
         self.target: int | None = None
-        for k, v in self.conf.items():
-            if k == 'serial_number' or k == 'default':
-                continue
-            self.positions[k] = v
 
         prefix = f"{self.name} (SN: {self.serial_number})"
 
@@ -91,17 +117,21 @@ class Wheel(Component, SwitchedOutlet):
 
         expected_number_of_positions = 6
         if number_of_positions[0] != expected_number_of_positions:
-            self.logger.error(f"{prefix} expected {expected_number_of_positions} positions, got {number_of_positions[0]}")
+            self.logger.error(
+                f"{prefix} expected {expected_number_of_positions} positions, got {number_of_positions[0]}"
+            )
             self.device = None
             return
 
-        self.positions = number_of_positions[0]
-        self.logger.info(f"{prefix}: positions={self.positions}, id='{self.id}'")
+        # self.positions = number_of_positions[0]
+        # self.logger.info(f"{prefix}: positions={self.positions}, id='{self.id}'")
 
         # set the speed mode to 'high' (1)
         result = FWxCSetSpeedMode(self.device, SpeedMode.High.value)
         if result < 0:
-            self.logger.error(f"{prefix}: Could not set speed mode to {SpeedMode.High.value}")
+            self.logger.error(
+                f"{prefix}: Could not set speed mode to {SpeedMode.High.value}"
+            )
             self.device = None
             return
 
@@ -132,7 +162,9 @@ class Wheel(Component, SwitchedOutlet):
             mode[0] = SensorMode.Off.value
             result = FWxCSetSensorMode(self.device, mode)
             if result < 0:
-                self.logger.error(f"{prefix}: Could not set sensor mode to {SensorMode.Off}")
+                self.logger.error(
+                    f"{prefix}: Could not set sensor mode to {SensorMode.Off}"
+                )
                 self.device = None
                 return
             result = FWxCGetSensorMode(self.device, mode)
@@ -141,7 +173,9 @@ class Wheel(Component, SwitchedOutlet):
                 self.device = None
                 return
             if mode[0] != SensorMode.Off.value:
-                self.logger.error(f"{prefix}: Could not set sensor mode to {SensorMode.Off}")
+                self.logger.error(
+                    f"{prefix}: Could not set sensor mode to {SensorMode.Off}"
+                )
                 self.device = None
                 return
             else:
@@ -150,26 +184,31 @@ class Wheel(Component, SwitchedOutlet):
 
         result = FWxCSave(self.device)
         if result < 0:
-            self.logger.error(f"Could not save")
+            self.logger.error("Could not save")
             self.device = None
             return
         self.logger.info(f"{prefix}: Saved")
 
-        self.positions = dict()
-        for i in range(1, 7):
-            self.positions[i] = self.conf['filters'][str(i)]
-        if 'default' in self.conf:
-            self.default_position = self.conf["default"]
-        else:
-            self.default_position = None
+        # self.positions = dict()
+        # for i in range(1, 7):
+        #     self.positions[i] = self.conf.filters[str(i)]
+        # if "default" in self.conf.filters:
+        #     self.default_position = int(self.conf.filters["default"])
+        # else:
+        #     self.default_position = None
+        self.default_position = (
+            int(self.conf.filters["default"])
+            if "default" in self.conf.filters
+            else None
+        )
 
         self.timer = RepeatTimer(1, function=self.ontimer)
-        self.timer.name = f'{self.name}-timer-thread'
+        self.timer.name = f"{self.name}-timer-thread"
         self.timer.start()
 
         self._was_shut_down = False
 
-        self.logger.info('initialized')
+        self.logger.info("initialized")
 
     @property
     def detected(self) -> bool:
@@ -191,6 +230,12 @@ class Wheel(Component, SwitchedOutlet):
         if self.detected:
             FWxCClose(self.device)
 
+    def check_valid_position(self, pos: int):
+        if pos not in range(1, 7):
+            raise ValueError(
+                f"invalid position {pos}, (valid positions: {range(1, 7)})"
+            )
+
     def startup(self):
         """
         Go to default position
@@ -199,8 +244,11 @@ class Wheel(Component, SwitchedOutlet):
         if not self.detected:
             return
 
-        if (hasattr(self, 'default_position') and self.default_position is not None and
-                self.position != self.default_position):
+        if (
+            hasattr(self, "default_position")
+            and self.default_position is not None
+            and self.position != self.default_position
+        ):
             self.start_activity(WheelActivities.StartingUp)
             self.move(self.default_position)
 
@@ -230,21 +278,23 @@ class Wheel(Component, SwitchedOutlet):
 
     def status(self) -> dict:
         ret = {
-            'detected': self.detected,
-            'operational': self.operational,
-            'why_not_operational': self.why_not_operational,
-            'filters': self.conf['filters'],
+            "detected": self.detected,
+            "operational": self.operational,
+            "why_not_operational": self.why_not_operational,
+            "filters": self.conf.filters,
         }
 
         if self.detected:
-            ret['serial_number'] = self.serial_number
-            ret['id'] = self.id
-            ret['activities'] = self.activities
-            ret['activities_verbal'] = 'Idle' if self.activities == 0 else self.activities.__repr__()
-            ret['idle'] = self.is_idle()
-            ret['position'] = self.position
-            ret['speed_mode'] = self.speed_mode
-            ret['sensor_mode'] = self.sensor_mode
+            ret["serial_number"] = self.serial_number
+            ret["id"] = self.id
+            ret["activities"] = self.activities
+            ret["activities_verbal"] = (
+                "Idle" if self.activities == 0 else self.activities.__repr__()
+            )
+            ret["idle"] = self.is_idle()
+            ret["position"] = self.position
+            ret["speed_mode"] = self.speed_mode
+            ret["sensor_mode"] = self.sensor_mode
 
         return ret
 
@@ -266,53 +316,44 @@ class Wheel(Component, SwitchedOutlet):
 
     def position_of_filter(self, filter_name: str) -> int:
         if filter_name not in self.filters.values():
-            raise ValueError(f"bad {filter_name=}, must be one of {list(self.filters.values())}")
-        return int([key for key in self.filters.keys() if self.filters[key] == filter_name][0])
+            raise ValueError(
+                f"bad {filter_name=}, must be one of {list(self.filters.values())}"
+            )
+        return int(
+            [key for key in self.filters.keys() if self.filters[key] == filter_name][0]
+        )
 
     def at_filter(self, filter_name: str):
         return self.position == self.position_of_filter(filter_name)
 
     def move_to_filter(self, filter_name: str):
         if filter_name not in self.filters.values():
-            raise ValueError(f"bad {filter_name=}, must be one of {list(self.filters.values())}")
-        position = int([key for key in self.filters.keys() if self.filters[key] == filter_name][0])
+            raise ValueError(
+                f"bad {filter_name=}, must be one of {list(self.filters.values())}"
+            )
+        position = int(
+            [key for key in self.filters.keys() if self.filters[key] == filter_name][0]
+        )
         self.move(position)
 
-    def move(self, pos: str | int):
+    def move(self, pos: int):
         if not self.detected:
-            return 'not-detected'
+            return "not-detected"
 
-        if isinstance(pos, str):
-            try:
-                pos = int(pos)
-            except ValueError:
-                for k, v in self.positions.items():
-                    if pos == v:
-                        pos = int(k)
-                        break
-
+        self.check_valid_position(pos)
         if pos == self.position:
-            self.logger.debug(f"Already at position {pos} ('{self.positions[pos]}')")
+            self.logger.debug(f"Already at position {pos}")
             return
 
-        if pos in range(len(self.positions.keys()) + 1):
-            self.target = pos
-            self.start_activity(WheelActivities.Moving)
-            self.logger.debug(f"Moving to position {pos} ('{self.positions[pos]}')")
-            FWxCSetPosition(self.device, self.target)
-        else:
-            return {'Error': f"Valid positions on the '{self.name}' wheel: {self.positions}"}
-
-    def name_to_number(self, pos_name: str) -> int | None:
-
-        if not self.detected:
+        self.target = pos
+        self.start_activity(WheelActivities.Moving)
+        self.logger.debug(f"Moving to position {pos}")
+        result = FWxCSetPosition(self.device, pos)
+        if result < 0:
+            self.logger.error(
+                f"'{self.serial_number}: Could not set position {result=}"
+            )
             return None
-
-        for k, v in self.positions.items():
-            if v == pos_name:
-                return k
-
-        raise Exception(f"Bad position name '{pos_name}'.  Known position names: {self.positions}")
 
     def ontimer(self):
         if not self.detected:
@@ -338,25 +379,27 @@ class Wheel(Component, SwitchedOutlet):
 
     @property
     def operational(self) -> bool:
+        assert self.power_switch is not None
         return self.power_switch.detected and self.detected
 
     @property
     def why_not_operational(self):
         ret = []
         label = f"filter-wheel '{self.name}':"
+        assert self.power_switch is not None
         if not self.power_switch.detected:
-            ret.append(f'{label} {self.power_switch} not detected')
+            ret.append(f"{label} {self.power_switch} not detected")
         elif self.is_off():
-            ret.append(f'{label} {self.power_switch}:{self.outlet_name} is OFF')
+            ret.append(f"{label} {self.power_switch}:{self.outlet_names[0]} is OFF")
         else:
             if not self.detected:
-                ret.append(f'{label} device not detected')
+                ret.append(f"{label} device not detected")
         return ret
 
 
 def make_filter_wheels():
-    ret: List[Wheel] = []
-    for wheel_name in list(Config().get_specs()['wheels'].keys()):
+    ret: list[Wheel] = []
+    for wheel_name in list(Config().get_specs().wheels.keys()):
         wheel = Wheel(wheel_name)
         ret.append(wheel)
     return ret
@@ -364,105 +407,106 @@ def make_filter_wheels():
 
 class FilterWheels:
     _instance = None
+    _initialized = False
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super(FilterWheels, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self):
+    def __init__(self, spec: Spec | None = None):
+        if self._initialized:
+            return
+        self.spec = spec
         self.wheels = make_filter_wheels()
+        self._initialized = True
+
+    def list_wheels(self):
+        ret = {}
+        for wheel in self.wheels:
+            d = {
+                "serial_number": wheel.serial_number,
+            }
+            if wheel.device is not None:
+                ret[wheel.name] = {
+                    "serial_number": wheel.serial_number,
+                    "detected": True,
+                    "device": wheel.id,
+                    "filters": {},
+                }
+                for k, v in wheel.filters.items():
+                    ret[wheel.name].filters[k] = v
+            else:
+                ret[wheel.name] = {
+                    "serial_number": wheel.serial_number,
+                    "detected": False,
+                }
+            ret[wheel.name] = d
+        return ret
+
+    def _wheel_by_name(self, name: WheelNames) -> Wheel | None:
+        for w in filter_wheels.wheels:
+            if w.name == name.value:
+                return w
+        return None
+
+    def get_position(self, wheel: WheelNames):
+        w = self._wheel_by_name(wheel)
+        if w is not None:
+            if w.device is None:
+                return {"Error": f"{w.serial_number}: device not detected"}
+            return w.position
+
+    def get_status(self, wheel: WheelNames):
+        w = self._wheel_by_name(wheel)
+        if w is not None:
+            if w.device is None:
+                return {"Error": f"{w.serial_number}: device not detected"}
+            return w.status()
+
+    def move(self, wheel: WheelNames, position: int):
+        w = self._wheel_by_name(wheel)
+        if w is not None:
+            if w.device is None:
+                return {"Error": f"{w.serial_number}: device not detected"}
+            return w.move(position)
+
+    def startup(self):
+        for w in self.wheels:
+            w.startup()
+
+    def shutdown(self):
+        for w in self.wheels:
+            w.shutdown()
+
+    def abort(self):
+        for w in self.wheels:
+            w.abort()
+
+    @property
+    def api_router(self) -> APIRouter:
+        base_path = Const().BASE_SPEC_PATH + "/fw"
+        tag = "Filter wheels"
+        router = APIRouter()
+
+        router.add_api_route(base_path, tags=[tag], endpoint=self.list_wheels)
+        router.add_api_route(
+            base_path + "/position", tags=[tag], endpoint=self.get_position
+        )
+        router.add_api_route(
+            base_path + "/status", tags=[tag], endpoint=self.get_status
+        )
+        router.add_api_route(base_path + "/move", tags=[tag], endpoint=self.move)
+
+        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
+        router.add_api_route(
+            base_path + "/shutdown", tags=[tag], endpoint=self.shutdown
+        )
+        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort)
+
+        return router
 
 
-filter_wheeler = FilterWheels()
-
-
-def list_wheels():
-    ret = {}
-    for wheel in filter_wheeler.wheels:
-        d = {
-            'serial_number': wheel.serial_number,
-        }
-        if wheel.device is not None:
-            d['detected'] = True
-            d['device'] = wheel.id
-            d['positions'] = {}
-            for k, v in wheel.positions.items():
-                d['positions'][k] = v
-        else:
-            d['detected'] = False
-        ret[wheel.name] = d
-    return ret
-
-
-class WheelNames(str, Enum):
-    ThAr = "ThAr"
-    qTh = "qTh"
-
-
-def wheel_by_name(name: WheelNames) -> Wheel | None:
-    for w in filter_wheeler.wheels:
-        if w.name == name.value:
-            return w
-    return None
-
-
-def get_position(wheel: WheelNames):
-    w = wheel_by_name(wheel)
-    if w is not None:
-        if w.device is None:
-            return {'Error': f'{w.serial_number}: device not detected'}
-        return w.position
-
-
-def get_status(wheel: WheelNames):
-    w = wheel_by_name(wheel)
-    if w is not None:
-        if w.device is None:
-            return {'Error': f'{w.serial_number}: device not detected'}
-        return w.status()
-
-
-def move(wheel: WheelNames, position: int | str):
-    w = wheel_by_name(wheel)
-    if w is not None:
-        if w.device is None:
-            return {'Error': f'{w.serial_number}: device not detected'}
-        if isinstance(position, str):
-            for n, v in w.positions.items():
-                if v == position:
-                    position = n
-                    break
-        return w.move(position)
-
-
-def startup():
-    for w in filter_wheeler.wheels:
-        w.startup()
-
-
-def shutdown():
-    for w in filter_wheeler.wheels:
-        w.shutdown()
-
-
-def abort():
-    for w in filter_wheeler.wheels:
-        w.abort()
-
-
-base_path = BASE_SPEC_PATH + 'fw'
-tag = 'Filter wheels'
-router = APIRouter()
-
-router.add_api_route(base_path, tags=[tag], endpoint=list_wheels)
-router.add_api_route(base_path + '/position', tags=[tag], endpoint=get_position)
-router.add_api_route(base_path + '/status', tags=[tag], endpoint=get_status)
-router.add_api_route(base_path + '/move', tags=[tag], endpoint=move)
-
-router.add_api_route(base_path + '/startup', tags=[tag], endpoint=startup)
-router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=shutdown)
-router.add_api_route(base_path + '/abort', tags=[tag], endpoint=abort)
-
-if __name__ == '__main__':
-    filter_wheeler.wheels[0].move(5)
+if __name__ == "__main__":
+    filter_wheels = FilterWheels()
+    filter_wheels.wheels[0].move(5)
