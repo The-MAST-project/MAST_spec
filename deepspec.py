@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
+from threading import Thread
+from typing import get_args
 
 from fastapi.routing import APIRouter
 
 from cameras.greateyes.greateyes import cameras as greateyes_cameras
-from common.activities import DeepspecActivities
+from common.activities import DeepspecActivities, GreatEyesActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
@@ -15,13 +18,15 @@ from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.assignments import (
     SpectrographAssignmentModel,
-    TransmittedAssignment,
 )
-from common.models.camera import BinningModel
 from common.models.greateyes import GreateyesSettingsModel
 from common.models.spectrographs import SpectrographModel
+from common.models.statuses import DeepspecStatus
 from common.paths import PathMaker
-from common.spec import BinningLiteral, DeepspecBands, SpecExposureSettings
+from common.spec import (
+    DeepspecBands,
+    SpecExposureSettings,
+)
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
 
 logger = logging.Logger("deepspec")
@@ -42,7 +47,7 @@ class Deepspec(Component):
             return
 
         self.conf = Config().get_specs().deepspec
-        Component.__init__(self)
+        Component.__init__(self, DeepspecActivities)
 
         self.cameras = greateyes_cameras
         self.spec = spec
@@ -52,17 +57,19 @@ class Deepspec(Component):
 
     @property
     def detected(self) -> bool:
-        if len(self.cameras.keys()) != 4:
-            return False
+        # if len(self.cameras.keys()) != 4:
+        #     return False
 
-        for camera in self.cameras:
-            if camera is None or not camera.detected:  # type: ignore
-                return False
+        # for _, camera in self.cameras.items():
+        #     if camera is None or not camera.conf.enabled:
+        #         continue
+        #     if not camera.detected:  # type: ignore
+        #         return False
         return True
 
     @property
     def connected(self) -> bool:
-        for cam in self.cameras:
+        for _, cam in self.cameras.items():
             if cam is None or not cam.connected:  # type: ignore
                 return False
 
@@ -101,19 +108,20 @@ class Deepspec(Component):
             if self.cameras[band]:
                 self.cameras[band].shutdown()  # type: ignore # threads?
 
-    def status(self):
-        return {
-            "activities": self.activities,
-            "activities_verbal": "Idle"
-            if self.activities == 0
-            else self.activities.__repr__(),
-            "operational": self.operational,
-            "why_not_operational": self.why_not_operational,
-            "cameras": {
+    def status(self) -> DeepspecStatus:
+        ret = DeepspecStatus(
+            detected=self.detected,
+            connected=self.connected,
+            activities=self.activities,
+            activities_verbal=self.activities_verbal,
+            operational=self.operational,
+            why_not_operational=self.why_not_operational,
+            cameras={
                 key: self.cameras[key].status() if self.cameras[key] else None  # type: ignore
                 for key in self.cameras
             },
-        }
+        )
+        return ret
 
     def abort(self):
         if self.is_active(DeepspecActivities.Acquiring):
@@ -133,8 +141,8 @@ class Deepspec(Component):
     def expose(
         self,
         seconds: float,
-        x_binning: BinningLiteral,
-        y_binning: BinningLiteral,
+        x_binning: int = 1,
+        y_binning: int = 1,
         number_of_exposures: int | None = 1,
     ):
         settings: SpecExposureSettings = SpecExposureSettings(  # noqa: F841
@@ -150,12 +158,33 @@ class Deepspec(Component):
 
     def camera_expose(
         self,
-        band: DeepspecBands,
+        band: str,
         seconds: float,
-        x_binning: BinningLiteral,
-        y_binning: BinningLiteral,
+        x_binning: int = 1,
+        y_binning: int = 1,
         number_of_exposures: int | None = 1,
     ) -> CanonicalResponse:
+        Thread(
+            target=self.do_camera_expose,
+            args=[band, seconds, x_binning, y_binning, number_of_exposures],
+        ).start()
+        return CanonicalResponse_Ok
+
+    def do_camera_expose(
+        self,
+        band: str,
+        seconds: float,
+        x_binning: int = 1,
+        y_binning: int = 1,
+        number_of_exposures: int | None = 1,
+    ) -> CanonicalResponse:
+        if band not in list(get_args(DeepspecBands)):
+            return CanonicalResponse(
+                errors=[
+                    f"invalid band '{band}', must be one of {list(get_args(DeepspecBands))}"
+                ]
+            )
+
         if not self.cameras[band]:
             return CanonicalResponse(errors=[f"camera '{band}' not detected"])
 
@@ -164,19 +193,39 @@ class Deepspec(Component):
         if not camera.detected:
             return CanonicalResponse(errors=[f"camera '{band}' not detected"])
 
-        settings: GreateyesSettingsModel = GreateyesSettingsModel(
-            bytes_per_pixel=1,
-            crop=None,
-            shutter=None,
-            exposure_duration=seconds,
-            number_of_exposures=number_of_exposures,
-            binning=BinningModel(x=x_binning, y=y_binning),  # type: ignore
-            temp=None,
-            readout=None,
-            probing=None,
-        )
+        folder = PathMaker().make_spec_exposures_folder(spec_name="deepspec", band=band)
+        os.makedirs(folder, exist_ok=True)
 
-        camera.expose(settings=settings)
+        for exposure_number in range(number_of_exposures or 1):
+            image_file = os.path.join(
+                folder, "seq=" + PathMaker.make_seq(folder) + ".fits"
+            )
+
+            settings: GreateyesSettingsModel = GreateyesSettingsModel(
+                bytes_per_pixel=1,
+                crop=None,
+                shutter=None,
+                exposure_duration=seconds,
+                number_of_exposures=number_of_exposures,
+                binning={"x": x_binning, "y": y_binning},  # type: ignore
+                image_file=image_file,
+                temp=None,
+                readout=None,
+                probing=None,
+            )
+
+            camera.start_exposure(settings=settings)
+            if camera.errors:
+                return CanonicalResponse(
+                    errors=[
+                        f"exposure #{exposure_number} of {number_of_exposures}, failed: '{e}'"
+                        for e in camera.errors
+                    ]
+                )
+
+            while camera.is_active(GreatEyesActivities.Acquiring):
+                time.sleep(0.5)
+
         return CanonicalResponse_Ok
 
     def can_execute(self, assignment: SpectrographAssignmentModel):
@@ -195,9 +244,9 @@ class Deepspec(Component):
                 continue
         return (False, errors) if errors else (True, None)
 
-    def execute_assignment(self, remote_assignment: TransmittedAssignment, spec):
-        assert isinstance(remote_assignment.assignment, SpectrographModel)
-        # deepspec_model: DeepspecModel = remote_assignment.assignment.spec
+    def execute_assignment(self, remote_assignment: SpectrographAssignmentModel, spec):
+        assert isinstance(remote_assignment.spec, SpectrographModel)
+        # deepspec_model: DeepspecModel = remote_assignment.spec
 
         while spec.is_moving:  # the fiber stage
             time.sleep(0.5)
@@ -206,9 +255,9 @@ class Deepspec(Component):
             PathMaker().make_spec_acquisitions_folder(spec_name="deepspec")
         )
 
-        assert remote_assignment.assignment.task.ulid is not None
+        assert remote_assignment.spec.task.ulid is not None
         notify_controller_about_task_acquisition_path(
-            task_id=remote_assignment.assignment.task.ulid,
+            task_id=remote_assignment.spec.task.ulid,
             src=acquisition_folder,
             link="deepspec",
         )
@@ -234,7 +283,7 @@ class Deepspec(Component):
 
     @property
     def api_router(self) -> APIRouter:
-        base_path = Const().BASE_SPEC_PATH + "deepspec"
+        base_path = Const().BASE_SPEC_PATH + "/deepspec"
         tag = "Deepspec"
         router = APIRouter()
 

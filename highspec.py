@@ -5,12 +5,18 @@ import os.path
 import time
 from pathlib import Path
 from threading import Thread
-from typing import List
+from typing import List, Literal
 
 from astropy.io import fits
 from fastapi.routing import APIRouter
+from pydantic import ValidationError
 
 from cameras.andor.newton import NewtonActivities, NewtonEMCCD
+from cameras.qhy.qhy600 import (
+    QHY600,
+    QHYBinningModel,
+    QHYCameraSettingsModel,
+)
 from common.activities import HighspecActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
@@ -18,12 +24,14 @@ from common.config.newton import NewtonSettingsConfig
 from common.const import Const
 from common.interfaces.components import Component
 from common.mast_logging import init_log
-from common.models.assignments import TransmittedAssignment
+from common.models.assignments import SpectrographAssignmentModel
 from common.models.highspec import HighspecModel
+from common.models.newton import HighspecConfig
+from common.models.statuses import HighspecStatus
 from common.paths import PathMaker
 from common.spec import SpecExposureSettings
-from common.tasks.models import SpectrographAssignmentModel
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
+from common.utils import function_name
 from stage.stage import StageController as StageController
 
 logger = logging.Logger("highspec")
@@ -43,8 +51,10 @@ class HighspecAcquisitionSettings:
 
 
 class HighspecAutofocusSettings(NewtonSettingsConfig):
-    start_position: int | None = None  # None - start at current stage position
-    step_positions: int = 50  # stage steps between exposures
+    camera: Literal["newton", "qhy600", "as-configured"] = "qhy600"
+    guessed_focus_position: int | None = None  # None - start at current stage position
+    positions_per_step: int = 50  # stage steps between exposures
+    number_of_exposures: int = 1
     lamp_on: bool = False  # ThAr lamp
     filters: list[str] | None = None  # optional list of filters
 
@@ -63,11 +73,27 @@ class Highspec(Component):
             return
 
         self._name = "highspec"
-        self.conf = Config().get_specs().highspec
-        self.spec = spec  # the parent, instrument-independent part of the spectrograph
-        Component.__init__(self)
+        try:
+            self.conf = Config().get_specs().highspec
+        except ValidationError as ex:
+            logger.error(f"Bad highspec configuration: {ex=}")
+            raise ValidationError from ex
 
-        self.camera = NewtonEMCCD()
+        self.spec = spec  # the parent, instrument-independent part of the spectrograph
+        Component.__init__(self, HighspecActivities)
+
+        if self.conf.camera == "qhy600":
+            from cameras.qhy.qhy600 import QHY600
+
+            self.camera = QHY600()
+        elif self.conf.camera == "newton":
+            from cameras.andor.newton import NewtonEMCCD
+
+            self.camera = NewtonEMCCD()
+        else:
+            raise ValueError(f"unknown configured camera '{self.conf.camera}'")
+
+        self.camera.set_parent_spec(self)
 
         stage_controller = StageController(self.spec)
         self.focusing_stage = (
@@ -78,6 +104,11 @@ class Highspec(Component):
         self.disperser_stage = (
             stage_controller.disperser_stage
             if hasattr(stage_controller, "disperser_stage")
+            else None
+        )
+        self.fiber_stage = (
+            stage_controller.fiber_stage
+            if hasattr(stage_controller, "fiber_stage")
             else None
         )
 
@@ -113,16 +144,16 @@ class Highspec(Component):
     def shutdown(self):
         self.camera.shutdown()
 
-    def status(self):
-        return {
-            "activities": self.activities,
-            "activities_verbal": "Idle"
-            if self.activities == 0
-            else self.activities.__repr__(),
-            "operational": self.operational,
-            "why_not_operational": self.why_not_operational,
-            "camera": self.camera.status(),
-        }
+    def status(self) -> HighspecStatus:
+        return HighspecStatus(
+            detected=True,
+            connected=self.connected,
+            activities=self.activities,
+            activities_verbal=self.activities_verbal,
+            operational=self.operational,
+            why_not_operational=self.why_not_operational,
+            camera=self.camera.status(),
+        )
 
     def abort(self):
         if self.is_active(HighspecActivities.Exposing):
@@ -152,55 +183,114 @@ class Highspec(Component):
     #     )
     #     # self.camera.acquire(settings,,
 
-    def do_autofocus(self, autofocus_settings: HighspecAutofocusSettings):
+    def do_autofocus(self, settings: HighspecAutofocusSettings):
         assert self.focusing_stage is not None
 
-        self.start_activity(HighspecActivities.Focusing)
+        match settings.camera:
+            case "as-configured":
+                pass  # use self.camera as is
+            case "newton":
+                self.camera = NewtonEMCCD()
+            case "qhy600":
+                self.camera = QHY600()
+            case _:
+                raise ValueError(
+                    f"{function_name()}: unknown camera '{settings.camera}'"
+                )
 
-        if autofocus_settings.lamp_on and self.spec is not None:
-            self.spec.thar_lamp.power_on()
+        self.start_activity(HighspecActivities.AutoFocusing)
+
+        if self.fiber_stage:
+            self.fiber_stage.move_to_preset("highspec")
+
+        if self.spec is not None:
+            self.spec.thar_lamp.power_on() if settings.lamp_on else self.spec.thar_lamp.power_off()
         else:
-            autofocus_settings.filters = None
+            settings.filters = None
 
-        for filter in autofocus_settings.filters or [None]:
-            if filter is not None and self.spec is not None:
+        if settings.guessed_focus_position is not None:
+            initial_focus_position = settings.guessed_focus_position
+            self.focusing_stage.move_absolute(settings.guessed_focus_position)
+            while self.focusing_stage.is_moving:
+                time.sleep(0.5)
+        else:
+            initial_focus_position = self.focusing_stage.position()
+
+        initial_focus_position -= (
+            settings.positions_per_step * settings.number_of_exposures
+        ) / 2  # type: ignore
+        self.focusing_stage.move_absolute(initial_focus_position)
+
+        for filter in settings.filters or [None]:
+            if (
+                filter is not None
+                and self.spec is not None
+                and self.spec.thar_wheel is not None
+            ):
                 self.spec.thar_wheel.move_to_filter(filter_name=filter)
-
-            if autofocus_settings.start_position is not None:
-                self.focusing_stage.move_absolute(autofocus_settings.start_position)
-                while self.focusing_stage.is_moving:
-                    time.sleep(0.5)
 
             folder = PathMaker().make_autofocus_folder()
             if filter:
                 folder = str(Path(folder) / f"filter={filter}")
             Path(folder).mkdir(parents=True, exist_ok=True)
 
-            for _ in range(autofocus_settings.number_of_exposures):
-                image_path = str(Path(folder) / f"FOCUS_{self.focusing_stage.position}")
+            self.camera.set_parent_spec(self)
 
-                settings: SpecExposureSettings = SpecExposureSettings(
-                    exposure_duration=autofocus_settings.exposure_duration,
-                    x_binning=autofocus_settings.binning.x
-                    if autofocus_settings.binning
-                    else 1,
-                    y_binning=autofocus_settings.binning.y
-                    if autofocus_settings.binning
-                    else 1,
-                    image_path=image_path,
+            for exposure_number in range(settings.number_of_exposures):
+                image_path = Path(folder) / f"FOCUS_{self.focusing_stage.position}"
+                image_file = str(image_path)
+
+                logger.debug(
+                    f"{function_name()}: Exposure #{exposure_number} out of {settings.number_of_exposures} into '{image_path.as_posix()}'"
                 )
+                if isinstance(self.camera, NewtonEMCCD):
+                    self.start_activity(HighspecActivities.Exposing)
+                    x_binning = settings.binning.x if settings.binning else 1
+                    y_binning = settings.binning.y if settings.binning else 1
 
-                self.camera.start_acquisition(settings=settings)
-                while self.camera.is_active(NewtonActivities.Acquiring):
+                    self.camera.start_acquisition(
+                        settings=SpecExposureSettings(
+                            exposure_duration=settings.exposure_duration,
+                            x_binning=x_binning,
+                            y_binning=y_binning,
+                            image_path=image_file,
+                        )
+                    )
+
+                elif isinstance(self.camera, QHY600):
+                    self.start_activity(HighspecActivities.Exposing)
+                    binning = (
+                        QHYBinningModel(
+                            x=settings.binning.x,
+                            y=settings.binning.y,
+                        )
+                        if settings.binning
+                        else QHYBinningModel(x=1, y=1)
+                    )
+
+                    self.camera.start_single_exposure(
+                        settings=QHYCameraSettingsModel(
+                            exposure_duration=settings.exposure_duration,
+                            binning=binning,
+                            image_path=image_file,
+                        )
+                    )
+
+                while self.is_active(HighspecActivities.Exposing):
                     time.sleep(0.5)
 
-                self.focusing_stage.move_relative(autofocus_settings.step_positions)
+                self.focusing_stage.move_relative(settings.positions_per_step)
                 while self.focusing_stage.is_moving:
                     time.sleep(0.5)
 
-        if autofocus_settings.lamp_on and self.spec is not None:
+        if settings.lamp_on and self.spec is not None:
             self.spec.thar_lamp.power_off()
-        self.end_activity(HighspecActivities.Focusing)
+
+        #
+        # Call Yahel's code to make known_as_good_focus_position
+        # Update known_as_good_focus_position in config DB
+        #
+        self.end_activity(HighspecActivities.AutoFocusing)
 
     def autofocus(
         self, autofocus_settings: HighspecAutofocusSettings
@@ -218,11 +308,15 @@ class Highspec(Component):
 
     @property
     def is_working(self) -> bool:
-        return self.is_active(HighspecActivities.Acquiring) or self.is_active(
-            HighspecActivities.Focusing
+        return (
+            self.is_active(HighspecActivities.Acquiring)
+            or self.is_active(HighspecActivities.AutoFocusing)
+            or self.is_active(HighspecActivities.Exposing)
         )
 
-    def do_execute_assignment(self, remote_assignment: TransmittedAssignment, spec):
+    def do_execute_assignment(
+        self, remote_assignment: SpectrographAssignmentModel, spec
+    ):
         """
         Executes a highspec spectrograph assignment (runs in a separate Thread)
         :param remote_assignment: the assignment, as received from the controller
@@ -230,18 +324,18 @@ class Highspec(Component):
         :return:
         """
         self.start_activity(HighspecActivities.Acquiring)
-        assert isinstance(remote_assignment.assignment, SpectrographAssignmentModel)
-        assert isinstance(remote_assignment.assignment.spec, HighspecModel)
+        assert isinstance(remote_assignment.spec, SpectrographAssignmentModel)
+        assert isinstance(remote_assignment.spec.spec, HighspecModel)
         highspec_assignment: HighspecModel = (
-            remote_assignment.assignment.spec
+            remote_assignment.spec.spec
         )  # the highspec-specific part of the Union
 
         disperser_name = highspec_assignment.disperser
-        if self.disperser_stage and not self.disperser_stage.at_preset(disperser_name):
+        if self.disperser_stage and self.disperser_stage.at_preset != disperser_name:
             self.start_activity(HighspecActivities.Positioning, existing_ok=True)
             self.disperser_stage.move_to_preset(disperser_name)
 
-        if self.focusing_stage and not self.focusing_stage.at_preset(disperser_name):
+        if self.focusing_stage and self.focusing_stage.at_preset != disperser_name:
             self.start_activity(HighspecActivities.Positioning, existing_ok=True)
             self.focusing_stage.move_to_preset(disperser_name)
 
@@ -257,7 +351,7 @@ class Highspec(Component):
             self.end_activity(HighspecActivities.Positioning)
 
         assert highspec_assignment.camera is not None
-        self.camera.apply_settings(highspec_assignment.camera)
+        # self.camera.apply_settings(highspec_assignment.camera)
 
         acquisition_folder: Path = Path(
             PathMaker().make_spec_acquisitions_folder(spec_name="highspec")
@@ -266,9 +360,9 @@ class Highspec(Component):
             str(acquisition_folder)
         )
 
-        assert remote_assignment.assignment.task.file is not None
+        assert remote_assignment.plan.file is not None
         notify_controller_about_task_acquisition_path(
-            task_id=remote_assignment.assignment.task.file,
+            task_id=remote_assignment.plan.file,
             src=acquisition_folder,
             link="highspec",
         )
@@ -284,7 +378,7 @@ class Highspec(Component):
             spec_exposure_settings.image_path = os.path.join(
                 acquisition_folder, f"exposure-{seq:03}.fits"
             )
-            self.camera.acquire(spec_exposure_settings)
+            self.camera.start_acquisition(spec_exposure_settings)
             logger.info(f"waiting for end of exposure-{seq:03} ...")
             while self.camera.is_active(NewtonActivities.Acquiring):
                 time.sleep(0.5)
@@ -292,7 +386,7 @@ class Highspec(Component):
             with fits.open(spec_exposure_settings.image_path, mode="update") as hdul:
                 hdr = hdul[0].header  # type: ignore
                 hdr["PROGRAM"] = "MAST"
-                hdr["INSTRUMENT"] = "Highspec"
+                hdr["INSTRUME"] = "Highspec"
                 hdul.flush()
         self.end_activity(HighspecActivities.Acquiring)
 
@@ -302,7 +396,7 @@ class Highspec(Component):
         else:
             return False, ["no camera detected"]
 
-    def execute_assignment(self, remote_assignment: TransmittedAssignment, spec):
+    def execute_assignment(self, remote_assignment: SpectrographAssignmentModel, spec):
         Thread(
             name="newton-acquisition",
             target=self.do_execute_assignment,
@@ -329,7 +423,10 @@ class Highspec(Component):
         #     response_model=None,
         # )
         router.add_api_route(
-            base_path + "/autofocus", tags=[tag], endpoint=self.autofocus
+            base_path + "/autofocus",
+            tags=[tag],
+            methods=["PUT"],
+            endpoint=self.autofocus,
         )
 
         return router
