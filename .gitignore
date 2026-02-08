@@ -19,3 +19,4 @@ nosetests.xml
 greateyes/
 dlipower/
 cameras/greateyes/sdk/
+**/*.fits
