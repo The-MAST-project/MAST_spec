@@ -5,20 +5,22 @@ import sys
 import threading
 import time
 from datetime import timezone
-from enum import IntEnum, IntFlag, auto
-from typing import Callable, List, Optional, get_args
+from enum import IntEnum
+from typing import Callable, get_args
 
 import astropy.io.fits as fits
 from astropy.io.fits import Card
 from pydantic import BaseModel
 
+from common.activities import GreatEyesActivities
 from common.config import Config
-from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.dlipowerswitch import SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.assignments import SpectrographAssignmentModel
 from common.models.deepspec import DeepspecModel
 from common.models.greateyes import GreateyesSettingsModel, ReadoutSpeed
+from common.models.statuses import GreateyesStatus
 from common.networking import NetworkedDevice
 from common.spec import DeepspecBands
 from common.utils import OperatingMode, RepeatTimer, function_name
@@ -30,6 +32,11 @@ logger = logging.getLogger("greateyes")
 init_log(logger, logging.DEBUG)
 
 dll_version = ge.GetDLLVersion()
+shown_dll_version = False
+
+if not shown_dll_version:
+    logger.info(f"Greateyes DLL version: '{dll_version}'")
+    shown_dll_version = True
 
 FAILED_TEMPERATURE = -300
 
@@ -63,19 +70,6 @@ readout_speed_names = {
 }
 
 
-class GreatEyesActivities(IntFlag):
-    CoolingDown = auto()
-    WarmingUp = auto()
-    Acquiring = auto()
-    Exposing = auto()
-    ReadingOut = auto()
-    Saving = auto()
-    StartingUp = auto()
-    ShuttingDown = auto()
-    SettingParameters = auto()
-    Probing = auto()
-
-
 class ExposureTiming:
     start: datetime.datetime
     start_utc: datetime.datetime
@@ -90,8 +84,8 @@ class ExposureTiming:
 
 
 class Exposure:
-    settings: Optional[GreateyesSettingsModel] = None
-    timing: Optional[ExposureTiming] = None
+    settings: GreateyesSettingsModel | None = None
+    timing: ExposureTiming | None = None
 
     def __init__(self):
         self.timing = ExposureTiming()
@@ -110,7 +104,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self._initialized = False
         self._detected = False
         self._connected = False
-        Component.__init__(self)
+        Component.__init__(self, GreatEyesActivities)
 
         self.band = band
         self.conf = (
@@ -120,12 +114,14 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.settings: GreateyesSettingsModel = GreateyesSettingsModel(
             **self.conf.settings.model_dump()
         )
-        self.latest_settings: Optional[GreateyesSettingsModel] = None
+        self.latest_settings: GreateyesSettingsModel | None = None
         self.ge_device = self.conf.device
         self._name = f"Deepspec-{self.band}"
         self.outlet_name = f"Deepspec{self.band}"
         self.errors = []
-        self.output_modes: List[str] = []
+        self.output_modes: list[str] = []
+
+        from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 
         assert self.conf.network is not None
         NetworkedDevice.__init__(self, self.conf.model_dump())
@@ -182,15 +178,15 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         #
         assert self.ge_device is not None
         ret = ge.DisconnectCamera(addr=self.ge_device)
-        # self.debug(f"ge.DisconnectCamera(addr={self.ge_device}) -> {ret}")
+        self.debug(f"ge.DisconnectCamera(addr={self.ge_device}) -> {ret}")
         try:
             ret = ge.DisconnectCameraServer(addr=self.ge_device)
-            # self.debug(f"ge.DisconnectCameraServer(addr={self.ge_device}) -> {ret}")
+            self.debug(f"ge.DisconnectCameraServer(addr={self.ge_device}) -> {ret}")
         except Exception as e:
             self.error(
-                f"ge.DisconnectCameraServer(addr={self.ge_device}) caught error {e}"
+                f"ge.DisconnectCameraServer(addr={self.ge_device}) caught error {e}, ignoring."
             )
-            return
+            # return
 
         # This just tells the Greateyes server how to interface with the specific camera
         # NOTE: it should not fail
@@ -204,7 +200,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 f"could not ge.SetupCameraInterface({ge.connectionType_Ethernet}, "
                 + f"ipaddress={self.network.ipaddr}, addr={self.ge_device}) (ret={ret}, msg='{ge.StatusMSG}')"
             )
-            self.end_activity(GreatEyesActivities.Probing)
+            self.end_activity(GreatEyesActivities.Probing, label=self.name)
             return
         # self.debug(
         #     f"OK: ge.SetupCameraInterface({ge.connectionType_Ethernet}, "
@@ -214,10 +210,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         ret = ge.ConnectToSingleCameraServer(addr=self.ge_device)
         if not ret:
             self.error(
-                f"could not ge.ConnectToSingleCameraServer(addr={self.ge_device}) ipaddr='{self.network.ipaddr}'"
+                f"could not ge.ConnectToSingleCameraServer(addr={self.ge_device}) ipaddr='{self.network.ipaddr}' "
                 + f"(ret={ret}, msg='{ge.StatusMSG}')"
             )
-            self.end_activity(GreatEyesActivities.Probing)
+            self.end_activity(GreatEyesActivities.Probing, label=self.name)
             return
         # self.debug(
         #     f"OK: ge.ConnectToSingleCameraServer(addr={self.ge_device}) "
@@ -231,10 +227,11 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 f"could not ge.ConnectCamera(model=[], addr={self.ge_device}) (ret={ret}, "
                 + f"msg='{ge.StatusMSG}')"
             )
-            self.end_activity(GreatEyesActivities.Probing)
+            self.end_activity(GreatEyesActivities.Probing, label=self.name)
             return
+        fw_version = ge.GetFirmwareVersion(self.ge_device)
         self.debug(
-            f"OK: ge.ConnectCamera(model=[], addr={self.ge_device}) (ret={ret}, msg='{ge.StatusMSG}')"
+            f"OK: ge.ConnectCamera(model={model}, ipaddr='{self.network.ipaddr}' addr={self.ge_device} fw={fw_version}) (ret={ret}, msg='{ge.StatusMSG}')"
         )
 
         self.model_id = model[0]
@@ -274,7 +271,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
             self.try_connect_camera()
             if not self.detected:
-                self.end_activity(GreatEyesActivities.Probing)
+                self.end_activity(GreatEyesActivities.Probing, label=self.name)
                 return
 
         assert self.ge_device is not None
@@ -287,7 +284,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             )
             ge.DisconnectCamera(addr=self.ge_device)
             ge.DisconnectCameraServer(addr=self.ge_device)
-            self.end_activity(GreatEyesActivities.Probing)
+            self.end_activity(GreatEyesActivities.Probing, label=self.name)
             return
 
         # NOTE: The number 42223 is from the file received with the cameras on the USB stick
@@ -304,18 +301,19 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         self.info(
             f"greateyes: ipaddr='{self.network.ipaddr}', size={self.x_size}x{self.y_size}, "
-            + f"model_id={self.model_id}, model='{self.model}, fw_version={self.firmware_version}"
+            + f"model_id='{self.model_id}', model='{self.model}', fw_version='{self.firmware_version}'"
         )
 
         n_output_modes = ge.GetNumberOfSensorOutputModes(addr=self.ge_device)
         for n in range(n_output_modes):
             mode = ge.GetSensorOutputModeStrings(n, addr=self.ge_device)
+            self.info(f"supported output mode[{n}]: '{mode}'")
             self.output_modes.append(mode)
 
         self.apply_settings(default_settings)
 
         self.set_led(False)
-        self.end_activity(GreatEyesActivities.Probing)
+        self.end_activity(GreatEyesActivities.Probing, label=self.name)
 
     @property
     def detected(self) -> bool:
@@ -364,39 +362,45 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.errors.append(err)
         self.error(err)
 
-    def status(self) -> dict:
+    def status(self) -> GreateyesStatus:
         assert self.ge_device is not None
 
-        ret = {
-            "band": self.band,
-            "ipaddr": self.network.ipaddr,
-            "detected": self.detected,
-            "operational": self.operational,
-            "why_not_operational": self.why_not_operational,
-            "enabled": self.enabled,
-            "activities": self.activities,
-            "activities_verbal": "Idle"
-            if self.activities == 0
-            else self.activities.__repr__(),
-        }
-        if self.enabled and self.detected:
-            ret |= {
-                "powered": self.is_on(),
-                "connected": self.connected,
-                "addr": self.ge_device,
-                "idle": self.is_idle(),
-                "min_temp": self.min_temp,
-                "max_temp": self.max_temp,
-                "front_temperature": ge.TemperatureControl_GetTemperature(
-                    thermistor=0, addr=self.ge_device
-                ),
-                "back_temperature": ge.TemperatureControl_GetTemperature(
-                    thermistor=1, addr=self.ge_device
-                ),
-                "errors": self.errors,
-                "latest_exposure": self.latest_exposure.to_dict(),
-                "latest_settings": self.latest_settings,
-            }
+        front_temperature = (
+            ge.TemperatureControl_GetTemperature(thermistor=0, addr=self.ge_device)
+            if self.connected
+            else None
+        )
+        back_temperature = (
+            ge.TemperatureControl_GetTemperature(thermistor=1, addr=self.ge_device)
+            if self.connected
+            else None
+        )
+
+        ret = GreateyesStatus(
+            powered=self.is_on(),
+            band=self.band,
+            ipaddr=self.network.ipaddr,
+            enabled=self.enabled,
+            detected=self.detected,
+            connected=self.connected,
+            addr=self.ge_device,
+            operational=self.operational,
+            why_not_operational=self.why_not_operational,
+            activities=self.activities,
+            activities_verbal=self.activities_verbal,
+            min_temp=self.min_temp,
+            max_temp=self.max_temp,
+            front_temperature=front_temperature,
+            back_temperature=back_temperature,
+            errors=self.errors,
+            latest_exposure=self.latest_exposure.to_dict()
+            if self.latest_exposure
+            else None,
+            latest_settings=self.latest_settings.model_dump()
+            if self.latest_settings
+            else None,
+        )
+
         return ret
 
     def cool_down(self):
@@ -408,7 +412,11 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if ge.TemperatureControl_SetTemperature(
             temperature=self.settings.temp.target_cool, addr=self.ge_device
         ):
-            self.start_activity(GreatEyesActivities.CoolingDown, label=self._name)
+            self.start_activity(
+                GreatEyesActivities.CoolingDown,
+                label=self._name,
+                details=[f"to {self.settings.temp.target_cool}°C"],
+            )
 
     def warm_up(self):
         if not self.detected:
@@ -468,39 +476,81 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             return
 
         # print("apply_settings:\n" + settings.model_dump_json(indent=2))
-        self.start_activity(GreatEyesActivities.SettingParameters)
-        self._apply_setting(ge.SetBitDepth, settings.bytes_per_pixel)
+        self.start_activity(GreatEyesActivities.SettingParameters, label=self.name)
+        self._apply_setting(
+            ge.SetBitDepth, settings.bytes_per_pixel or self.conf.bytes_per_pixel
+        )
 
         # Note: SetupSensorOutputMode always returns False (even their example ignores the return value)
         assert settings.readout
         assert self.ge_device is not None
-        ge.SetupSensorOutputMode(settings.readout.mode.value, addr=self.ge_device)
+        readout_mode = (
+            settings.readout.mode.value
+            if settings.readout.mode is not None
+            else self.conf.readout.mode.value
+        )
+        ge.SetupSensorOutputMode(readout_mode, addr=self.ge_device)
         self.info(
-            f"OK - SetupSensorOutputMode({settings.readout.mode.value}, addr={self.ge_device}) (ret value ignored)"
+            f"OK - SetupSensorOutputMode({readout_mode}, addr={self.ge_device}) (ret value ignored)"
+        )
+        info = ge.GetImageSize(addr=self.ge_device)
+        if (
+            info[0] != self.x_size
+            or info[1] != self.y_size
+            or info[2] != self.bytes_per_pixel
+        ):
+            self.warning(
+                f"image size changed after setting output mode: was {self.x_size} x {self.y_size} x {self.bytes_per_pixel}, now {info[0]} x {info[1]} x {info[2]}"
+            )
+            self.x_size = info[0]
+            self.y_size = info[1]
+            self.bytes_per_pixel = info[2]
+
+        self._apply_setting(
+            ge.SetReadOutSpeed,
+            settings.readout.speed.value
+            if settings.readout.speed is not None
+            else self.conf.readout.speed.value,
         )
 
-        self._apply_setting(ge.SetReadOutSpeed, settings.readout.speed.value)
-        assert settings.binning
-        self._apply_setting(ge.SetBinningMode, (settings.binning.x, settings.binning.y))
-        assert settings.crop
-        if settings.crop.enabled:
-            self._apply_setting(
-                ge.SetupCropMode2D, (settings.crop.col, settings.crop.line)
-            )
-            self._apply_setting(ge.ActivateCropMode, True)
+        binning_x = (
+            settings.binning.x if settings.binning is not None else self.conf.binning.x
+        )
+        binning_y = (
+            settings.binning.y if settings.binning is not None else self.conf.binning.y
+        )
+        self._apply_setting(ge.SetBinningMode, (binning_x, binning_y))
+
+        if settings.crop is not None:
+            if settings.crop.enabled:
+                self._apply_setting(
+                    ge.SetupCropMode2D, (settings.crop.col, settings.crop.line)
+                )
+                self._apply_setting(ge.ActivateCropMode, True)
+        elif self.conf.crop is not None:
+            if self.conf.crop.enabled:
+                self._apply_setting(
+                    ge.SetupCropMode2D, (self.conf.crop.col, self.conf.crop.line)
+                )
+                self._apply_setting(ge.ActivateCropMode, True)
         else:
             self._apply_setting(ge.ActivateCropMode, False)
-        assert settings.shutter
-        if settings.shutter.automatic:
+
+        if settings.shutter is not None and settings.shutter.automatic:
             self._apply_setting(
                 ge.SetShutterTimings,
                 (settings.shutter.open_time, settings.shutter.close_time),
             )
+        elif self.conf.shutter is not None and self.conf.shutter.automatic:
+            self._apply_setting(
+                ge.SetShutterTimings,
+                (self.conf.shutter.open_time, self.conf.shutter.close_time),
+            )
 
         self.latest_settings = settings
-        self.end_activity(GreatEyesActivities.SettingParameters)
+        self.end_activity(GreatEyesActivities.SettingParameters, label=self.name)
 
-    def expose(self, settings: GreateyesSettingsModel):
+    def start_exposure(self, settings: GreateyesSettingsModel):
         self.errors = []
         if not self.detected:
             self.errors.append("not detected")
@@ -509,7 +559,9 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         assert self.ge_device is not None
         if not self.is_idle():
             if ge.DllIsBusy(addr=self.ge_device):
-                self.append_error("could not start exposure: ge.DllIsBusy()")
+                self.append_error(
+                    f"could not start exposure: ge.DllIsBusy(addr={self.ge_device})"
+                )
                 return
 
             if self.is_active(GreatEyesActivities.CoolingDown):
@@ -522,7 +574,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                     assert self.settings.temp
                     delta_temp = abs(self.settings.temp.target_cool - ret)
                     self.append_error(
-                        f"cannot expose while cooling down ({delta_temp=} to cool)"
+                        f"cannot expose while cooling down ({delta_temp=} deg to cool)"
                     )
                 return
 
@@ -532,7 +584,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         self.latest_exposure.settings = settings
 
-        self.start_activity(GreatEyesActivities.Acquiring)
+        self.start_activity(GreatEyesActivities.Acquiring, label=self.name)
         assert self.latest_settings and self.latest_settings.readout
         if 0 < self.latest_settings.readout.mode >= len(self.output_modes):
             self.append_error(
@@ -542,16 +594,24 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             ret = ge.SetupSensorOutputMode(
                 self.latest_settings.readout.mode, addr=self.ge_device
             )
-            if not ret:
-                self.append_error(
-                    f"could not SetupSensorOutputMode({self.latest_settings.readout.mode}) (error: {ge.StatusMSG})"
+            # if not ret:
+            #     self.append_error(
+            #         f"could not SetupSensorOutputMode({self.latest_settings.readout.mode}) (error: {ge.StatusMSG})"
+            #     )
+
+            info = ge.GetImageSize(addr=self.ge_device)
+            if info[0] != self.x_size or info[1] != self.y_size:
+                self.warning(
+                    f"image size changed after setting output mode: was {self.x_size} x {self.y_size}, now {info[0]} x {info[1]}"
                 )
+                self.x_size = info[0]
+                self.y_size = info[1]
 
         assert self.latest_exposure.settings.exposure_duration
         if not self._apply_setting(
             ge.SetExposure, int(self.latest_exposure.settings.exposure_duration * 1000)
         ):
-            self.end_activity(GreatEyesActivities.Acquiring)
+            self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
             return
 
         assert self.latest_settings.shutter
@@ -562,7 +622,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             addr=self.ge_device, showShutter=self.latest_settings.shutter.automatic
         )
         if ret:
-            self.start_activity(GreatEyesActivities.Exposing)
+            self.start_activity(GreatEyesActivities.Exposing, label=self.name)
             assert self.latest_exposure.timing
             self.latest_exposure.timing.start_utc = datetime.datetime.now(datetime.UTC)
             self.latest_exposure.timing.start = datetime.datetime.now()
@@ -573,18 +633,18 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
     def readout(self):
         if not self.detected:
-            self.end_activity(GreatEyesActivities.Acquiring)
+            self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
             return
 
         assert self.latest_exposure.settings
         if not self.latest_exposure.settings.image_file:
-            self.end_activity(GreatEyesActivities.Acquiring)
-            raise Exception("empty image_file")
+            self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
+            raise Exception("empty self.latest_exposure.settings.image_file")
 
         assert self.ge_device is not None
-        self.start_activity(GreatEyesActivities.ReadingOut)
+        self.start_activity(GreatEyesActivities.ReadingOut, label=self.name)
         image_array = ge.GetMeasurementData_DynBitDepth(addr=self.ge_device)
-        self.end_activity(GreatEyesActivities.ReadingOut)
+        self.end_activity(GreatEyesActivities.ReadingOut, label=self.name)
 
         assert self.latest_settings and self.latest_settings.shutter
         if not self.latest_settings.shutter.automatic:
@@ -594,7 +654,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                     f"could not close shutter with ge.OpenShutter(0, addr={self.ge_device})"
                 )
 
-        self.start_activity(GreatEyesActivities.Saving)
+        self.start_activity(GreatEyesActivities.Saving, label=self.name)
         hdr = fits.Header()
         hdr.append(Card("INSTRUME", "DEEPSPEC", "Instrument"))
         hdr.append(Card("TELESCOP", "WAO-MAST", "Telescope"))
@@ -683,14 +743,14 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             )
         )
 
-        assert self.latest_exposure.settings.readout is not None
-        hdr.append(
-            Card(
-                "RDSPEED",
-                readout_speed_names[self.latest_exposure.settings.readout.speed],
-                "PIXEL READOUT FREQUENCY",
+        if self.latest_exposure.settings.readout is not None:
+            hdr.append(
+                Card(
+                    "RDSPEED",
+                    readout_speed_names[self.latest_exposure.settings.readout.speed],
+                    "PIXEL READOUT FREQUENCY",
+                )
             )
-        )
 
         assert self.latest_exposure.settings.binning is not None
         hdr.append(
@@ -743,15 +803,15 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if not filename.endswith(".fits"):
             filename += ".fits"
         try:
-            self.start_activity(GreatEyesActivities.Saving)
+            self.start_activity(GreatEyesActivities.Saving, label=self.name)
             os.makedirs(os.path.dirname(filename), exist_ok=True)
             hdul.writeto(filename)
-            self.end_activity(GreatEyesActivities.Saving)
+            self.end_activity(GreatEyesActivities.Saving, label=self.name)
             self.info(f"saved exposure to '{filename}'")
         except Exception as e:
-            self.end_activity(GreatEyesActivities.Acquiring)
+            self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
             self.debug(f"failed to save exposure (error: {e})")
-        self.end_activity(GreatEyesActivities.Acquiring)
+        self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
 
     @property
     def is_working(self) -> bool:
@@ -824,7 +884,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if self.is_active(GreatEyesActivities.Exposing):
             # check if exposure has ended
             if not ge.DllIsBusy(addr=self.ge_device):
-                self.end_activity(GreatEyesActivities.Exposing)
+                self.end_activity(GreatEyesActivities.Exposing, label=self.name)
 
                 assert self.latest_exposure.timing is not None
                 self.latest_exposure.timing.end = datetime.datetime.now()
@@ -848,26 +908,26 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                     target=self.readout,
                 )
                 self.readout_thread.start()
-            else:
-                elapsed = (
-                    now - self.timings[GreatEyesActivities.Exposing].start_time
-                ).seconds
-                assert (
-                    self.latest_exposure.settings is not None
-                    and self.latest_exposure.settings.exposure_duration is not None
-                )
-                max_expected = self.latest_exposure.settings.exposure_duration * 2
-                if elapsed > max_expected:
-                    self.append_error(
-                        f"exposure takes too long ({elapsed=} > {max_expected=})"
-                    )
-                    ret = ge.StopMeasurement(addr=self.ge_device)
-                    if ret:
-                        self.append_error(
-                            f"could not ge.StopMeasurement(addr={self.ge_device}) ({ret=})"
-                        )
-                    else:
-                        self.end_activity(GreatEyesActivities.Exposing)
+            # else:
+            #     elapsed = (
+            #         now - self.timings[GreatEyesActivities.Exposing].start_time
+            #     ).seconds
+            #     assert (
+            #         self.latest_exposure.settings is not None
+            #         and self.latest_exposure.settings.exposure_duration is not None
+            #     )
+            #     max_expected = self.latest_exposure.settings.exposure_duration * 10
+            #     if elapsed > max_expected:
+            #         self.append_error(
+            #             f"exposure takes too long ({elapsed=} > {max_expected=})"
+            #         )
+            #         ret = ge.StopMeasurement(addr=self.ge_device)
+            #         if ret:
+            #             self.append_error(
+            #                 f"could not ge.StopMeasurement(addr={self.ge_device}) ({ret=})"
+            #             )
+            #         else:
+            #             self.end_activity(GreatEyesActivities.Exposing, label=self.name)
 
         if self.is_active(GreatEyesActivities.CoolingDown) or self.is_active(
             GreatEyesActivities.WarmingUp
@@ -920,6 +980,9 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
     @property
     def operational(self) -> bool:
+        if not self.enabled:
+            return False
+
         assert self.power_switch is not None
         return (
             self.power_switch.detected
@@ -931,9 +994,14 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         )
 
     @property
-    def why_not_operational(self) -> List[str]:
+    def why_not_operational(self) -> list[str]:
         ret = []
         label = f"{self._name}:"
+
+        if not self.enabled:
+            ret.append(f"{label} disabled")
+            return ret
+
         assert self.power_switch is not None
         if not self.power_switch.detected:
             ret.append(f"{label} {self.power_switch} not detected")
@@ -1005,7 +1073,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             settings.image_file = os.path.join(
                 folder, f"exposure-{exposure_number:03}.fits"
             )
-            self.expose(settings)
+            self.start_exposure(settings)
             while self.is_active(GreatEyesActivities.Acquiring):
                 time.sleep(0.5)
 
@@ -1039,9 +1107,9 @@ def make_camera(band: DeepspecBands):
         cameras[band] = None
 
 
-cameras: dict[DeepspecBands, GreatEyes | None] = {}
+cameras: dict[str, GreatEyes | None] = {}
 
-for _band in get_args(DeepspecBands):
+for _band in list(get_args(DeepspecBands)):
     threading.Thread(
         name=f"make-deepspec-camera-{_band}", target=make_camera, args=[_band]
     ).start()
