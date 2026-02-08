@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List
 
+from common.activities import CalibrationLampActivities
 from common.config import Config
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
+from common.models.statuses import CalibrationLampStatus
 
 if TYPE_CHECKING:
     from spec import Spec
@@ -14,7 +16,7 @@ class CalibrationLamp(Component, SwitchedOutlet):
     def __init__(self, name: str, spec: Spec | None = None):
         self._name = name
         self.spec = spec
-        Component.__init__(self)
+        Component.__init__(self, CalibrationLampActivities)
         self.conf = Config().get_specs().lamps
 
         SwitchedOutlet.__init__(
@@ -40,11 +42,13 @@ class CalibrationLamp(Component, SwitchedOutlet):
         return self._was_shut_down
 
     @property
-    def status(self):
-        return {
-            "operational": self.operational,
-            "why_not_operational": self.why_not_operational,
-        }
+    def status(self) -> CalibrationLampStatus:
+        return CalibrationLampStatus(
+            powered=self.is_on(),
+            detected=self.detected,
+            operational=self.operational,
+            why_not_operational=self.why_not_operational,
+        )
 
     @property
     def operational(self) -> bool:
