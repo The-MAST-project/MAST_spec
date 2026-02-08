@@ -8,12 +8,14 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter
 
+from common import activities
 from common.activities import Activities
 from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import init_log
+from common.models.statuses import WheelStatus
 from common.utils import RepeatTimer
 
 if TYPE_CHECKING:
@@ -276,25 +278,23 @@ class Wheel(Component, SwitchedOutlet):
         if self.is_active(WheelActivities.Moving):
             self.end_activity(WheelActivities.Moving)
 
-    def status(self) -> dict:
-        ret = {
-            "detected": self.detected,
-            "operational": self.operational,
-            "why_not_operational": self.why_not_operational,
-            "filters": self.conf.filters,
-        }
-
-        if self.detected:
-            ret["serial_number"] = self.serial_number
-            ret["id"] = self.id
-            ret["activities"] = self.activities
-            ret["activities_verbal"] = (
-                "Idle" if self.activities == 0 else self.activities.__repr__()
-            )
-            ret["idle"] = self.is_idle()
-            ret["position"] = self.position
-            ret["speed_mode"] = self.speed_mode
-            ret["sensor_mode"] = self.sensor_mode
+    def status(self) -> WheelStatus:
+        ret = WheelStatus(
+            detected=self.detected,
+            operational=self.operational,
+            why_not_operational=self.why_not_operational,
+            filters=self.filters,
+            activities=self.activities,
+            activities_verbal=self.activities_verbal,
+            id=self.id,
+            serial_number=self.serial_number,
+            position=self.position if self.detected else None,
+            speed_mode=self.speed_mode.__repr__() if self.detected else None,
+            sensor_mode=self.sensor_mode.__repr__() if self.detected else None,
+            current_filter=self.filters.get(self.position, None)
+            if self.detected
+            else None,
+        )
 
         return ret
 
