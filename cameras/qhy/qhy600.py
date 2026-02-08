@@ -1,165 +1,63 @@
+import ctypes
 import logging
 import os
-import sys
 import threading
 import time
-from ctypes import (
-    CDLL,
-    POINTER,
-    addressof,
-    byref,
-    c_char_p,
-    c_double,
-    c_int,
-    c_ubyte,
-    c_uint8,
-    c_uint32,
-    c_void_p,
-    cast,
-    create_string_buffer,
-)
 from enum import IntFlag, auto
 from pathlib import Path
 from typing import Callable, Literal
 
 from pydantic import BaseModel
 
-# from qcam.qCam import Qcam
-from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.activities import HighspecActivities
+from common.dlipowerswitch import SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.spec import SpecExposureSettings
 
 from .controls import QHYControlId, qhy_controls
+from .prototypes import set_ctypes_prototypes
 
-
-class MyQcam:
-    QHYCCD_SUCCESS = 0
-    STR_BUFFER_SIZE = 32
-
-    def __init__(self, dll_path):
-        self.so = CDLL(dll_path)
-
-
-cam = MyQcam(
+qhy = ctypes.CDLL(
     os.path.join(
         os.path.dirname(__file__), "sdk", "2024-12-26-stable", "x64", "qhyccd.dll"
     )
 )
-assert cam.so is not None, "Failed to load QHY SDK"
+set_ctypes_prototypes(qhy)
 
-cam.so.OpenQHYCCD.argtypes = [
-    c_char_p,  # id
-]
-cam.so.OpenQHYCCD.restype = c_void_p  # handle
-
-cam.so.CloseQHYCCD.argtypes = [
-    c_void_p,  # handle
-]
-cam.so.CloseQHYCCD.restype = c_int
-
-cam.so.SetQHYCCDResolution.argtypes = [
-    c_void_p,  # handle
-    c_uint32,  # x0
-    c_uint32,  # y0
-    c_uint32,  # xsize
-    c_uint32,  # ysize
-]
-cam.so.SetQHYCCDResolution.restype = c_int
-
-cam.so.GetQHYCCDChipInfo.argtypes = [
-    c_void_p,  # handle
-    POINTER(c_double),  # chipw
-    POINTER(c_double),  # chiph
-    POINTER(c_uint32),  # width
-    POINTER(c_uint32),  # height
-    POINTER(c_double),  # pixelw
-    POINTER(c_double),  # pixelh
-    POINTER(c_uint32),  # bpp
-]
-cam.so.GetQHYCCDChipInfo.restype = c_int
-
-cam.so.SetQHYCCDBitsMode.argtypes = [
-    c_void_p,  # handle
-    c_uint32,  # bits
-]
-cam.so.SetQHYCCDBitsMode.restype = c_int
-
-cam.so.SetQHYCCDStreamMode.argtypes = [
-    c_void_p,  # handle
-    c_uint8,  # mode
-]
-cam.so.SetQHYCCDStreamMode.restype = c_int
-
-cam.so.GetQHYCCDSDKVersion.argtypes = [
-    POINTER(c_uint32),  # year
-    POINTER(c_uint32),  # month
-    POINTER(c_uint32),  # day
-    POINTER(c_uint32),  # reserved
-]
-cam.so.GetQHYCCDSDKVersion.restype = c_int
-
-cam.so.GetQHYCCDId.argtypes = [
-    c_uint32,  # index
-    c_char_p,  # id (dest buffer)
-]
-cam.so.GetQHYCCDId.restype = c_int
-
-cam.so.IsQHYCCDControlAvailable.argtypes = [
-    c_void_p,  # handle
-    c_int,  # control ID
-]
-cam.so.IsQHYCCDControlAvailable.restype = c_int
-
-cam.so.GetQHYCCDParam.argtypes = [
-    c_void_p,  # handle
-    c_int,  # control ID
-]
-cam.so.GetQHYCCDParam.restype = c_double
-
-cam.so.SetQHYCCDParam.argtypes = [
-    c_void_p,  # handle
-    c_int,  # control ID
-    c_double,  # value
-]
-cam.so.SetQHYCCDParam.restype = c_int
-
-cam.so.ExpQHYCCDSingleFrame.argtypes = [
-    c_void_p,  # handle
-]
-cam.so.ExpQHYCCDSingleFrame.restype = c_int
-
-cam.so.SetQHYCCDBinMode.argtypes = [
-    c_void_p,  # handle
-    c_uint32,  # binX
-    c_uint32,  # binY
-]
-cam.so.SetQHYCCDBinMode.restype = c_int
-
-cam.so.GetQHYCCDSingleFrame.argtypes = [
-    c_void_p,  # handle
-    POINTER(c_uint32),  # w
-    POINTER(c_uint32),  # h
-    POINTER(c_uint32),  # bpp
-    POINTER(c_uint32),  # channels
-    POINTER(c_uint8),  # imgdata (dest buffer)
-]
-cam.so.GetQHYCCDSingleFrame.restype = c_uint32
-
-cam.so.GetReadModesNumber.argtypes = [
-    c_void_p,  # handle
-    POINTER(c_uint32),  # num
-]
+QHYCCD_SUCCESS = 0
+STR_BUFFER_SIZE = 32
+assert qhy is not None, "Failed to load QHY SDK"
 
 logger = logging.getLogger(f"mast.highspec.{__name__}")
 init_log(logger)
 
 
+class QHYReadMode(IntFlag):  # detected from a QHY600U3 camera
+    Photographic_DSO_16BIT = 0
+    High_Gain_Mode_16BIT = 1
+    Extend_Fullwell_Mode = 2
+    Extended_Fullwell_2CMS = 3
+    Bit14_MODE = 4  # fiber
+    Bin3x3Mode = 5  # hardware
+    Bit12Mode = 6  # fiber
+    Bit12_raw_mode = 7  # fiber
+    CMS2_0 = 8
+    CMS2_1 = 9
+    Bit14_mode_high_gain = 10
+    Bit14_mode_low_noise = 11  # fiber
+
+
+class QHYStreamMode(IntFlag):
+    SingleFrame = 0
+    Continuous = 1
+
+
 class QHYRoiModel(BaseModel):
     x: int = 0
     y: int = 0
-    xsize: int = 0
-    ysize: int = 0
+    width: int = 0
+    height: int = 0
 
 
 class QHYBinningModel(BaseModel):
@@ -167,42 +65,23 @@ class QHYBinningModel(BaseModel):
     y: int = 1
 
 
-class QHYCameraSettingsModel(BaseModel):
-    binning: QHYBinningModel = QHYBinningModel(x=1, y=1)
-    roi: QHYRoiModel | None = None
-    # temperature: Optional[NewtonTemperatureModel]
-    # shutter: Optional[NewtonShutterModel]
-    gain: int | None = None
-    exposure_duration: float = 1.0  # in seconds
-    number_of_exposures: int = 1
-    image_path: str | Path | None = None  # full path to save image
-    depth: Literal[8, 16] = 16  # bits per pixel
-
-
 class QHYActivities(IntFlag):
     Idle = auto()
     Acquiring = auto()
     ExposingSingleFrame = auto()
     SettingParameters = auto()
-    ExposingAndReadingOut = auto()
+    ReadingOut = auto()
     Saving = auto()
 
 
-class QHYSettingsModel(BaseModel):
-    exposure: float = 1.0  # in seconds
-    gain: int = 0
-    offset: int = 0
-    readout_speed: int = 0  # index into readout speeds
-    hsspeed: int = 0  # index into horizontal shift speeds
-    preamp_gain: int = 0  # index into preamp gains
-    cooling_temperature: float = -10.0  # in Celsius
-    cooler_on: bool = True
-    high_speed_mode: bool = False
-    trigger_mode: int = 0  # 0=internal, 1=external, etc.
-    image_flip: bool = False
-    binning: QHYBinningModel = QHYBinningModel()
-    save_directory: Path = Path("C:/Images")
-    file_format: str = "FITS"  # or "TIFF", "JPEG", etc.
+class QHYCameraSettingsModel(BaseModel):
+    binning: QHYBinningModel = QHYBinningModel(x=1, y=1)
+    roi: QHYRoiModel | None = None
+    gain: int | None = None
+    exposure_duration: float = 1.0  # in seconds
+    number_of_exposures: int = 1
+    image_path: str | Path | None = None  # full path to save image
+    depth: Literal[8, 16] = 16  # bits per pixel
 
 
 class QHY600(Component, SwitchedOutlet):
@@ -222,102 +101,44 @@ class QHY600(Component, SwitchedOutlet):
         if self._initialized:
             return
 
-        Component.__init__(self)
+        Component.__init__(self, QHYActivities)
         # SwitchedOutlet.__init__(
         #     self, domain=OutletDomain.SpecOutlets, outlet_name="QHY600U3"
         # )
 
-        cam.so.ReleaseQHYCCDResource()  # type: ignore
-        cam.so.InitQHYCCDResource()  # type: ignore
+        qhy.InitQHYCCDResource()
         logger.info(f"running in '{os.path.realpath(os.curdir)}'")
 
         self.cam_id = None
         self.serial_number = None
         self.handle = None
-        self.chip_width = c_double()
-        self.chip_height = c_double()
-        self.width = c_uint32()
-        self.height = c_uint32()
-        self.pixel_width = c_double()
-        self.pixel_height = c_double()
-        self.channels = c_uint32()
-        self.bits_per_pixel = c_uint32()
+        self.chip_width = ctypes.c_double()
+        self.chip_height = ctypes.c_double()
+        self.width = ctypes.c_uint32()
+        self.height = ctypes.c_uint32()
+        self.pixel_width = ctypes.c_double()
+        self.pixel_height = ctypes.c_double()
+        self.channels = ctypes.c_uint32()
+        self.bits_per_pixel = ctypes.c_uint32()
         self.bits_mode = 16
-        self.fw_version = create_string_buffer(32)
-        self.fpgaversion = create_string_buffer(32)
+        self.fw_version = ctypes.create_string_buffer(32)
+        self.fpga_version = (ctypes.c_uint8 * 32)()
+        self.model = None
+        self.parent_spec = None
 
         self.stop_event = threading.Event()
         self.read_modes: list[str] = []
         self.latest_settings: QHYCameraSettingsModel | None = None
-        self.image_buffer = None
+        self._img_buffer = None
+        self.supported_binnings: list[int] = []
+        self.trigger_interfaces: list[str] = []
 
         self._connected = False
         self.connect()
         self._initialized = True
 
-    def sdk_call(self, func: Callable, *args):
-        if not self.connected:
-            self.error("Camera not connected.")
-            return None
-
-        signature = f"{func.__name__}({[f'{arg}' for arg in args]})".replace(
-            "[", ""
-        ).replace("]", "")
-        try:
-            ret = func(self.handle, *args)
-            if func.__name__ != "GetQHYCCDMemLength" and ret != cam.QHYCCD_SUCCESS:
-                self.error(f"SDK function '{signature}' failed with error code {ret}")
-                return None
-            self.debug(f"SDK function {signature} returned {ret}")
-            return ret
-        except Exception as e:
-            self.error(f"SDK function {signature}: {e=}")
-            return None
-
-    def sdk_get_control(self, control_id: QHYControlId) -> float | None:
-        if not self.connected:
-            self.error("Camera not connected.")
-            return None
-        try:
-            assert cam.so is not None, "QHY SDK not loaded"
-            value = cam.so.GetQHYCCDParam(self.handle, control_id.value)
-            self.debug(f"SDK get control {control_id.name} returned {value}")
-            return value
-        except Exception as e:
-            self.error(f"Error getting control {control_id}: {e}")
-            return None
-
-    def sdk_set_control(self, control_id: QHYControlId, value: float) -> bool:
-        if not self.connected:
-            self.error("Camera not connected.")
-            return False
-        try:
-            assert cam.so is not None, "QHY SDK not loaded"
-            found = [ctrl for ctrl in qhy_controls if ctrl.id == control_id]
-            if not found:
-                self.error(f"Control ID {control_id} not recognized.")
-                return False
-            control = found[0]
-
-            if control.range is not None:
-                min_val, max_val = control.range.min, control.range.max
-                if not (min_val <= value <= max_val):
-                    self.error(
-                        f"Value {value} for control '{control_id.name}' out of range ({min_val}, {max_val})"
-                    )
-                    return False
-            if (
-                ret := cam.so.SetQHYCCDParam(self.handle, control_id.value, value)
-            ) != cam.QHYCCD_SUCCESS:
-                self.error(
-                    f"Failed to set control {control_id} to {value}: error code {ret}"
-                )
-                return False
-            self.debug(f"SDK set control {control_id.name} to {value}")
-            return True
-        except Exception as e:
-            self.error(f"Error setting control {control_id} to {value}: {e=}")
-            return False
+    def set_parent_spec(self, parent_spec):
+        self.parent_spec = parent_spec
 
     @property
     def connected(self) -> bool:
@@ -337,68 +158,161 @@ class QHY600(Component, SwitchedOutlet):
         self.disconnect()
 
     def disconnect(self):
-        if cam.so is not None:
+        if qhy is not None:
             self.info("Disconnecting")
-            if cam.so and self.handle:
-                cam.so.CloseQHYCCD(self.handle)
-            cam.so.ReleaseQHYCCDResource()
+            if qhy and self.handle:
+                qhy.CloseQHYCCD(self.handle)
+            qhy.ReleaseQHYCCDResource()
         self.handle = None
         self.cam_id = None
         self.model = None
         self.serial_number = None
         self._connected = False
 
-    def initialize_camera(self):
-        assert cam.so is not None, "Failed to load QHY SDK"
-        if cam.so.ScanQHYCCD() == 0:
-            self.error("No QHY cameras found.")
+    def detect_suppoted_binnings(self):
+        if not self.connected:
+            self.error("Camera not connected.")
             return
 
-        self.cam_id = create_string_buffer(64)
-        assert cam.so.GetQHYCCDId(0, self.cam_id) == 0
-        s = self.cam_id.value.decode("utf-8")
-        self.model, _, self.serial_number = s.partition("-")
+        self.supported_binnings.clear()
+        for binning in [1, 2, 3, 4]:
+            if (
+                self.sdk_call(qhy.SetQHYCCDBinMode, binning, binning, silent=True)
+                == QHYCCD_SUCCESS
+            ):
+                self.supported_binnings.append(binning)
 
-        self.handle = cam.so.OpenQHYCCD(self.cam_id)
+        if not self.supported_binnings:
+            self.warning("No supported binnings detected.")
+        else:
+            self.info(f"Supported binnings: {self.supported_binnings}")
 
-        # nmodes = c_uint32(0)
-        # if (
-        #     ret := self.sdk_call(cam.so.GetReadModesNumber, byref(nmodes))
-        # ) == cam.QHYCCD_SUCCESS:
-        #     for read_mode_item_index in range(nmodes.value):
-        #         read_mode_name = create_string_buffer(cam.STR_BUFFER_SIZE)
-        #         self.sdk_call(
-        #             cam.so.GetReadModeName,
-        #             self.cam_id,
-        #             read_mode_item_index,
-        #             read_mode_name,
-        #         )
-        #         self.read_modes.append(read_mode_name.value.decode("utf-8"))
-        #         time.sleep(0.1)  # slight delay to avoid overwhelming the camera
-        #     logger.debug(f"supports {nmodes.value} read modes")
+    def detect_read_modes(self):
+        if not self.connected:
+            self.error("Camera not connected.")
+            return
+
+        self.read_modes.clear()
+        nmodes = ctypes.c_uint32()
+        if qhy.GetReadModesNumber(self.cam_id, ctypes.byref(nmodes)) != QHYCCD_SUCCESS:
+            self.error("Failed to get number of read modes.")
+            return
+
+        buffer = ctypes.create_string_buffer(STR_BUFFER_SIZE)
+        mode = ctypes.c_uint32()
+        for m in range(nmodes.value):
+            mode = ctypes.c_uint32(m)
+            if (
+                self.sdk_call(qhy.GetQHYCCDReadModeName, mode, buffer, silent=True)
+                == QHYCCD_SUCCESS
+            ):
+                self.read_modes.append(buffer.value.decode("utf-8"))
+
+        if not self.read_modes:
+            self.warning("No read modes detected.")
+        else:
+            for i in range(len(self.read_modes)):
+                self.debug(f"Read mode {i:2}: {self.read_modes[i]}")
+
+    def set_trigger_out(self):
+        """
+        Detects and sets the trigger output interface to GPIO if available.
+        """
+        if not self.connected:
+            self.error("Camera not connected.")
+            return
 
         if (
-            # ret := self.sdk_call(
-            #     cam.so.GetQHYCCDChipInfo,
-            #     byref(self.chip_width),
-            #     byref(self.chip_height),
-            #     byref(self.width),
-            #     byref(self.height),
-            #     byref(self.pixel_width),
-            #     byref(self.pixel_height),
-            #     byref(self.bits_per_pixel),
-            # )
-            ret := cam.so.GetQHYCCDChipInfo(
-                self.handle,
-                byref(self.chip_width),
-                byref(self.chip_height),
-                byref(self.width),
-                byref(self.height),
-                byref(self.pixel_width),
-                byref(self.pixel_height),
-                byref(self.bits_per_pixel),
+            self.sdk_call(
+                qhy.IsQHYCCDControlAvailable, QHYControlId.CAM_TRIGER_OUT, silent=True
             )
-            == cam.QHYCCD_SUCCESS
+            != QHYCCD_SUCCESS
+        ):
+            self.debug("control 'CAM_TRIGER_OUT' not available")
+            return
+
+        self.debug("control 'CAM_TRIGER_OUT' is available")
+        if (
+            self.sdk_call(
+                qhy.IsQHYCCDControlAvailable,
+                QHYControlId.CAM_TRIGER_INTERFACE,
+                silent=True,
+            )
+            != QHYCCD_SUCCESS
+        ):
+            self.debug("control CAM_TRIGER_INTERFACE not available")
+            return
+
+        ninterfaces = ctypes.c_uint32()
+        if (
+            self.sdk_call(
+                qhy.GetQHYCCDTrigerInterfaceNumber,
+                ctypes.byref(ninterfaces),
+                silent=True,
+            )
+            != QHYCCD_SUCCESS
+        ):
+            self.error("Failed to get number of trigger intrfaces")
+            return
+
+        interface_name = ctypes.create_string_buffer(STR_BUFFER_SIZE)
+        for i in range(ninterfaces.value):
+            if (
+                self.sdk_call(
+                    qhy.GetQHYCCDTrigerInterfaceName,
+                    ctypes.c_uint32(i),
+                    interface_name,
+                    silent=True,
+                )
+                == QHYCCD_SUCCESS
+            ):
+                decoded_name = interface_name.value.decode("utf-8")
+                self.trigger_interfaces.append(decoded_name)
+                if "gpio" in decoded_name.lower():
+                    self.debug(f"selecting trigger interface {i} ('{decoded_name}')")
+                    if (
+                        self.sdk_call(qhy.SetQHYCCDTrigerInterface, i, silent=True)
+                        != QHYCCD_SUCCESS
+                    ):
+                        self.error(
+                            f"failed to select trigger interface {i} ('{decoded_name}')"
+                        )
+
+                    self.sdk_call(qhy.EnableQHYCCDTrigerOut)
+                    break
+
+    def initialize_camera(self):
+        assert qhy is not None, "Failed to load QHY SDK"
+        ncam = qhy.ScanQHYCCD()
+        self.info(f"QHY: found: {ncam} camera(s)")
+        if ncam == 0:
+            return
+
+        sn = ctypes.create_string_buffer(64)
+        assert qhy.GetQHYCCDId(0, sn) == 0
+        s = sn.value.decode("utf-8")
+        self.model, _, self.serial_number = s.partition("-")
+
+        self.cam_id = sn
+        self.handle = qhy.OpenQHYCCD(sn)
+        assert self.handle is not None, "Failed to open camera."
+
+        if self.sdk_call(qhy.InitQHYCCD) != QHYCCD_SUCCESS:
+            return
+
+        if (
+            self.sdk_call(
+                qhy.GetQHYCCDChipInfo,
+                ctypes.byref(self.chip_width),
+                ctypes.byref(self.chip_height),
+                ctypes.byref(self.width),
+                ctypes.byref(self.height),
+                ctypes.byref(self.pixel_width),
+                ctypes.byref(self.pixel_height),
+                ctypes.byref(self.bits_per_pixel),
+                silent=True,
+            )
+            == QHYCCD_SUCCESS
         ):
             self.debug(
                 f"chip info: {self.chip_width.value}mm x {self.chip_height.value}mm, "
@@ -406,268 +320,283 @@ class QHY600(Component, SwitchedOutlet):
                 f"{self.bits_per_pixel.value} bits per pixel"
             )
         else:
-            self.warning(f"Failed to get chip info {ret=}")
+            self.error("Failed to get chip info.")
+            return
 
-        year = c_uint32()
-        month = c_uint32()
-        day = c_uint32()
-        zero = c_uint32(0)
+        year = ctypes.c_uint32()
+        month = ctypes.c_uint32()
+        day = ctypes.c_uint32()
+        subday = ctypes.c_uint32()
 
         if (
-            ret := cam.so.GetQHYCCDSDKVersion(
-                byref(year),
-                byref(month),
-                byref(day),
-                byref(zero),
+            ret := qhy.GetQHYCCDSDKVersion(
+                ctypes.byref(year),
+                ctypes.byref(month),
+                ctypes.byref(day),
+                ctypes.byref(subday),
             )
-        ) == cam.QHYCCD_SUCCESS:
+        ) == QHYCCD_SUCCESS:
             self.debug(
                 f"SDK version: year=20{year.value} month={month.value:02} day={day.value:02}"
             )
         else:
             self.warning(f"Failed to get SDK version {ret=}")
 
-    def status(self):
-        return {
-            "activities": self.activities,
-            "activities_verbose": self.activities.__repr__(),
-            "connected": self.connected,
-            "model": self.model,
-            "serial_number": self.serial_number,
-            "width": self.width.value if self.width else None,
-            "height": self.height.value if self.height else None,
-            "pixel_width_um": self.pixel_width.value if self.pixel_width else None,
-            "pixel_height_um": self.pixel_height.value if self.pixel_height else None,
-            "bits_per_pixel": self.bits_per_pixel.value
-            if self.bits_per_pixel
-            else None,
-            "latest_settings": self.latest_settings.__dict__
-            if self.latest_settings
-            else None,
-        }
+        v = (ctypes.c_uint8 * 32)()
+        if self.sdk_call(qhy.GetQHYCCDFPGAVersion, 0, v, silent=True) == QHYCCD_SUCCESS:
+            self.fpga_version = f"{v[0]}-{v[1]}-{v[2]}-{v[3]}"
+            self.debug(f"FPGA version: {self.fpga_version}")
 
-    def abort(self):
-        if self.is_active(QHYActivities.Acquiring):
-            self.stop_event.set()
+        v = (ctypes.c_uint8 * 32)()
+        if self.sdk_call(qhy.GetQHYCCDFWVersion, v, silent=True) == QHYCCD_SUCCESS:
+            if (v[0] >> 4) <= 9:
+                self.fw_version = f"{(v[0] >> 4) + 0x10}-{v[0] & ~0xF0}-{v[1]}"
+            else:
+                self.fw_version = f"{v[0] >> 4}-{v[0] & ~0xF0}-{v[1]}"
+            self.debug(f"FW version: {self.fw_version}")
 
-    def start_acquisition(self, settings: SpecExposureSettings):
-        if self.is_active(QHYActivities.Acquiring):
-            self.warning("Acquisition already in progress.")
-            return
+        self.detect_suppoted_binnings()
+        # self.detect_read_modes()
+        self.set_trigger_out()
 
-        camera_settings = QHYCameraSettingsModel(
-            binning=QHYBinningModel(x=1, y=1),
-            roi=None,
-            gain=None,
-            exposure_duration=settings.exposure_duration,
-            image_path=settings.image_path,
-        )
+    def info(self, message):
+        if self.model:
+            message = f"{self.model}: {message}"
+        logger.info(message)
 
-        self.start_activity(QHYActivities.Acquiring)
-        for seq in range(settings.number_of_exposures or 1):
-            self.start_single_exposure(camera_settings)
-            while self.is_active(QHYActivities.ExposingAndReadingOut) or self.is_active(
-                QHYActivities.Saving
-            ):
-                if self.stop_event.is_set():
-                    self.info("Acquisition aborted.")
-                    self.stop_event.clear()
-                    return
-                threading.Event().wait(0.1)
-        self.end_activity(QHYActivities.Acquiring)
+    def warning(self, message):
+        if self.model:
+            message = f"{self.model}: {message}"
+        logger.warning(message)
+
+    def error(self, message):
+        if self.model:
+            message = f"{self.model}: {message}"
+        logger.error(message)
+
+    def debug(self, message):
+        if self.model:
+            message = f"{self.model}: {message}"
+        logger.debug(message)
+
+    def sdk_call(self, func: Callable, *args, silent=False):
+        if not self.connected:
+            self.error("Camera not connected.")
+            return None
+
+        signature = f"{func.__name__}({[f'{arg}' for arg in args]})".replace(
+            "[", ""
+        ).replace("]", "")
+
+        try:
+            ret = func(self.handle, *args)
+            if func.__name__ != "GetQHYCCDMemLength" and ret != QHYCCD_SUCCESS:
+                self.error(
+                    f"SDK function '{signature}' failed with error code {hex(ret)}"
+                )
+                return None
+            if not silent:
+                self.debug(f"SDK function {signature} returned {ret}")
+            return ret
+        except Exception as e:
+            self.error(f"SDK function {signature}: {e=}")
+            return None
+
+    def sdk_get_control(self, control_id: QHYControlId) -> float | None:
+        if not self.connected:
+            self.error("Camera not connected.")
+            return None
+        try:
+            assert qhy is not None, "QHY SDK not loaded"
+            value = qhy.GetQHYCCDParam(self.handle, control_id)
+            self.debug(f"SDK get control {control_id} returned {value}")
+            return value
+        except Exception as e:
+            self.error(f"Error getting control {control_id}: {e}")
+            return None
+
+    def sdk_set_control(self, control_id: ctypes.c_int, value: ctypes.c_double) -> bool:
+        if not self.connected:
+            self.error("Camera not connected.")
+            return False
+        try:
+            assert qhy is not None, "QHY SDK not loaded"
+            found = [ctrl for ctrl in qhy_controls if ctrl.id == control_id]
+            if not found:
+                self.error(f"Control ID {control_id} not recognized.")
+                return False
+            control = found[0]
+
+            if control.range is not None:
+                min_val, max_val = control.range.min, control.range.max
+                if not (min_val <= value.value <= max_val):
+                    self.error(
+                        f"Value {value} for control '{control.name}' out of range ({min_val}, {max_val})"
+                    )
+                    return False
+            if (
+                ret := qhy.SetQHYCCDParam(self.handle, control.id, value)
+            ) != QHYCCD_SUCCESS:
+                self.error(
+                    f"Failed to set control {control.name} to {value}: error code {ret}"
+                )
+                return False
+            self.debug(f"SDK set control {control.name} to {value}")
+            return True
+        except Exception as e:
+            self.error(f"Error setting control {control.name} to {value}: {e=}")
+            return False
 
     def start_single_exposure(self, settings: QHYCameraSettingsModel):
-        if cam.so is None or self.handle is None:
+        if qhy is None or self.handle is None:
             self.error("Camera not connected.")
+            return
+
+        if settings.binning.x not in self.supported_binnings:
+            self.error(f"Binning {settings.binning.x} not supported.")
+            return
+
+        control = next(
+            (c for c in qhy_controls if c.id == QHYControlId.CONTROL_GAIN), None
+        )
+        if (
+            control is not None
+            and control.range is not None
+            and settings.gain is not None
+            and not (control.range.min <= settings.gain <= control.range.max)
+        ):
+            self.error(
+                f"Gain setting {settings.gain} out of range {control.range.min}..{control.range.max}"
+            )
+            return
+
+        if (
+            self.sdk_call(qhy.CancelQHYCCDExposingAndReadout) != QHYCCD_SUCCESS
+        ):  # cancel any ongoing exposure
             return
 
         self.start_activity(QHYActivities.ExposingSingleFrame)
         self.start_activity(QHYActivities.SettingParameters)
 
+        read_mode = QHYReadMode.Photographic_DSO_16BIT
+        if self.sdk_call(qhy.SetQHYCCDReadMode, read_mode) != QHYCCD_SUCCESS:
+            return
+
+        stream_mode = QHYStreamMode.SingleFrame
+        if self.sdk_call(qhy.SetQHYCCDStreamMode, stream_mode) != QHYCCD_SUCCESS:
+            return
+
+        if self.sdk_call(qhy.SetQHYCCDBitsMode, self.bits_mode) != QHYCCD_SUCCESS:
+            return
+
         self.latest_settings = settings
         self.sdk_set_control(
-            QHYControlId.CONTROL_EXPOSURE, settings.exposure_duration * 1000
+            QHYControlId.CONTROL_EXPOSURE,
+            ctypes.c_double(settings.exposure_duration * 1e6),
         )
 
         if settings.gain is not None:
-            self.sdk_set_control(
-                QHYControlId.CONTROL_GAIN, c_double(settings.gain).value
-            )
+            if not self.sdk_set_control(
+                QHYControlId.CONTROL_GAIN, ctypes.c_double(settings.gain)
+            ):
+                self.end_activity(QHYActivities.SettingParameters)
+                self.end_activity(QHYActivities.ExposingSingleFrame)
+                return
+
+        if settings.depth in (8, 16):
+            if not self.sdk_set_control(
+                QHYControlId.CONTROL_TRANSFERBIT, ctypes.c_double(settings.depth)
+            ):
+                self.end_activity(QHYActivities.SettingParameters)
+                self.end_activity(QHYActivities.ExposingSingleFrame)
+                return
 
         if (
-            settings.binning is not None
-            and settings.binning.x == settings.binning.y
-            and settings.binning.x in (1, 2, 3, 4)
+            self.sdk_call(qhy.SetQHYCCDBinMode, settings.binning.x, settings.binning.y)
+            != QHYCCD_SUCCESS
         ):
-            if settings.binning.x == 1:
-                binning_control = qhy_controls[QHYControlId.CAM_BIN1X1MODE]
-            elif settings.binning.x == 2:
-                binning_control = qhy_controls[QHYControlId.CAM_BIN2X2MODE]
-            elif settings.binning.x == 3:
-                binning_control = qhy_controls[QHYControlId.CAM_BIN3X3MODE]
-            elif settings.binning.x == 4:
-                binning_control = qhy_controls[QHYControlId.CAM_BIN4X4MODE]
-            else:
-                binning_control = None
-                self.warning(
-                    f"{self.model}: Binning {settings.binning.x}x{settings.binning.y} not directly supported."
-                )
+            self.end_activity(QHYActivities.SettingParameters)
+            self.end_activity(QHYActivities.ExposingSingleFrame)
+            return
 
-            if binning_control is not None:
-                if (
-                    ret := self.sdk_call(
-                        cam.so.IsQHYCCDControlAvailable, binning_control.id
-                    )
-                ) == cam.QHYCCD_SUCCESS:
-                    self.sdk_call(
-                        cam.so.SetQHYCCDBinMode,
-                        c_uint32(settings.binning.x),
-                        c_uint32(settings.binning.y),
-                    )
-                else:
-                    self.warning(
-                        f"Binning control {binning_control.name} not available on this camera."
-                    )
-
+        binning = settings.binning.x  # assuming x and y are the same
         roi = settings.roi or QHYRoiModel(
-            x=0, y=0, xsize=self.width.value, ysize=self.height.value
+            x=0, y=0, width=self.width.value, height=self.height.value
         )
         if (
-            ret := self.sdk_call(
-                cam.so.SetQHYCCDResolution,
-                # c_uint32(roi.x * settings.binning.x),
-                # c_uint32(roi.y * settings.binning.y),
-                # c_uint32(int(roi.xsize / settings.binning.x)),
-                # c_uint32(int(roi.ysize / settings.binning.y)),
-                c_uint32(roi.x),
-                c_uint32(roi.y),
-                c_uint32(int(roi.xsize)),
-                c_uint32(int(roi.ysize)),
+            self.sdk_call(
+                qhy.SetQHYCCDResolution,
+                ctypes.c_uint32(roi.x // binning),
+                ctypes.c_uint32(roi.y // binning),
+                ctypes.c_uint32(int(roi.width // binning)),
+                ctypes.c_uint32(int(roi.height // binning)),
+                silent=True,
             )
-        ) != cam.QHYCCD_SUCCESS:
-            self.warning(f"Failed to set ROI: error code {ret}")
+            != QHYCCD_SUCCESS
+        ):
+            self.end_activity(QHYActivities.SettingParameters)
+            self.end_activity(QHYActivities.ExposingSingleFrame)
+            return
 
-        if (
-            ret := self.sdk_call(cam.so.SetQHYCCDBitsMode, settings.depth)
-        ) != cam.QHYCCD_SUCCESS:
-            self.error(f"Failed to set bits mode to {settings.depth}: error code {ret}")
-
-        if (
-            ret := self.sdk_call(cam.so.SetQHYCCDStreamMode, c_uint8(0))
-        ) != cam.QHYCCD_SUCCESS:
-            self.error(f"Failed to set stream mode to single frame: error code {ret}")
+        if settings.gain is not None:
+            if not self.sdk_set_control(
+                QHYControlId.CONTROL_GAIN, ctypes.c_double(settings.gain)
+            ):
+                self.end_activity(QHYActivities.SettingParameters)
+                self.end_activity(QHYActivities.ExposingSingleFrame)
+                return
 
         self.end_activity(QHYActivities.SettingParameters)
 
         # Start exposure
-        self.start_activity(QHYActivities.ExposingAndReadingOut)
-        self.info(f"Starting exposure: {settings.exposure_duration}s")
-        if (ret := self.sdk_call(cam.so.ExpQHYCCDSingleFrame)) != cam.QHYCCD_SUCCESS:
-            self.error(f"Failed to start exposure: error code {ret=}")
+        self.info(f"Starting exposure: {settings.exposure_duration:.2f}s")
+        if self.sdk_call(qhy.ExpQHYCCDSingleFrame) != QHYCCD_SUCCESS:
             return
 
-        # threading.Thread(
-        #     name="qhy600-complete-exposure", target=self.complete_exposure
-        # ).start()
-        time.sleep(2)
-        self.complete_exposure()
+        completer = threading.Thread(
+            name="qhy600-exposure-completer", target=self.complete_exposure
+        )
+        completer.start()
 
     def complete_exposure(self):
-        if cam.so is None or self.handle is None:
+        if not self.is_active(QHYActivities.ExposingSingleFrame):
+            self.error("not exposing")
             return
 
-        if not self.is_active(QHYActivities.ExposingAndReadingOut):
-            self.warning("No exposure in progress to complete.")
-            return
+        width = ctypes.c_uint32()
+        height = ctypes.c_uint32()
+        bpp = ctypes.c_uint32()
+        channels = ctypes.c_uint32()
 
-        # ret = self.sdk_call(cam.so.GetQHYCCDMemLength)
-        # nbytes = int(ret) if ret is not None else 0
-        # if not nbytes > 0:
-        #     self.error("Invalid memory length retrieved from camera.")
-        #     self.end_activity(QHYActivities.ExposingAndReadingOut)
-        #     self.end_activity(QHYActivities.ExposingSingleFrame)
-        #     return
+        settings = self.latest_settings
+        assert settings is not None, "No exposure settings available."
 
-        # defaults
-        width = self.width.value
-        height = self.height.value
-        bits_per_pixel = self.bits_per_pixel.value
-        x_binning = 1
-        y_binning = 1
+        npixels = self.width.value * self.height.value
+        self._img_buffer = (
+            ctypes.c_uint8 if settings.depth == 8 else ctypes.c_uint16 * npixels
+        )()
 
-        if self.latest_settings is not None:
-            # override defaults from settings
-            settings = self.latest_settings
-            if settings.roi is not None:
-                width = settings.roi.xsize
-                height = settings.roi.ysize
-
-            if settings.binning is not None:
-                x_binning = settings.binning.x
-                y_binning = settings.binning.y
-
-            bits_per_pixel = settings.depth
-
-        self.debug(
-            f"Image parameters for readout: {width=} {height=} {x_binning=} {y_binning=} {bits_per_pixel=}"
-        )
-        nbytes = int(
-            (width // x_binning) * (height // y_binning) * (bits_per_pixel // 8)
-        )
-
-        image_buffer = (c_uint8 * nbytes)()
-        self.debug(
-            f"Allocated {nbytes=} image buffer at {hex(addressof(image_buffer))=}"
-        )
-        image_buffer[0:10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-        import ctypes as C
-
-        lib = C.CDLL(
-            os.path.join(os.path.dirname(__file__), "dummyqhy.dll")
-        )  # Use CDLL (cdecl)
-
-        lib.DummyBufferAddress.argtypes = [C.POINTER(C.c_ubyte)]
-        lib.DummyBufferAddress.restype = C.c_size_t  # uintptr_t
-        addr_from_c = lib.DummyBufferAddress(image_buffer)
-        print("C sees image_buffer address     :", hex(addr_from_c))
-
-        width = c_uint32(0)
-        height = c_uint32(0)
-        bpp = c_uint32(0)
-        channels = c_uint32(0)
-        self.debug(
-            f"self.handle={self.handle}, width={width}, height={height}, bpp={bpp}, channels={channels}, image_buffer={image_buffer}"
-        )
-        try:
-            if (
-                ret := self.sdk_call(
-                    cam.so.GetQHYCCDSingleFrame,  # blocking call
-                    byref(width),
-                    byref(height),
-                    byref(bpp),
-                    byref(channels),
-                    image_buffer,
-                )
-            ) != cam.QHYCCD_SUCCESS:
-                self.error(f"Failed to read out image: error code {ret=}")
-                self.end_activity(QHYActivities.ExposingAndReadingOut)
-                self.end_activity(QHYActivities.ExposingSingleFrame)
-                self.debug(f"{width=}, {height=}, {bpp=}, {channels=}")
-                return
-        except Exception as e:
-            self.error(f"Exception during image readout: {e=}")
-            self.end_activity(QHYActivities.ExposingAndReadingOut)
+        self.start_activity(QHYActivities.ReadingOut)
+        if (
+            self.sdk_call(
+                qhy.GetQHYCCDSingleFrame,
+                ctypes.byref(width),
+                ctypes.byref(height),
+                ctypes.byref(bpp),
+                ctypes.byref(channels),
+                ctypes.cast(self._img_buffer, ctypes.POINTER(ctypes.c_ubyte)),
+                silent=True,
+            )
+            != QHYCCD_SUCCESS
+        ):
             self.end_activity(QHYActivities.ExposingSingleFrame)
+            self.end_activity(QHYActivities.ReadingOut)
             return
 
-        # Convert the image data to a more usable format, e.g., a NumPy array
-        import numpy as np
-
-        img_array = np.ctypeslib.as_array(image_buffer)
-        img_array = img_array.reshape((height.value, width.value))
-
-        self.end_activity(QHYActivities.ExposingAndReadingOut)
-        self.info(f"{self.model}: Exposure complete and image read out.")
+        self.end_activity(QHYActivities.ReadingOut)
+        self.info(
+            f"Image acquired: {width.value}x{height.value}, {bpp.value} bpp, {channels.value} channels"
+        )
 
         if (
             self.latest_settings is not None
@@ -675,140 +604,126 @@ class QHY600(Component, SwitchedOutlet):
         ):
             self.start_activity(QHYActivities.Saving)
 
+            import numpy as np
             from astropy.io import fits
 
+            img_array = np.ctypeslib.as_array(self._img_buffer)
+            img_array = img_array.reshape((height.value, width.value))
+
             hdu = fits.PrimaryHDU(img_array)
+            hdu.header["SIMPLE"] = True
+            if settings.depth == 16:
+                hdu.header["BITPIX"] = 16
+                hdu.header["BZERO"] = 32768
+                hdu.header["BSCALE"] = 1
+            else:
+                hdu.header["BITPIX"] = 8
+
+            hdu.header["NAXIS"] = 2
+            if settings.roi is None:
+                hdu.header["NAXIS1"] = self.width.value
+                hdu.header["NAXIS2"] = self.height.value
+            else:
+                hdu.header["NAXIS1"] = settings.roi.width
+                hdu.header["NAXIS2"] = settings.roi.height
+
+            hdu.header["EXPTIME"] = settings.exposure_duration
+            if settings.gain is not None:
+                hdu.header["GAIN"] = settings.gain
+            if settings.roi is not None:
+                hdu.header["ROI_X"] = settings.roi.x
+                hdu.header["ROI_Y"] = settings.roi.y
+                hdu.header["ROI_W"] = settings.roi.width
+                hdu.header["ROI_H"] = settings.roi.height
+            if settings.binning is not None:
+                hdu.header["XBINNING"] = settings.binning.x
+                hdu.header["YBINNING"] = settings.binning.y
+            hdu.header["INSTRUME"] = self.model or "QHY600MM"
+            hdu.header["DATE-OBS"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+            # hdu.header["FOCUSPOS"] = 0  # Placeholder for focus position
             hdu.writeto(self.latest_settings.image_path, overwrite=True)
             self.info(
                 f"{self.model}: Image saved to {str(self.latest_settings.image_path)}"
             )
             self.end_activity(QHYActivities.Saving)
 
+        self.end_activity(QHYActivities.ReadingOut)
         self.end_activity(QHYActivities.ExposingSingleFrame)
 
-    def stop_exposure(self):
-        if cam.so is None or self.handle is None:
-            return
-
-        if self.is_active(QHYActivities.ExposingSingleFrame):
-            cam.so.CancelQHYCCDExposingAndReadout(self.handle)
-            self.end_activity(QHYActivities.ExposingSingleFrame)
+        if self.parent_spec is not None and self.parent_spec.is_active(
+            HighspecActivities.Exposing
+        ):
+            self.parent_spec.end_activity(HighspecActivities.Exposing)
 
     def startup(self):
-        pass
+        return super().startup()
 
     def shutdown(self):
-        self.abort()
-        self.connected = False
+        return super().shutdown()
 
-    def name(self) -> str:
-        return self.model if self.model else "QHY600U3"
+    def status(self):
+        return super().status()
 
     @property
     def operational(self) -> bool:
-        return self.connected
+        return self.detected and self.connected
 
-    @property
-    def why_not_operational(self) -> list[str]:
-        if not self.connected:
-            return [f"{self.model}: not connected."]
-        return []
+    def abort(self):
+        return super().abort()
+
+    def name(self) -> str:
+        return "qhy600mm"
 
     @property
     def detected(self) -> bool:
         return self.connected
 
     @property
+    def why_not_operational(self) -> list[str]:
+        ret: list[str] = []
+        if not self.detected:
+            ret.append("Camera not detected")
+        if not self.connected:
+            ret.append("Camera not connected")
+        return ret
+
+    @property
     def was_shut_down(self) -> bool:
         return False
 
-    def info(self, message):
-        logger.info(f"{self.model if hasattr(self, 'model') else 'Unknown'}: {message}")
-
-    def warning(self, message):
-        logger.warning(
-            f"{self.model if hasattr(self, 'model') else 'Unknown'}: {message}"
+    def start_acquisition(self, spec_exposure_settings: SpecExposureSettings):
+        settings: QHYCameraSettingsModel = QHYCameraSettingsModel(
+            binning=QHYBinningModel(
+                x=spec_exposure_settings.x_binning or 1,
+                y=spec_exposure_settings.y_binning or 1,
+            ),
+            roi=None,
+            # gain=spec_exposure_settings.gain or 100,
+            exposure_duration=spec_exposure_settings.exposure_duration,
+            number_of_exposures=spec_exposure_settings.number_of_exposures or 1,
+            image_path=spec_exposure_settings.image_path,
+            depth=16,
         )
 
-    def error(self, message):
-        logger.error(
-            f"{self.model if hasattr(self, 'model') else 'Unknown'}: {message}"
-        )
-
-    def debug(self, message):
-        logger.debug(f"{self.model}: {message}")
+        threading.Thread(
+            name="qhy600-acquisition-thread",
+            target=self.start_single_exposure,
+            args=(settings,),
+        ).start()
 
 
 if __name__ == "__main__":
     camera = QHY600()
-
-    def test_single_exposure():
-        camera.start_single_exposure(
-            QHYCameraSettingsModel(
-                exposure_duration=5.0,
-                image_path="c:/qhy_images/test_image.fits",
-                depth=16,
-                # roi=QHYRoiModel(x=10, y=10, xsize=1000, ysize=1000),
-                # binning=QHYBinningModel(x=2, y=2),
-            )
+    if camera.connected:
+        settings = QHYCameraSettingsModel(
+            binning=QHYBinningModel(x=1, y=1),
+            roi=None,
+            gain=100,
+            exposure_duration=1.0,
+            number_of_exposures=1,
+            image_path="test_image.fits",
+            depth=16,
         )
-        while camera.is_active(QHYActivities.ExposingSingleFrame):
-            time.sleep(0.5)
-
-    def test_dummy_qhy():
-        import ctypes as C
-        import os
-        import sys
-
-        lib = C.CDLL(
-            os.path.join(os.path.dirname(__file__), "dummyqhy.dll")
-        )  # Use CDLL (cdecl)
-
-        # Declare signatures
-        lib.DummyGetQHYCCDSingleFrame.argtypes = [
-            C.c_void_p,  # handle
-            C.POINTER(C.c_uint32),  # w
-            C.POINTER(C.c_uint32),  # h
-            C.POINTER(C.c_uint32),  # bpp
-            C.POINTER(C.c_uint32),  # ch
-            C.POINTER(C.c_ubyte),  # imgdata
-        ]
-        lib.DummyGetQHYCCDSingleFrame.restype = C.c_uint32
-
-        lib.DummyBufferAddress.argtypes = [C.POINTER(C.c_ubyte)]
-        lib.DummyBufferAddress.restype = C.c_size_t  # uintptr_t
-
-        # Allocate buffer exactly like you do for QHY
-        nbytes = 32
-        image_buffer = (C.c_uint8 * nbytes)()  # <-- array object; decays to uint8_t*
-        buf_addr_py = C.addressof(image_buffer)
-        print("Python sees image_buffer address:", hex(buf_addr_py))
-
-        # Optional: ask C to print & return the pointer it sees
-        addr_from_c = lib.DummyBufferAddress(image_buffer)
-        print("C sees image_buffer address     :", hex(addr_from_c))
-
-        # Prepare out-params
-        w = C.c_uint32(0)
-        h = C.c_uint32(0)
-        bpp = C.c_uint32(0)
-        ch = C.c_uint32(0)
-
-        # Call the dummy "Get" function
-        ret = lib.DummyGetQHYCCDSingleFrame(
-            None,
-            C.byref(w),
-            C.byref(h),
-            C.byref(bpp),
-            C.byref(ch),
-            image_buffer,  # IMPORTANT: pass the array, not byref(array)
-        )
-        print("ret =", ret, "w,h,bpp,ch =", w.value, h.value, bpp.value, ch.value)
-
-        # Show the pattern written by C (0..31)
-        print(list(image_buffer[:32]))
-
-    test_single_exposure()
-    # test_dummy_qhy()
-    camera.disconnect()
-    sys.exit(0)
+        camera.start_single_exposure(settings)
+    else:
+        print("Camera not connected.")
