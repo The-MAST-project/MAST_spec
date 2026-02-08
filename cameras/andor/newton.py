@@ -19,6 +19,7 @@ from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.newton import NewtonBinningModel, NewtonCameraSettingsModel
+from common.models.statuses import NewtonStatus
 from common.spec import SpecExposureSettings
 
 logger = logging.getLogger("mast.highspec.newton")
@@ -103,7 +104,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         from common.config import Config
 
         self.conf = Config().get_specs().highspec
-        Component.__init__(self)
+        Component.__init__(self, NewtonActivities)
         self._name = "highspec"
 
         self._detected = False
@@ -266,8 +267,12 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
         self.start_cooldown()
         self._was_shut_down = False
+        self.parent_spec = None
 
         self._initialized = True
+
+    def set_parent_spec(self, parent):
+        self.parent_spec = parent
 
     def append_error(self, err: str):
         self.errors.append(err)
@@ -918,19 +923,19 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.sdk.SetDriverEvent(0)
             self.sdk.ShutDown()
 
-    def status(self):
-        ret = {
-            "detected": self.detected,
-            "operational": self.operational,
-            "why_not_operational": self.why_not_operational,
-        }
-        if self.detected:
-            ret["activities"] = self.activities
-            ret["activities_verbal"] = (
-                "Idle" if self.activities == 0 else self.activities.__repr__()
-            )
-            ret["idle"] = self.is_idle()
-            ret["temperature"] = self.get_temperature()
+    def status(self) -> NewtonStatus:
+        ret = NewtonStatus(
+            detected=self.detected,
+            powered=self.is_on(),
+            connected=self.connected,
+            operational=self.operational,
+            why_not_operational=self.why_not_operational,
+            activities=self.activities,
+            activities_verbal=self.activities_verbal,
+            temperature=self.get_temperature() if self.connected else None,
+            errors=self.errors,
+            latest_settings=self.latest_exposure_settings,
+        )
 
         return ret
 
