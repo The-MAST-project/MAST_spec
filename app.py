@@ -28,10 +28,8 @@ app = FastAPI(
     docs_url="/docs",
     redocs_url=None,
     lifespan=lifespan,
-    # openapi_url='/openapi.json',
     debug=True,
     default_response_class=ORJSONResponse,
-    # exception_handlers={WebSocketDisconnect: websocket_disconnect_handler},
 )
 
 app.add_middleware(

@@ -6,10 +6,22 @@ from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
+from common.models.statuses import ChillerStatus
 
 
 class Chiller(SwitchedOutlet, Component):
+    _instance = None
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(Chiller, cls).__new__(cls)
+        return cls._instance
+
     def __init__(self):
+        if self._initialized:
+            return
+
         self.conf = Config().get_specs().chiller
         SwitchedOutlet.__init__(
             self, domain=OutletDomain.SpecOutlets, outlet_name="Chiller"
@@ -23,6 +35,8 @@ class Chiller(SwitchedOutlet, Component):
         if not self.is_on():
             self.power_on()
         self._was_shut_down = False
+
+        self._initialized = True
 
     def __repr__(self):
         return "Chiller()"
@@ -79,11 +93,14 @@ class Chiller(SwitchedOutlet, Component):
             )
         return ret
 
-    def status(self):
-        return {
-            "operational": self.operational,
-            "why_not_operational": self.why_not_operational,
-        }
+    def status(self) -> ChillerStatus:
+        ret = ChillerStatus(
+            powered=self.is_on(),
+            detected=self.detected,
+            operational=self.operational,
+            why_not_operational=self.why_not_operational,
+        )
+        return ret
 
     @property
     def api_router(self) -> APIRouter:
@@ -93,6 +110,3 @@ class Chiller(SwitchedOutlet, Component):
 
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
         return router
-
-
-chiller = Chiller()
