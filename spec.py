@@ -24,9 +24,9 @@ from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.assignments import (
     SpectrographAssignmentModel,
-    TransmittedAssignment,
 )
 from common.models.calibration import CalibrationModel
+from common.models.statuses import SpecStatus
 from common.spec import (
     Disperser,
     SpecAcquisitionSettings,
@@ -74,7 +74,7 @@ class Spec(Component):
         if self._initialized:
             return
 
-        Component.__init__(self)
+        Component.__init__(self, SpecActivities)
         self.logger = logging.Logger("spec")
         init_log(self.logger)
 
@@ -151,17 +151,18 @@ class Spec(Component):
     def name(self, value):
         self._name = value
 
-    def status(self):
+    def endpoint_status(self) -> CanonicalResponse:
+        return CanonicalResponse(value=self.status())
+
+    def status(self) -> SpecStatus:
         ret = self.traverse_components_and_return("status")
         ret |= {
             "activities": self.activities,
-            "activities_verbal": "Idle"
-            if self.activities == 0
-            else self.activities.__repr__(),
+            "activities_verbal": self.activities_verbal,
             "operational": self.operational,
             "why_not_operational": self.why_not_operational,
         }
-        return ret
+        return SpecStatus(**ret)
 
     def startup(self):
         self.traverse_components_and_call("startup")
@@ -261,17 +262,21 @@ class Spec(Component):
             # A Highspec acquisition
             #
             assert self.fiber_stage is not None
-            if not self.fiber_stage.at_preset("Highspec"):
+            assert self.disperser_stage is not None
+            assert self.focusing_stage is not None
+            assert acquisition_settings.grating is not None
+
+            if self.fiber_stage.at_preset != "highspec":
                 self.start_activity(SpecActivities.Positioning)
                 self.fiber_stage.move_to_preset("Highspec")
 
-            # if not self.gratings_stage.at_preset(acquisition_settings.grating):
-            #     self.start_activity(SpecActivities.Positioning, existing_ok=True)
-            #     self.gratings_stage.move_to_preset(acquisition_settings.grating)
-            #
-            # if not self.focusing_stage.at_preset(acquisition_settings.grating):
-            #     self.start_activity(SpecActivities.Positioning, existing_ok=True)
-            #     self.focusing_stage.move_to_preset(acquisition_settings.grating)
+            if self.disperser_stage.at_preset != acquisition_settings.grating:
+                self.start_activity(SpecActivities.Positioning, existing_ok=True)
+                self.disperser_stage.move_to_preset(acquisition_settings.grating)
+
+            if self.focusing_stage.at_preset != acquisition_settings.grating:
+                self.start_activity(SpecActivities.Positioning, existing_ok=True)
+                self.focusing_stage.move_to_preset(acquisition_settings.grating)
 
             assert acquisition_settings.filter_name is not None
             if acquisition_settings.lamp_on:
@@ -282,7 +287,7 @@ class Spec(Component):
             if self.is_active(SpecActivities.Positioning):
                 while any(
                     [
-                        comp is not None and comp.is_moving
+                        comp.is_moving
                         for comp in [
                             self.fiber_stage,
                             self.focusing_stage,
@@ -297,11 +302,12 @@ class Spec(Component):
             #
             # A Deepspec acquisition
             #
-            if self.fiber_stage is not None and not self.fiber_stage.at_preset(
-                "Deepspec"
+            if (
+                self.fiber_stage is not None
+                and not self.fiber_stage.at_preset != "deepspec"
             ):
                 self.start_activity(SpecActivities.Positioning)
-                self.fiber_stage.move_to_preset("Deepspec")
+                self.fiber_stage.move_to_preset("deepspec")
                 while self.fiber_stage.is_moving:
                     time.sleep(0.5)
                 self.end_activity(SpecActivities.Positioning)
@@ -391,15 +397,17 @@ class Spec(Component):
         self.highspec_exposure_seconds = highspec_seconds
         self.deepspec_exposure_seconds = deepspec_seconds
 
-    def do_execute_assignment(self, remote_assignment: TransmittedAssignment):
-        assert isinstance(remote_assignment.assignment, SpectrographAssignmentModel)
+    def do_execute_assignment(self, remote_assignment: SpectrographAssignmentModel):
+        assert isinstance(remote_assignment.spec, SpectrographAssignmentModel)
 
-        spec_assignment = remote_assignment.assignment.spec
+        spec_assignment = remote_assignment.spec.spec
         executor = (
             self.highspec if spec_assignment.instrument == "highspec" else self.deepspec
         )
 
         assert spec_assignment.calibration is not None
+        assert self.fiber_stage is not None
+
         calibration: CalibrationModel = spec_assignment.calibration
         thar_lamp = [lamp for lamp in self.lamps if lamp.name == "ThAr"][0]
         thar_wheel = [wheel for wheel in self.wheels if wheel.name == "ThAr"][0]
@@ -412,10 +420,14 @@ class Spec(Component):
         else:
             thar_lamp.power_off()
 
-        if self.fiber_stage and not self.fiber_stage.at_preset(
-            spec_assignment.instrument
+        if (
+            self.fiber_stage
+            and self.fiber_stage.at_preset != spec_assignment.instrument
         ):
             self.fiber_stage.move_to_preset(spec_assignment.instrument)
+
+        while self.fiber_stage.is_moving or thar_wheel.is_moving:
+            time.sleep(0.5)
 
         executor.execute_assignment(remote_assignment, self)
         while executor.is_working:
@@ -427,13 +439,13 @@ class Spec(Component):
             return False
         return self.thar_wheel.is_moving or self.fiber_stage.is_moving
 
-    async def execute_assignment(self, remote_assignment: TransmittedAssignment):
-        initiator = remote_assignment.assignment.initiator
-        what = f"remote assignment: from='{initiator.hostname}' ({initiator.ipaddr}), task='{remote_assignment.assignment.task.ulid}'"
+    async def execute_assignment(self, remote_assignment: SpectrographAssignmentModel):
+        initiator = remote_assignment.initiator
+        what = f"remote assignment: from='{initiator.hostname}' ({initiator.ipaddr}), task='{remote_assignment.plan.ulid}'"
 
-        assert isinstance(remote_assignment.assignment, SpectrographAssignmentModel)
+        assert isinstance(remote_assignment.spec, SpectrographAssignmentModel)
 
-        if remote_assignment.assignment.task.production and not self.operational:
+        if remote_assignment.plan.production and not self.operational:
             logger.info(
                 f"REJECTED {what} (not operational: {self.why_not_operational})"
             )
@@ -441,11 +453,11 @@ class Spec(Component):
 
         executor = (
             self.highspec
-            if remote_assignment.assignment.spec.instrument == "highspec"
+            if remote_assignment.spec.instrument == "highspec"
             else self.deepspec
         )
-        assert isinstance(remote_assignment.assignment, SpectrographAssignmentModel)
-        can_execute, reasons = executor.can_execute(remote_assignment.assignment)
+        assert isinstance(remote_assignment.spec, SpectrographAssignmentModel)
+        can_execute, reasons = executor.can_execute(remote_assignment.spec)
         if not can_execute:
             logger.info(f"REJECTED {what} (reasons: {reasons})")
             return CanonicalResponse(errors=reasons)
@@ -461,7 +473,7 @@ class Spec(Component):
 
         router = APIRouter()
         router.add_api_route(
-            path=base_path + "/status", endpoint=self.status, tags=[tag]
+            path=base_path + "/status", endpoint=self.endpoint_status, tags=[tag]
         )
         router.add_api_route(
             path=base_path + "/startup", endpoint=self.startup, tags=[tag]
@@ -473,13 +485,13 @@ class Spec(Component):
             path=base_path + "/acquire", endpoint=self.acquire, tags=[tag]
         )
 
-        tag = "Assignments"
-        router.add_api_route(
-            path=base_path + "/execute_assignment",
-            methods=["PUT"],
-            endpoint=self.execute_assignment,
-            tags=[tag],
-        )
+        # tag = "Assignments"
+        # router.add_api_route(
+        #     path=base_path + "/execute_assignment",
+        #     methods=["PUT"],
+        #     endpoint=self.execute_assignment,
+        #     tags=[tag],
+        # )
 
         return router
 
