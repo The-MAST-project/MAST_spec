@@ -1,0 +1,16 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build dummyqhy.dll (MSVC)",
+            "type": "shell",
+            "command": "cmd",
+            "args": [
+                "/c",
+                "\"%VSINSTALLDIR%\\Common7\\Tools\\VsDevCmd.bat\" -arch=x64 && cl /LD /O2 dummyqhy.c /Fedummyqhy.dll"
+            ],
+            "group": "build",
+            "problemMatcher": "$msCompile"
+        }
+    ]
+}
