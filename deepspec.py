@@ -99,14 +99,38 @@ class Deepspec(Component):
         return "deepspec"
 
     def startup(self):
-        for band in self.cameras.keys():
-            if self.cameras[band]:
-                self.cameras[band].startup()  # type: ignore # threads?
+        for cam in self.cameras.values():
+            if cam:
+                cam.startup()  # type: ignore # threads?
 
     def shutdown(self):
-        for band in self.cameras.keys():
-            if self.cameras[band]:
-                self.cameras[band].shutdown()  # type: ignore # threads?
+        for cam in self.cameras.values():
+            if cam:
+                cam.shutdown()  # type: ignore # threads?
+
+    def powerdown(self):
+        active_cameras = [cam for cam in self.cameras.values() if cam is not None]
+        if any(
+            [
+                cam
+                for cam in active_cameras
+                if cam.is_active(GreatEyesActivities.ShuttingDown)
+            ]
+        ):  # type: ignore
+            logger.info(
+                "waiting for cameras to finish shutting down before powering off..."
+            )
+        while any(
+            [
+                cam
+                for cam in active_cameras
+                if cam.is_active(GreatEyesActivities.ShuttingDown)
+            ]
+        ):  # type: ignore
+            time.sleep(0.5)
+
+        for cam in active_cameras:
+            cam.powerdown()  # type: ignore # threads?
 
     def status(self) -> DeepspecStatus:
         ret = DeepspecStatus(
@@ -255,9 +279,9 @@ class Deepspec(Component):
             PathMaker().make_spec_acquisitions_folder(spec_name="deepspec")
         )
 
-        assert remote_assignment.spec.task.ulid is not None
+        assert remote_assignment.plan.ulid is not None
         notify_controller_about_task_acquisition_path(
-            task_id=remote_assignment.spec.task.ulid,
+            task_id=remote_assignment.plan.ulid,
             src=acquisition_folder,
             link="deepspec",
         )

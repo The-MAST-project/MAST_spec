@@ -172,6 +172,31 @@ class Spec(Component):
         self.traverse_components_and_call("shutdown")
         self._was_shut_down = True
 
+    def powerdown(self):
+        if any(
+            [
+                comp
+                for comp in self.components
+                if comp is not None and comp.is_active(SpecActivities.ShuttingDown)
+            ]
+        ):
+            logger.info(
+                "waiting for components to finish shutting down before powering down..."
+            )
+            while any(
+                [
+                    comp
+                    for comp in self.components
+                    if comp is not None and comp.is_active(SpecActivities.ShuttingDown)
+                ]
+            ):
+                time.sleep(0.5)
+            logger.info("components finished shutting down, proceeding with powerdown")
+
+        for comp in self.components:
+            if hasattr(comp, "powerdown"):
+                comp.powerdown()
+
     def abort(self):
         self.traverse_components_and_call("abort")
 
@@ -482,6 +507,9 @@ class Spec(Component):
             path=base_path + "/shutdown", endpoint=self.shutdown, tags=[tag]
         )
         router.add_api_route(
+            path=base_path + "/powerdown", endpoint=self.powerdown, tags=[tag]
+        )
+        router.add_api_route(
             path=base_path + "/acquire", endpoint=self.acquire, tags=[tag]
         )
 
@@ -494,6 +522,3 @@ class Spec(Component):
         # )
 
         return router
-
-
-# spec = Spec()

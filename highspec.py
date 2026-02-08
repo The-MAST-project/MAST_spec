@@ -144,6 +144,9 @@ class Highspec(Component):
     def shutdown(self):
         self.camera.shutdown()
 
+    def powerdown(self):
+        self.camera.powerdown()
+
     def status(self) -> HighspecStatus:
         return HighspecStatus(
             detected=True,
