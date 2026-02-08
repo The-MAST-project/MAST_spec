@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter
 
-from common import activities
 from common.activities import Activities
 from common.config import Config
 from common.const import Const
