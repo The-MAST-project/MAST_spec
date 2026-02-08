@@ -24,6 +24,39 @@
             },
         },
         {
+            "name": "qhy demo",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "cameras.qhy.demo",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+        },
+        {
+            "name": "test QHY",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "cameras.qhy.qhy600",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+        },
+        {
+            "name": "yet another test",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "cameras.qhy.another_demo.qhyccd",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+        },
+        {
             "name": "MAST spec",
             "type": "debugpy",
             "request": "launch",
