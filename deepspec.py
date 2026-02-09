@@ -186,7 +186,7 @@ class Deepspec(Component):
         number_of_exposures: int | None = 1,
     ):
         for cam in self.active_cameras:
-            self.camera_expose(
+            self.expose_one_camera(
                 band=cam.band,  # type: ignore
                 seconds=seconds,
                 x_binning=x_binning,
@@ -194,7 +194,7 @@ class Deepspec(Component):
                 number_of_exposures=number_of_exposures,
             )
 
-    def camera_expose(
+    def expose_one_camera(
         self,
         band: str,
         seconds: float,
@@ -203,12 +203,12 @@ class Deepspec(Component):
         number_of_exposures: int | None = 1,
     ) -> CanonicalResponse:
         Thread(
-            target=self.do_camera_expose,
+            target=self.do_expose_one_camera,
             args=[band, seconds, x_binning, y_binning, number_of_exposures],
         ).start()
         return CanonicalResponse_Ok
 
-    def do_camera_expose(
+    def do_expose_one_camera(
         self,
         band: str,
         seconds: float,
@@ -337,7 +337,7 @@ class Deepspec(Component):
         router.add_api_route(
             base_path + "/camera_expose",
             tags=[tag],
-            endpoint=self.camera_expose,
+            endpoint=self.expose_one_camera,
             response_model=None,
         )
 
