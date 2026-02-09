@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Thread
 from typing import get_args
 
 from fastapi.routing import APIRouter
@@ -52,6 +52,7 @@ class Deepspec(Component):
 
         self.cameras = greateyes_cameras
         self.spec = spec
+        self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="deepspec")
 
         self._initialized = True
         self._name = ""
@@ -116,6 +117,9 @@ class Deepspec(Component):
             if cam:
                 cam.shutdown()  # type: ignore # threads?
 
+        # Shutdown executor gracefully
+        self.executor.shutdown(wait=False)
+
     @property
     def is_shutting_down(self) -> bool:
         return any([cam.is_shutting_down for cam in self.active_cameras])
@@ -136,6 +140,9 @@ class Deepspec(Component):
 
         for cam in self.active_cameras:
             cam.powerdown()  # type: ignore # threads?
+
+        # Ensure executor is fully shutdown
+        self.executor.shutdown(wait=True)
 
     def status(self) -> DeepspecStatus:
         if not any(
@@ -202,10 +209,14 @@ class Deepspec(Component):
         y_binning: int = 1,
         number_of_exposures: int | None = 1,
     ) -> CanonicalResponse:
-        Thread(
-            target=self.do_expose_one_camera,
-            args=[band, seconds, x_binning, y_binning, number_of_exposures],
-        ).start()
+        self.executor.submit(
+            self.do_expose_one_camera,
+            band,
+            seconds,
+            x_binning,
+            y_binning,
+            number_of_exposures,
+        )
         return CanonicalResponse_Ok
 
     def do_expose_one_camera(
@@ -335,7 +346,7 @@ class Deepspec(Component):
             base_path + "/expose", tags=[tag], endpoint=self.expose, response_model=None
         )
         router.add_api_route(
-            base_path + "/camera_expose",
+            base_path + "/expose_one_camera",
             tags=[tag],
             endpoint=self.expose_one_camera,
             response_model=None,
