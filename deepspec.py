@@ -9,6 +9,7 @@ from typing import get_args
 
 from fastapi.routing import APIRouter
 
+from cameras.greateyes.greateyes import GreatEyes
 from cameras.greateyes.greateyes import cameras as greateyes_cameras
 from common.activities import DeepspecActivities, GreatEyesActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
@@ -76,21 +77,28 @@ class Deepspec(Component):
         return True
 
     @property
+    def active_cameras(self) -> list[GreatEyes]:
+        return [
+            cam
+            for cam in self.cameras.values()
+            if cam is not None and cam.enabled and cam.detected
+        ]  # type: ignore
+
+    @property
     def was_shut_down(self) -> bool:
-        return all([self.cameras[band].was_shut_down for band in self.cameras.keys()])  # type: ignore
+        return all([cam.was_shut_down for cam in self.active_cameras])  # type: ignore
 
     @property
     def why_not_operational(self) -> list[str]:
         ret = []
-        for band in self.cameras.keys():
-            if self.cameras[band] is not None:
-                ret += self.cameras[band].why_not_operational  # type: ignore
+        for cam in self.active_cameras:
+            ret += cam.why_not_operational  # type: ignore
         return ret
 
     @property
     def operational(self) -> bool:
-        for band in self.cameras.keys():
-            if self.cameras[band] is None or not self.cameras[band].operational:  # type: ignore
+        for cam in self.active_cameras:
+            if not cam.operational:  # type: ignore
                 return False
         return True
 
@@ -99,30 +107,26 @@ class Deepspec(Component):
         return "deepspec"
 
     def startup(self):
-        for cam in self.cameras.values():
+        for cam in self.active_cameras:
             if cam:
                 cam.startup()  # type: ignore # threads?
 
     def shutdown(self):
-        for cam in self.cameras.values():
+        for cam in self.active_cameras:
             if cam:
                 cam.shutdown()  # type: ignore # threads?
 
     @property
     def is_shutting_down(self) -> bool:
-        return any(
-            [
-                cam
-                for cam in self.cameras.values()
-                if cam is not None and cam.is_shutting_down  # type: ignore
-            ]
-        )
+        return any([cam.is_shutting_down for cam in self.active_cameras])
 
     def powerdown(self):
         if not self.was_shut_down:
             logger.info("powerdown called without shutdown - calling shutdown first...")
             self.shutdown()
-            time.sleep(3)
+            time.sleep(
+                3
+            )  # let cameras start shutting down before we start waiting for them to finish
 
         while self.is_shutting_down:
             logger.info(
@@ -130,11 +134,18 @@ class Deepspec(Component):
             )
             time.sleep(0.5)
 
-        active_cameras = [cam for cam in self.cameras.values() if cam is not None]
-        for cam in active_cameras:
+        for cam in self.active_cameras:
             cam.powerdown()  # type: ignore # threads?
 
     def status(self) -> DeepspecStatus:
+        if not any(
+            [
+                cam.is_active(GreatEyesActivities.Acquiring)
+                for cam in self.active_cameras
+            ]
+        ):  # type: ignore
+            self.end_activity(DeepspecActivities.Acquiring)
+
         ret = DeepspecStatus(
             detected=self.detected,
             connected=self.connected,
@@ -151,14 +162,17 @@ class Deepspec(Component):
 
     def abort(self):
         if self.is_active(DeepspecActivities.Acquiring):
-            for band in self.cameras.keys():
-                if self.cameras[band]:
-                    self.cameras[band].abort()  # type: ignore
+            for cam in self.active_cameras:
+                cam.abort()
 
     def start_acquisition(self, settings: SpecExposureSettings):
-        for band in self.cameras.keys():
-            if self.cameras[band]:
-                pass
+        self.start_activity(DeepspecActivities.Acquiring)
+        self.expose(
+            seconds=settings.exposure_duration,
+            x_binning=settings.binning.x,  # type: ignore
+            y_binning=settings.binning.y,  # type: ignore
+            number_of_exposures=settings.number_of_exposures,
+        )
 
     @property
     def is_working(self) -> bool:
@@ -171,16 +185,14 @@ class Deepspec(Component):
         y_binning: int = 1,
         number_of_exposures: int | None = 1,
     ):
-        settings: SpecExposureSettings = SpecExposureSettings(  # noqa: F841
-            exposure_duration=seconds,
-            number_of_exposures=number_of_exposures,
-            x_binning=x_binning,
-            y_binning=y_binning,
-            folder=None,
-        )
-        for band in self.cameras.keys():
-            if self.cameras[band]:
-                pass
+        for cam in self.active_cameras:
+            self.camera_expose(
+                band=cam.band,  # type: ignore
+                seconds=seconds,
+                x_binning=x_binning,
+                y_binning=y_binning,
+                number_of_exposures=number_of_exposures,
+            )
 
     def camera_expose(
         self,
