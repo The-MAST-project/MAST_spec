@@ -26,7 +26,6 @@ from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.assignments import SpectrographAssignmentModel
 from common.models.highspec import HighspecModel
-from common.models.newton import HighspecConfig
 from common.models.statuses import HighspecStatus
 from common.paths import PathMaker
 from common.spec import SpecExposureSettings
@@ -143,6 +142,10 @@ class Highspec(Component):
 
     def shutdown(self):
         self.camera.shutdown()
+
+    @property
+    def is_shutting_down(self) -> bool:
+        return self.camera.is_shutting_down
 
     def powerdown(self):
         self.camera.powerdown()

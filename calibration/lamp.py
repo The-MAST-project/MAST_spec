@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, List
 
 from common.activities import CalibrationLampActivities
@@ -78,6 +79,19 @@ class CalibrationLamp(Component, SwitchedOutlet):
         if self.is_on():
             self.power_off()
         self._was_shut_down = True
+
+    @property
+    def is_shutting_down(self) -> bool:
+        return False  # lamp does not have a shutdown procedure, so never report as shutting down
+
+    def powerdown(self):
+        if not self._was_shut_down:
+            self.shutdown()
+        while self.is_shutting_down:
+            time.sleep(0.1)
+
+        if self.is_on():
+            self.power_off()
 
     def abort(self):
         pass

@@ -659,7 +659,14 @@ class QHY600(Component, SwitchedOutlet):
         return super().startup()
 
     def shutdown(self):
-        return super().shutdown()
+        pass  # camera does not have a shutdown procedure, so do nothing
+
+    @property
+    def is_shutting_down(self) -> bool:
+        return False  # does not have a shutdown procedure, so never report as shutting down
+
+    def powerdown(self):
+        self.power_off()
 
     def status(self):
         return super().status()

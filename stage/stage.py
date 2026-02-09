@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from enum import Enum, IntFlag
-from tkinter import NO
 from typing import TYPE_CHECKING, List, get_args
 
 import zaber_motion
@@ -19,7 +18,7 @@ from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.statuses import SpecStageStatus
 from common.networking import NetworkedDevice
-from common.spec import GratingNames, SpecNames, SpecStageNames, StageLiteral
+from common.spec import GratingNames, SpecNames, SpecStageNames
 from common.utils import caller_name, function_name
 
 logger = logging.getLogger("mast.spec.stage")
@@ -159,7 +158,7 @@ class Stage(Component):
             return False
 
         assert self.axis is not None
-        current = self.axis.get_position(unit=zaber_motion.Units.LENGTH_MICROMETRES)
+        current = self.axis.get_position(unit=zaber_motion.Units.NATIVE)
         return abs(current - microns) <= 1
 
     @property
@@ -211,7 +210,7 @@ class Stage(Component):
     def move_relative(
         self,
         amount: float,
-        unit: zaber_motion.Units = zaber_motion.Units.LENGTH_MICROMETRES,
+        unit: zaber_motion.Units = zaber_motion.Units.NATIVE,
     ):
         if not self.detected:
             return CanonicalResponse(errors=[f"stage '{self._name}' not detected"])
@@ -277,7 +276,7 @@ class Stage(Component):
             )
 
         self.target = self.presets[preset]
-        self.target_units = zaber_motion.Units.LENGTH_MICROMETRES
+        self.target_units = zaber_motion.Units.NATIVE
         self.start_activity(StageActivities.Moving, label=f"{self.name}: ")
 
         assert self.axis is not None and self.target is not None
@@ -302,9 +301,16 @@ class Stage(Component):
             self.start_activity(StageActivities.ShuttingDown, label=f"{self.name}: ")
             self.move_absolute(
                 self.presets[self.shutdown_preset],
-                unit=zaber_motion.Units.LENGTH_MICROMETRES,
+                unit=zaber_motion.Units.NATIVE,
             )
         self._was_shut_down = True
+
+    @property
+    def is_shutting_down(self) -> bool:
+        return self.is_active(StageActivities.ShuttingDown)
+
+    def powerdown(self):
+        pass
 
     def startup(self):
         if not self.detected:
@@ -330,7 +336,7 @@ class Stage(Component):
             self.start_activity(StageActivities.StartingUp, label=f"{self.name}: ")
             self.move_absolute(
                 self.presets[self.startup_preset],
-                unit=zaber_motion.Units.LENGTH_MICROMETRES,
+                unit=zaber_motion.Units.NATIVE,
             )
         self._was_shut_down = False
 
@@ -354,7 +360,7 @@ class Stage(Component):
     def status(self) -> SpecStageStatus:
         import math
 
-        pos = self.position(unit=zaber_motion.Units.LENGTH_MICROMETRES)
+        pos = self.position(unit=zaber_motion.Units.NATIVE)
         if pos is not None:
             if math.isnan(pos):
                 pos = None

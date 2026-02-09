@@ -108,27 +108,29 @@ class Deepspec(Component):
             if cam:
                 cam.shutdown()  # type: ignore # threads?
 
-    def powerdown(self):
-        active_cameras = [cam for cam in self.cameras.values() if cam is not None]
-        if any(
+    @property
+    def is_shutting_down(self) -> bool:
+        return any(
             [
                 cam
-                for cam in active_cameras
-                if cam.is_active(GreatEyesActivities.ShuttingDown)
+                for cam in self.cameras.values()
+                if cam is not None and cam.is_shutting_down  # type: ignore
             ]
-        ):  # type: ignore
+        )
+
+    def powerdown(self):
+        if not self.was_shut_down:
+            logger.info("powerdown called without shutdown - calling shutdown first...")
+            self.shutdown()
+            time.sleep(3)
+
+        while self.is_shutting_down:
             logger.info(
                 "waiting for cameras to finish shutting down before powering off..."
             )
-        while any(
-            [
-                cam
-                for cam in active_cameras
-                if cam.is_active(GreatEyesActivities.ShuttingDown)
-            ]
-        ):  # type: ignore
             time.sleep(0.5)
 
+        active_cameras = [cam for cam in self.cameras.values() if cam is not None]
         for cam in active_cameras:
             cam.powerdown()  # type: ignore # threads?
 

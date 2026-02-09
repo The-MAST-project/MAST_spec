@@ -172,7 +172,16 @@ class Spec(Component):
         self.traverse_components_and_call("shutdown")
         self._was_shut_down = True
 
+    @property
+    def is_shutting_down(self) -> bool:
+        return any([comp.is_shutting_down for comp in self.components])
+
     def powerdown(self):
+        if not self._was_shut_down:
+            logger.info("powerdown called without shutdown - calling shutdown first...")
+            self.shutdown()
+            time.sleep(3)
+
         if any(
             [
                 comp
@@ -187,7 +196,7 @@ class Spec(Component):
                 [
                     comp
                     for comp in self.components
-                    if comp is not None and comp.is_active(SpecActivities.ShuttingDown)
+                    if comp is not None and comp.is_shutting_down
                 ]
             ):
                 time.sleep(0.5)

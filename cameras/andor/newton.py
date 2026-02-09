@@ -889,6 +889,18 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.start_warmup()
         self._was_shut_down = True
 
+    @property
+    def is_shutting_down(self) -> bool:
+        return self.is_active(NewtonActivities.ShuttingDown)
+
+    def powerdown(self):
+        if not self._was_shut_down:
+            self.shutdown()
+        while self.is_shutting_down:
+            time.sleep(0.1)
+        if self.is_on():
+            self.power_off()
+
     def abort(self):
         if not self.detected:
             self.logger.error("camera not detected")

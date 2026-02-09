@@ -450,6 +450,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.shutdown_event.set()
         self._was_shut_down = True
 
+    @property
+    def is_shutting_down(self) -> bool:
+        return self.is_active(GreatEyesActivities.ShuttingDown)
+
     def _apply_setting(self, func: Callable, arg):
         op = f"{func.__name__ if hasattr(func, '__name__') else str(func)}({arg}, addr={self.ge_device})"
         ret = (

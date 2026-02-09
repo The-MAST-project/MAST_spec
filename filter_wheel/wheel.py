@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os.path
 import sys
+import time
 from enum import Enum, IntFlag, auto
 from typing import TYPE_CHECKING
 
@@ -268,6 +269,19 @@ class Wheel(Component, SwitchedOutlet):
             self.move(self.default_position)
 
         self._was_shut_down = True
+
+    @property
+    def is_shutting_down(self) -> bool:
+        if not self.detected:
+            return False
+        return self.is_active(WheelActivities.ShuttingDown)
+
+    def powerdown(self):
+        if not self._was_shut_down:
+            self.shutdown()
+        while self.is_shutting_down:
+            time.sleep(0.1)
+        self.power_off()
 
     def abort(self):
         # The wheel cannot be stopped

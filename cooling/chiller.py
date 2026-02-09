@@ -56,10 +56,15 @@ class Chiller(SwitchedOutlet, Component):
         self._was_shut_down = False
 
     def shutdown(self):
+        self._was_shut_down = True
+
+    @property
+    def is_shutting_down(self) -> bool:
+        return False  # chiller does not have a shutdown procedure, so never report as shutting down
+
+    def powerdown(self):
         if self.is_on():
             self.power_off()
-
-        self._was_shut_down = True
 
     def abort(self):
         pass
