@@ -120,6 +120,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.outlet_name = f"Deepspec{self.band}"
         self.errors = []
         self.output_modes: list[str] = []
+        self.temperature_adjustment_target: float | None = None
 
         from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 
@@ -399,9 +400,29 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             latest_settings=self.latest_settings.model_dump()
             if self.latest_settings
             else None,
+            temperature_adjustment_target=self.temperature_adjustment_target,
         )
 
         return ret
+
+    def adjust_temperature(self, target_temperature: float):
+        if not self.detected:
+            return
+
+        assert self.ge_device is not None
+        self.temperature_adjustment_target = target_temperature
+        if ge.TemperatureControl_SetTemperature(
+            temperature=target_temperature, addr=self.ge_device
+        ):
+            self.start_activity(
+                GreatEyesActivities.AdjustingTemperature,
+                label=self._name,
+                details=[f"to {target_temperature}°C"],
+            )
+        else:
+            self.append_error(
+                f"FAILED to set temperature to {target_temperature}°C with ge.TemperatureControl_SetTemperature (status: {ge.StatusMSG} ({ge.Status}))"
+            )
 
     def cool_down(self):
         if not self.detected:
@@ -932,6 +953,22 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             #             )
             #         else:
             #             self.end_activity(GreatEyesActivities.Exposing, label=self.name)
+
+        if (
+            self.is_active(GreatEyesActivities.AdjustingTemperature)
+            and self.temperature_adjustment_target is not None
+        ):
+            front_temp = ge.TemperatureControl_GetTemperature(
+                thermistor=0, addr=self.ge_device
+            )
+            if front_temp == FAILED_TEMPERATURE:
+                self.append_error("failed reading sensor temperature")
+            else:
+                if abs(front_temp - self.temperature_adjustment_target) <= 1:
+                    self.end_activity(
+                        GreatEyesActivities.AdjustingTemperature, label=self._name
+                    )
+                    self.temperature_adjustment_target = None
 
         if self.is_active(GreatEyesActivities.CoolingDown) or self.is_active(
             GreatEyesActivities.WarmingUp
