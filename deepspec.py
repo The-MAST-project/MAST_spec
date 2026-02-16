@@ -207,6 +207,7 @@ class Deepspec(Component):
         seconds: float,
         x_binning: int = 1,
         y_binning: int = 1,
+        delay_before_exposure: float = 0,
         number_of_exposures: int | None = 1,
     ) -> CanonicalResponse:
         self.executor.submit(
@@ -215,6 +216,7 @@ class Deepspec(Component):
             seconds,
             x_binning,
             y_binning,
+            delay_before_exposure,
             number_of_exposures,
         )
         return CanonicalResponse_Ok
@@ -225,12 +227,20 @@ class Deepspec(Component):
         seconds: float,
         x_binning: int = 1,
         y_binning: int = 1,
+        delay_before_exposure: float = 0,
         number_of_exposures: int | None = 1,
     ) -> CanonicalResponse:
         if band not in list(get_args(DeepspecBands)):
             return CanonicalResponse(
                 errors=[
                     f"invalid band '{band}', must be one of {list(get_args(DeepspecBands))}"
+                ]
+            )
+
+        if delay_before_exposure < 0:
+            return CanonicalResponse(
+                errors=[
+                    f"delay_before_exposure must be non-negative, got {delay_before_exposure}"
                 ]
             )
 
@@ -244,6 +254,12 @@ class Deepspec(Component):
 
         folder = PathMaker().make_spec_exposures_folder(spec_name="deepspec", band=band)
         os.makedirs(folder, exist_ok=True)
+
+        if delay_before_exposure > 0:
+            logger.info(
+                f"delaying before exposure for {delay_before_exposure} seconds..."
+            )
+            time.sleep(delay_before_exposure)
 
         for exposure_number in range(number_of_exposures or 1):
             image_file = os.path.join(
@@ -277,6 +293,30 @@ class Deepspec(Component):
 
         return CanonicalResponse_Ok
 
+    def adjust_temperature_one_camera(self, band: str, target_temperature: float):
+        if band not in list(get_args(DeepspecBands)):
+            return CanonicalResponse(
+                errors=[
+                    f"invalid band '{band}', must be one of {list(get_args(DeepspecBands))}"
+                ]
+            )
+
+        if not self.cameras[band]:
+            return CanonicalResponse(errors=[f"camera '{band}' not detected"])
+
+        camera = self.cameras[band]
+        assert camera
+        if not camera.detected:
+            return CanonicalResponse(errors=[f"camera '{band}' not detected"])
+
+        camera.set_temperature(target_temperature=target_temperature)
+        if camera.errors:
+            return CanonicalResponse(
+                errors=[f"failed to set temperature: '{e}'" for e in camera.errors]
+            )
+
+        return CanonicalResponse_Ok
+
     def can_execute(self, assignment: SpectrographAssignmentModel):
         """
         do we have at least one operational camera?
@@ -307,8 +347,8 @@ class Deepspec(Component):
         assert remote_assignment.plan.ulid is not None
         notify_controller_about_task_acquisition_path(
             task_id=remote_assignment.plan.ulid,
-            src=acquisition_folder,
-            link="deepspec",
+            path_on_share=acquisition_folder,
+            subpath="deepspec",
         )
 
         self.start_activity(DeepspecActivities.Acquiring)
@@ -349,6 +389,12 @@ class Deepspec(Component):
             base_path + "/expose_one_camera",
             tags=[tag],
             endpoint=self.expose_one_camera,
+            response_model=None,
+        )
+        router.add_api_route(
+            base_path + "/adjust_temperature_one_camera",
+            tags=[tag],
+            endpoint=self.adjust_temperature_one_camera,
             response_model=None,
         )
 
