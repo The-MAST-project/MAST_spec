@@ -293,7 +293,9 @@ class Deepspec(Component):
 
         return CanonicalResponse_Ok
 
-    def adjust_temperature_one_camera(self, band: str, target_temperature: float):
+    def adjust_temperature_one_camera(
+        self, band: DeepspecBands, target_temperature: float
+    ):
         if band not in list(get_args(DeepspecBands)):
             return CanonicalResponse(
                 errors=[
@@ -309,7 +311,7 @@ class Deepspec(Component):
         if not camera.detected:
             return CanonicalResponse(errors=[f"camera '{band}' not detected"])
 
-        camera.set_temperature(target_temperature=target_temperature)
+        camera.adjust_temperature(target_temperature=target_temperature)
         if camera.errors:
             return CanonicalResponse(
                 errors=[f"failed to set temperature: '{e}'" for e in camera.errors]
