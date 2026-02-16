@@ -157,6 +157,8 @@ class Spec(Component):
     def status(self) -> SpecStatus:
         ret = self.traverse_components_and_return("status")
         ret |= {
+            "powered": True,
+            "detected": True,
             "activities": self.activities,
             "activities_verbal": self.activities_verbal,
             "operational": self.operational,
