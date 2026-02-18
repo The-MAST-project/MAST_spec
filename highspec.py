@@ -7,9 +7,12 @@ from pathlib import Path
 from threading import Thread
 from typing import List, Literal
 
+import zaber_motion
 from astropy.io import fits
+from fastapi import Body
 from fastapi.routing import APIRouter
 from pydantic import ValidationError
+from zaber_motion.units import LITERALS_TO_UNITS
 
 from cameras.andor.newton import NewtonActivities, NewtonEMCCD
 from cameras.qhy.qhy600 import (
@@ -21,6 +24,7 @@ from common.activities import HighspecActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.newton import NewtonSettingsConfig
+from common.config.shutter import ShutterConfig
 from common.const import Const
 from common.interfaces.components import Component
 from common.mast_logging import init_log
@@ -32,6 +36,7 @@ from common.spec import SpecExposureSettings
 from common.tasks.notifications import notify_controller_about_task_acquisition_path
 from common.utils import function_name
 from stage.stage import StageController as StageController
+from stage.stage import UnitNames
 
 logger = logging.Logger("highspec")
 init_log(logger)
@@ -51,11 +56,16 @@ class HighspecAcquisitionSettings:
 
 class HighspecAutofocusSettings(NewtonSettingsConfig):
     camera: Literal["newton", "qhy600", "as-configured"] = "qhy600"
-    guessed_focus_position: int | None = None  # None - start at current stage position
-    positions_per_step: int = 50  # stage steps between exposures
+    guessed_focus_position: float | None = (
+        None  # None - start at current stage position
+    )
+    positions_per_step: float = 50  # stage steps between exposures
+    unit: UnitNames = UnitNames("MILLIMETRES")
+    gain: int | None = None
     number_of_exposures: int = 1
     lamp_on: bool = False  # ThAr lamp
     filters: list[str] | None = None  # optional list of filters
+    gain: int | None = None  # for QHY600, em_gain for Newton
 
 
 class Highspec(Component):
@@ -189,7 +199,12 @@ class Highspec(Component):
     #     )
     #     # self.camera.acquire(settings,,
 
-    def do_autofocus(self, settings: HighspecAutofocusSettings):
+    def do_autofocus(
+        self,
+        settings: HighspecAutofocusSettings = Body(
+            default_factory=lambda: make_current_autofocus_settings()
+        ),
+    ) -> None:
         assert self.focusing_stage is not None
 
         match settings.camera:
@@ -204,9 +219,17 @@ class Highspec(Component):
                     f"{function_name()}: unknown camera '{settings.camera}'"
                 )
 
-        self.start_activity(HighspecActivities.AutoFocusing)
+        self.start_activity(
+            HighspecActivities.AutoFocusing,
+            details=[
+                f"around position {settings.guessed_focus_position}",
+                f"unit {settings.unit}",
+                f"{settings.number_of_exposures} exposures",
+                f"step {settings.positions_per_step}",
+            ],
+        )
 
-        if self.fiber_stage:
+        if self.fiber_stage is not None:
             self.fiber_stage.move_to_preset("highspec")
 
         if self.spec is not None:
@@ -214,78 +237,104 @@ class Highspec(Component):
         else:
             settings.filters = None
 
+        from stage.stage import reverse_units_dict
+
         if settings.guessed_focus_position is not None:
-            initial_focus_position = settings.guessed_focus_position
-            self.focusing_stage.move_absolute(settings.guessed_focus_position)
-            while self.focusing_stage.is_moving:
-                time.sleep(0.5)
+            starting_focus_position = settings.guessed_focus_position
+            logger.debug(
+                f"{function_name()}: using guessed focus position {starting_focus_position} {settings.unit}"
+            )
         else:
-            initial_focus_position = self.focusing_stage.position()
+            starting_focus_position = self.focusing_stage.position(
+                unit=reverse_units_dict[settings.unit.name]
+            )
+            logger.debug(
+                f"{function_name()}: no guessed focus position provided, using current stage position {starting_focus_position} {settings.unit}"
+            )
 
-        initial_focus_position -= (
-            settings.positions_per_step * settings.number_of_exposures
+        starting_focus_position -= (
+            settings.positions_per_step
+            * (settings.number_of_exposures - 1)  # number of steps to move back
         ) / 2  # type: ignore
-        self.focusing_stage.move_absolute(initial_focus_position)
+        self.focusing_stage.move_absolute(
+            starting_focus_position, unit=reverse_units_dict[settings.unit.name]
+        )
+        while self.focusing_stage.is_moving:
+            time.sleep(0.5)
 
-        for filter in settings.filters or [None]:
-            if (
-                filter is not None
-                and self.spec is not None
-                and self.spec.thar_wheel is not None
-            ):
-                self.spec.thar_wheel.move_to_filter(filter_name=filter)
+        # for filter in settings.filters or [None]:
+        #     if (
+        #         filter is not None
+        #         and self.spec is not None
+        #         and self.spec.thar_wheel is not None
+        #     ):
+        #         self.spec.thar_wheel.move_to_filter(filter_name=filter)
 
-            folder = PathMaker().make_autofocus_folder()
-            if filter:
-                folder = str(Path(folder) / f"filter={filter}")
-            Path(folder).mkdir(parents=True, exist_ok=True)
+        folder = PathMaker().make_autofocus_folder()
+        # if filter:
+        #     folder = str(Path(folder) / f"filter={filter}")
+        Path(folder).mkdir(parents=True, exist_ok=True)
 
-            self.camera.set_parent_spec(self)
+        self.camera.set_parent_spec(self)
 
-            for exposure_number in range(settings.number_of_exposures):
-                image_path = Path(folder) / f"FOCUS_{self.focusing_stage.position}"
-                image_file = str(image_path)
+        for exposure_number in range(settings.number_of_exposures):
+            unit_mnemonic = next(
+                k
+                for k, v in LITERALS_TO_UNITS.items()
+                if v == reverse_units_dict[settings.unit.name]
+            )
+            image_path = (
+                Path(folder)
+                / f"FOCUS_{self.focusing_stage.position(unit=reverse_units_dict[settings.unit.name]):.5f}_{unit_mnemonic}.fits"
+            )
+            image_file = str(image_path)
 
-                logger.debug(
-                    f"{function_name()}: Exposure #{exposure_number} out of {settings.number_of_exposures} into '{image_path.as_posix()}'"
+            logger.debug(
+                f"{function_name()}: Exposure #{exposure_number} out of {settings.number_of_exposures} into '{image_path.as_posix()}'"
+            )
+            if isinstance(self.camera, NewtonEMCCD):
+                self.start_activity(HighspecActivities.Exposing)
+                x_binning = settings.binning.x if settings.binning else 1
+                y_binning = settings.binning.y if settings.binning else 1
+
+                self.camera.start_acquisition(
+                    settings=SpecExposureSettings(
+                        exposure_duration=settings.exposure_duration,
+                        x_binning=x_binning,
+                        y_binning=y_binning,
+                        image_path=image_file,
+                        gain=settings.gain,
+                    )
                 )
-                if isinstance(self.camera, NewtonEMCCD):
-                    self.start_activity(HighspecActivities.Exposing)
-                    x_binning = settings.binning.x if settings.binning else 1
-                    y_binning = settings.binning.y if settings.binning else 1
 
-                    self.camera.start_acquisition(
-                        settings=SpecExposureSettings(
-                            exposure_duration=settings.exposure_duration,
-                            x_binning=x_binning,
-                            y_binning=y_binning,
-                            image_path=image_file,
-                        )
+            elif isinstance(self.camera, QHY600):
+                self.start_activity(HighspecActivities.Exposing)
+                binning = (
+                    QHYBinningModel(
+                        x=settings.binning.x,
+                        y=settings.binning.y,
                     )
+                    if settings.binning
+                    else QHYBinningModel(x=1, y=1)
+                )
 
-                elif isinstance(self.camera, QHY600):
-                    self.start_activity(HighspecActivities.Exposing)
-                    binning = (
-                        QHYBinningModel(
-                            x=settings.binning.x,
-                            y=settings.binning.y,
-                        )
-                        if settings.binning
-                        else QHYBinningModel(x=1, y=1)
+                self.camera.start_single_exposure(
+                    settings=QHYCameraSettingsModel(
+                        exposure_duration=settings.exposure_duration,
+                        binning=binning,
+                        image_path=image_file,
+                        gain=settings.gain,
                     )
+                )
 
-                    self.camera.start_single_exposure(
-                        settings=QHYCameraSettingsModel(
-                            exposure_duration=settings.exposure_duration,
-                            binning=binning,
-                            image_path=image_file,
-                        )
-                    )
+            while self.is_active(HighspecActivities.Exposing):
+                time.sleep(0.5)
 
-                while self.is_active(HighspecActivities.Exposing):
-                    time.sleep(0.5)
-
-                self.focusing_stage.move_relative(settings.positions_per_step)
+            if exposure_number < settings.number_of_exposures - 1:
+                self.focusing_stage.move_relative(
+                    -settings.positions_per_step,
+                    unit=reverse_units_dict[settings.unit.name],
+                )
                 while self.focusing_stage.is_moving:
                     time.sleep(0.5)
 
@@ -297,6 +346,40 @@ class Highspec(Component):
         # Update known_as_good_focus_position in config DB
         #
         self.end_activity(HighspecActivities.AutoFocusing)
+
+    # class HighspecAutofocusSettings(NewtonSettingsConfig):
+    #     camera: Literal["newton", "qhy600", "as-configured"] = "qhy600"
+    #     guessed_focus_position: float | None = (
+    #         None  # None - start at current stage position
+    #     )
+    #     positions_per_step: float = 50  # stage steps between exposures
+    #     number_of_exposures: int = 1
+    #     lamp_on: bool = False  # ThAr lamp
+    #     filters: list[str] | None = None  # optional list of filters
+    from stage.stage import reverse_units_dict
+
+    def manual_autofocus(
+        self,
+        camera: Literal["newton", "qhy600"] = "qhy600",
+        gain: int | None = None,
+        exposure_duration: float = 1.0,
+        guessed_focus_position: float | None = None,
+        step_size: float = 5,
+        unit: UnitNames = UnitNames("MILLIMETRES"),
+        number_of_exposures: int = 1,
+    ):
+        settings = HighspecAutofocusSettings(
+            camera=camera,
+            guessed_focus_position=guessed_focus_position,
+            exposure_duration=exposure_duration,
+            positions_per_step=step_size,
+            unit=unit,
+            number_of_exposures=number_of_exposures,
+            lamp_on=False,
+            filters=None,
+            gain=gain,
+        )
+        return self.autofocus(settings)
 
     def autofocus(
         self, autofocus_settings: HighspecAutofocusSettings
@@ -369,8 +452,8 @@ class Highspec(Component):
         assert remote_assignment.plan.file is not None
         notify_controller_about_task_acquisition_path(
             task_id=remote_assignment.plan.file,
-            src=acquisition_folder,
-            link="highspec",
+            path_on_share=acquisition_folder,
+            subpath="highspec",
         )
 
         spec_exposure_settings = SpecExposureSettings(
@@ -429,6 +512,12 @@ class Highspec(Component):
         #     response_model=None,
         # )
         router.add_api_route(
+            base_path + "/manual_autofocus",
+            tags=[tag],
+            methods=["PUT"],
+            endpoint=self.manual_autofocus,
+        )
+        router.add_api_route(
             base_path + "/autofocus",
             tags=[tag],
             methods=["PUT"],
@@ -436,3 +525,23 @@ class Highspec(Component):
         )
 
         return router
+
+
+def make_current_autofocus_settings() -> HighspecAutofocusSettings:
+    spec: Highspec = Highspec()
+
+    return HighspecAutofocusSettings(
+        camera=spec.conf.camera,
+        guessed_focus_position=spec.focusing_stage.position(
+            unit=zaber_motion.Units.LENGTH_MILLIMETRES
+        )
+        if spec.focusing_stage
+        else None,
+        positions_per_step=5,
+        number_of_exposures=3,
+        lamp_on=False,
+        filters=None,
+        shutter=spec.conf.shutter
+        if spec.conf.shutter
+        else ShutterConfig(open_time=12, close_time=9),
+    )
