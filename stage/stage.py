@@ -223,7 +223,7 @@ class Stage(Component):
         self.start_activity(
             StageActivities.Moving,
             label=f"{self.full_name}: ",
-            details=[f"relative to {self.position(unit=unit)} by {amount} {unit}"],
+            details=[f"relative to {self.position(unit=unit):.5f} by {amount} {unit}"],
         )
 
         current_position = self.position(unit=unit)
@@ -271,7 +271,7 @@ class Stage(Component):
         self.start_activity(
             StageActivities.Moving,
             label=f"{self.full_name}: ",
-            details=[f"absolute {position=} {unit}"],
+            details=[f"absolute {position=:.5f} {unit}"],
         )
 
         assert self.axis is not None
@@ -294,7 +294,7 @@ class Stage(Component):
         self.start_activity(
             StageActivities.Moving,
             label=f"{self.full_name}: ",
-            details=[f"to '{preset=}' at {self.target} {self.target_units}"],
+            details=[f"to '{preset=}' at {self.target:.5f} {self.target_units}"],
         )
 
         assert self.axis is not None and self.target is not None
