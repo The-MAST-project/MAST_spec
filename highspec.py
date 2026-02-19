@@ -332,7 +332,7 @@ class Highspec(Component):
 
             if exposure_number < settings.number_of_exposures - 1:
                 self.focusing_stage.move_relative(
-                    -settings.positions_per_step,
+                    settings.positions_per_step,
                     unit=reverse_units_dict[settings.unit.name],
                 )
                 while self.focusing_stage.is_moving:
