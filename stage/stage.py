@@ -18,7 +18,7 @@ from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.statuses import SpecStageStatus
 from common.networking import NetworkedDevice
-from common.spec import GratingNames, SpecNames, SpecStageNames
+from common.spec import GratingNames, SpecInstruments, SpecStageNames
 from common.utils import caller_name, function_name
 
 logger = logging.getLogger("mast.spec.stage")
@@ -637,7 +637,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
         return CanonicalResponse_Ok
 
     def endpoint_move_fiber_to_preset(
-        self, preset_name: SpecNames
+        self, preset_name: SpecInstruments
     ) -> CanonicalResponse:
         if self.fiber_stage is None:
             return CanonicalResponse(errors=["self.fiber_stage is None"])
