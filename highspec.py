@@ -28,8 +28,8 @@ from common.config.shutter import ShutterConfig
 from common.const import Const
 from common.interfaces.components import Component
 from common.mast_logging import init_log
-from common.models.assignments import SpectrographAssignmentModel
-from common.models.highspec import HighspecModel
+from common.models.assignments import SpectrographAssignment
+from common.models.highspec import HighspecSettings
 from common.models.statuses import HighspecStatus
 from common.paths import PathMaker
 from common.spec import SpecExposureSettings
@@ -404,20 +404,18 @@ class Highspec(Component):
             or self.is_active(HighspecActivities.Exposing)
         )
 
-    def do_execute_assignment(
-        self, remote_assignment: SpectrographAssignmentModel, spec
-    ):
+    def do_execute_assignment(self, assignment: SpectrographAssignment, spec):
         """
         Executes a highspec spectrograph assignment (runs in a separate Thread)
-        :param remote_assignment: the assignment, as received from the controller
+        :param assignment: the assignment, as received from the controller
         :param spec: the parent spectrograph object
         :return:
         """
         self.start_activity(HighspecActivities.Acquiring)
-        assert isinstance(remote_assignment.spec, SpectrographAssignmentModel)
-        assert isinstance(remote_assignment.spec.spec, HighspecModel)
-        highspec_assignment: HighspecModel = (
-            remote_assignment.spec.spec
+        assert isinstance(assignment.spec, SpectrographAssignment)
+        assert isinstance(assignment.spec.spec, HighspecSettings)
+        highspec_assignment: HighspecSettings = (
+            assignment.spec.spec
         )  # the highspec-specific part of the Union
 
         disperser_name = highspec_assignment.disperser
@@ -450,9 +448,17 @@ class Highspec(Component):
             str(acquisition_folder)
         )
 
-        assert remote_assignment.plan.file is not None
+        work = (
+            assignment.batch
+            if assignment.batch is not None
+            else assignment.plan
+            if assignment.plan is not None
+            else None
+        )
+        assert work is not None and work.ulid is not None
+
         notify_controller_about_task_acquisition_path(
-            task_id=remote_assignment.plan.file,
+            task_id=str(work.ulid),
             path_on_share=acquisition_folder,
             subpath="highspec",
         )
@@ -480,13 +486,13 @@ class Highspec(Component):
                 hdul.flush()
         self.end_activity(HighspecActivities.Acquiring)
 
-    def can_execute(self, assignment: SpectrographAssignmentModel):
+    def can_execute(self, assignment: SpectrographAssignment):
         if self.camera and self.camera.detected:
             return True, None
         else:
             return False, ["no camera detected"]
 
-    def execute_assignment(self, remote_assignment: SpectrographAssignmentModel, spec):
+    def execute_assignment(self, remote_assignment: SpectrographAssignment, spec):
         Thread(
             name="newton-acquisition",
             target=self.do_execute_assignment,
