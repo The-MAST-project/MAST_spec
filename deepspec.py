@@ -359,7 +359,20 @@ class Deepspec(Component):
             PathMaker().make_spec_acquisitions_folder(spec_name="deepspec")
         )
 
-        assert remote_assignment.plan.ulid is not None
+        ulid = None
+        if (
+            remote_assignment.batch is not None
+            and remote_assignment.batch.ulid is not None
+        ):
+            ulid = remote_assignment.batch.ulid
+        elif (
+            remote_assignment.plan is not None
+            and remote_assignment.plan.ulid is not None
+        ):
+            ulid = remote_assignment.plan.ulid
+        else:
+            raise ValueError("assignment must have either batch.ulid or plan.ulid")
+
         notify_controller_about_task_acquisition_path(
             task_id=remote_assignment.plan.ulid,
             path_on_share=acquisition_folder,
