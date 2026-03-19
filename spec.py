@@ -23,9 +23,9 @@ from common.dlipowerswitch import (
 from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.assignments import (
-    SpectrographAssignmentModel,
+    SpectrographAssignment,
 )
-from common.models.calibration import CalibrationModel
+from common.models.calibration import CalibrationSettings
 from common.models.statuses import SpecStatus
 from common.spec import (
     Disperser,
@@ -433,8 +433,8 @@ class Spec(Component):
         self.highspec_exposure_seconds = highspec_seconds
         self.deepspec_exposure_seconds = deepspec_seconds
 
-    def do_execute_assignment(self, remote_assignment: SpectrographAssignmentModel):
-        assert isinstance(remote_assignment.spec, SpectrographAssignmentModel)
+    def do_execute_assignment(self, remote_assignment: SpectrographAssignment):
+        assert isinstance(remote_assignment.spec, SpectrographAssignment)
 
         spec_assignment = remote_assignment.spec.spec
         executor = (
@@ -444,7 +444,7 @@ class Spec(Component):
         assert spec_assignment.calibration is not None
         assert self.fiber_stage is not None
 
-        calibration: CalibrationModel = spec_assignment.calibration
+        calibration: CalibrationSettings = spec_assignment.calibration
         thar_lamp = [lamp for lamp in self.lamps if lamp.name == "ThAr"][0]
         thar_wheel = [wheel for wheel in self.wheels if wheel.name == "ThAr"][0]
 
@@ -475,31 +475,49 @@ class Spec(Component):
             return False
         return self.thar_wheel.is_moving or self.fiber_stage.is_moving
 
-    async def execute_assignment(self, remote_assignment: SpectrographAssignmentModel):
-        initiator = remote_assignment.initiator
-        what = f"remote assignment: from='{initiator.hostname}' ({initiator.ipaddr}), task='{remote_assignment.plan.ulid}'"
+    async def execute_assignment(self, assignment: SpectrographAssignment):
+        initiator = assignment.initiator
+        work = (
+            assignment.batch
+            if assignment.batch
+            else assignment.plan
+            if assignment.plan
+            else None
+        )
 
-        assert isinstance(remote_assignment.spec, SpectrographAssignmentModel)
+        if work is None:
+            logger.error(
+                f"execute_assignment called with no batch or plan in the assignment: {assignment}"
+            )
+            return CanonicalResponse(
+                errors=["Invalid assignment: no batch or plan specified"]
+            )
 
-        if remote_assignment.plan.production and not self.operational:
+        what = f"remote assignment: from='{initiator.hostname}' ({initiator.ipaddr}), {type(work).__name__}='{work.ulid}'"
+
+        assert isinstance(assignment.spec, SpectrographAssignment)
+
+        if (
+            assignment.plan is not None
+            and assignment.plan.production
+            and not self.operational
+        ):
             logger.info(
                 f"REJECTED {what} (not operational: {self.why_not_operational})"
             )
             return CanonicalResponse(errors=self.why_not_operational)
 
         executor = (
-            self.highspec
-            if remote_assignment.spec.instrument == "highspec"
-            else self.deepspec
+            self.highspec if assignment.spec.instrument == "highspec" else self.deepspec
         )
-        assert isinstance(remote_assignment.spec, SpectrographAssignmentModel)
-        can_execute, reasons = executor.can_execute(remote_assignment.spec)
+        assert isinstance(assignment.spec, SpectrographAssignment)
+        can_execute, reasons = executor.can_execute(assignment.spec)
         if not can_execute:
             logger.info(f"REJECTED {what} (reasons: {reasons})")
             return CanonicalResponse(errors=reasons)
 
         logger.info(f"ACCEPTED: {what}")
-        Thread(target=self.do_execute_assignment, args=[remote_assignment]).start()
+        Thread(target=self.do_execute_assignment, args=[assignment]).start()
         return CanonicalResponse_Ok
 
     @property
