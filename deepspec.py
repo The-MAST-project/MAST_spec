@@ -18,7 +18,7 @@ from common.const import Const
 from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.assignments import (
-    SpectrographAssignmentModel,
+    SpectrographAssignment,
 )
 from common.models.greateyes import GreateyesSettingsModel
 from common.models.spectrographs import SpectrographModel
@@ -332,7 +332,7 @@ class Deepspec(Component):
 
         return CanonicalResponse_Ok
 
-    def can_execute(self, assignment: SpectrographAssignmentModel):
+    def can_execute(self, assignment: SpectrographAssignment):
         """
         do we have at least one operational camera?
         :param assignment:
@@ -348,7 +348,7 @@ class Deepspec(Component):
                 continue
         return (False, errors) if errors else (True, None)
 
-    def execute_assignment(self, remote_assignment: SpectrographAssignmentModel, spec):
+    def execute_assignment(self, remote_assignment: SpectrographAssignment, spec):
         assert isinstance(remote_assignment.spec, SpectrographModel)
         # deepspec_model: DeepspecModel = remote_assignment.spec
 
@@ -374,7 +374,7 @@ class Deepspec(Component):
             raise ValueError("assignment must have either batch.ulid or plan.ulid")
 
         notify_controller_about_task_acquisition_path(
-            task_id=remote_assignment.plan.ulid,
+            task_id=str(ulid),
             path_on_share=acquisition_folder,
             subpath="deepspec",
         )
