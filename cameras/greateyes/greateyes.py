@@ -17,8 +17,8 @@ from common.config import Config
 from common.dlipowerswitch import SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import init_log
-from common.models.assignments import SpectrographAssignmentModel
-from common.models.deepspec import DeepspecModel
+from common.models.assignments import SpectrographAssignment
+from common.models.deepspec import DeepspecSettings
 from common.models.greateyes import GreateyesSettingsModel, ReadoutSpeed
 from common.models.statuses import GreateyesStatus
 from common.networking import NetworkedDevice
@@ -1098,11 +1098,9 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         logger.debug(*args, **kwargs)
 
-    def do_execute_assignment(
-        self, assignment: SpectrographAssignmentModel, folder: str
-    ):
-        assert isinstance(assignment.spec, DeepspecModel)
-        deepspec_assignment: DeepspecModel = assignment.spec
+    def do_execute_assignment(self, assignment: SpectrographAssignment, folder: str):
+        assert isinstance(assignment.spec, DeepspecSettings)
+        deepspec_assignment: DeepspecSettings = assignment.spec
 
         assert deepspec_assignment.camera is not None
         settings: GreateyesSettingsModel = deepspec_assignment.camera[self.band]
@@ -1118,7 +1116,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             while self.is_active(GreatEyesActivities.Acquiring):
                 time.sleep(0.5)
 
-    def execute_assignment(self, assignment: SpectrographAssignmentModel, folder: str):
+    def execute_assignment(self, assignment: SpectrographAssignment, folder: str):
         threading.Thread(
             target=self.do_execute_assignment, args=[assignment, folder]
         ).start()
