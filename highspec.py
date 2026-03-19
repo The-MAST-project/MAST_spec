@@ -168,7 +168,8 @@ class Highspec(Component):
             activities_verbal=self.activities_verbal,
             operational=self.operational,
             why_not_operational=self.why_not_operational,
-            camera=self.camera.status(),
+            camera_type=self.conf.camera,
+            camera_status=self.camera.status(),
         )
 
     def abort(self):
