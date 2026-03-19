@@ -3,16 +3,20 @@ import logging
 import os
 import threading
 import time
+from contextlib import suppress
 from enum import IntFlag, auto
 from pathlib import Path
 from typing import Callable, Literal
 
+import zaber_motion
 from pydantic import BaseModel
 
+from cameras.greateyes.greateyes import Exposure
 from common.activities import HighspecActivities
 from common.dlipowerswitch import SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import init_log
+from common.models.statuses import QHY600Status
 from common.spec import SpecExposureSettings
 
 from .controls import QHYControlId, qhy_controls
@@ -132,6 +136,9 @@ class QHY600(Component, SwitchedOutlet):
         self._img_buffer = None
         self.supported_binnings: list[int] = []
         self.trigger_interfaces: list[str] = []
+
+        self.errors: list[str] = []
+        self.latest_exposure: Exposure | None = None
 
         self._connected = False
         self.connect()
@@ -628,8 +635,9 @@ class QHY600(Component, SwitchedOutlet):
                 hdu.header["NAXIS2"] = settings.roi.height
 
             hdu.header["EXPTIME"] = settings.exposure_duration
-            if settings.gain is not None:
-                hdu.header["GAIN"] = settings.gain
+
+            # gain = self.sdk_get_control(QHYControlId.CONTROL_GAIN)
+            # hdu.header["GAIN"] = gain if gain is not None else "unknown"
             if settings.roi is not None:
                 hdu.header["ROI_X"] = settings.roi.x
                 hdu.header["ROI_Y"] = settings.roi.y
@@ -640,7 +648,17 @@ class QHY600(Component, SwitchedOutlet):
                 hdu.header["YBINNING"] = settings.binning.y
             hdu.header["INSTRUME"] = self.model or "QHY600MM"
             hdu.header["DATE-OBS"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
-            # hdu.header["FOCUSPOS"] = 0  # Placeholder for focus position
+            if self.parent_spec is not None:
+                hdu.header["FOCUSPOS"] = self.parent_spec.focusing_stage.position(
+                    unit=zaber_motion.Units.LENGTH_MILLIMETRES
+                )
+                mnemonic = next(
+                    k
+                    for k, v in zaber_motion.units.LITERALS_TO_UNITS.items()
+                    if v == zaber_motion.Units.LENGTH_MILLIMETRES
+                )
+                hdu.header["FOCUSUNI"] = mnemonic
+            # hdu.header["GAIN"] = self.gain
             hdu.writeto(self.latest_settings.image_path, overwrite=True)
             self.info(
                 f"{self.model}: Image saved to {str(self.latest_settings.image_path)}"
@@ -668,8 +686,17 @@ class QHY600(Component, SwitchedOutlet):
     def powerdown(self):
         self.power_off()
 
-    def status(self):
-        return super().status()
+    def status(self) -> QHY600Status | None:
+        stat = None
+        with suppress(Exception):
+            stat = QHY600Status(
+                powered=self.is_on(),
+                # temperature=self.temperature,
+                errors=self.errors,
+                latest_exposure=self.latest_exposure,
+                latest_settings=self.latest_settings,
+            )
+        return stat
 
     @property
     def operational(self) -> bool:
@@ -678,6 +705,7 @@ class QHY600(Component, SwitchedOutlet):
     def abort(self):
         return super().abort()
 
+    @property
     def name(self) -> str:
         return "qhy600mm"
 
@@ -689,9 +717,9 @@ class QHY600(Component, SwitchedOutlet):
     def why_not_operational(self) -> list[str]:
         ret: list[str] = []
         if not self.detected:
-            ret.append("Camera not detected")
-        if not self.connected:
-            ret.append("Camera not connected")
+            ret.append(f"{self.name}: not detected")
+        elif not self.connected:
+            ret.append(f"{self.name}: not connected")
         return ret
 
     @property
