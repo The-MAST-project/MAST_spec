@@ -399,6 +399,7 @@ class Stage(Component):
             position_um=self.position(unit=zaber_motion.Units.LENGTH_MICROMETRES),
             position_mm=self.position(unit=zaber_motion.Units.LENGTH_MILLIMETRES),
             position_cm=self.position(unit=zaber_motion.Units.LENGTH_CENTIMETRES),
+            position_m=self.position(unit=zaber_motion.Units.LENGTH_METRES),
             at_preset=self.at_preset,
         )
 
