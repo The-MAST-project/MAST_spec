@@ -359,7 +359,7 @@ class Wheel(Component, SwitchedOutlet):
             return
 
         self.target = pos
-        self.start_activity(WheelActivities.Moving)
+        self.start_activity(WheelActivities.Moving, data={"target": {"type": "position", "value": pos}})
         self.logger.debug(f"Moving to position {pos}")
         result = FWxCSetPosition(self.device, pos)
         if result < 0:
