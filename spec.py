@@ -456,6 +456,7 @@ class Spec(Component):
         else:
             thar_lamp.power_off()
 
+        assert spec_assignment.instrument is not None
         if (
             self.fiber_stage
             and self.fiber_stage.at_preset != spec_assignment.instrument
