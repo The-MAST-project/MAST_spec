@@ -220,12 +220,24 @@ class Stage(Component):
     ):
         if not self.detected:
             return CanonicalResponse(errors=[f"stage '{self._name}' not detected"])
-        target_position = self.position(unit=unit) + amount
+        current_position = self.position(unit=unit)
+        if current_position is None:
+            self.logger.error(
+                f"{function_name()}: cannot get current position for relative move"
+            )
+            return
+        target_position = current_position + amount
         self.start_activity(
             StageActivities.Moving,
             label=f"{self.full_name}: ",
-            details=[f"relative to {self.position(unit=unit):.5f} by {amount} {unit}"],
-            data={"target": {"type": "position", "value": target_position, "unit": unit.name}},
+            details=[f"relative to {current_position:.5f} by {amount} {unit}"],
+            data={
+                "target": {
+                    "type": "position",
+                    "value": target_position,
+                    "unit": unit.name,
+                }
+            },
         )
 
         current_position = self.position(unit=unit)
@@ -275,7 +287,13 @@ class Stage(Component):
             StageActivities.Moving,
             label=f"{self.full_name}: ",
             details=[f"absolute {position=:.5f} {unit}"],
-            data={"target": {"type": "position", "value": target_position, "unit": unit.name}},
+            data={
+                "target": {
+                    "type": "position",
+                    "value": target_position,
+                    "unit": unit.name,
+                }
+            },
         )
 
         assert self.axis is not None
@@ -352,8 +370,11 @@ class Stage(Component):
         if parked:
             self.axis.unpark()
         elif not self.axis.is_homed():
-            self.start_activity(StageActivities.Homing, label=f"{self.name}: ",
-                                data={"target": {"type": "preset", "value": "home"}})
+            self.start_activity(
+                StageActivities.Homing,
+                label=f"{self.name}: ",
+                data={"target": {"type": "preset", "value": "home"}},
+            )
             self.axis.home(wait_until_idle=False)
 
         if self.startup_preset and not self.close_enough(
