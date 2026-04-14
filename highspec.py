@@ -33,7 +33,7 @@ from common.models.highspec import HighspecSettings
 from common.models.statuses import HighspecStatus
 from common.paths import PathMaker
 from common.spec import SpecExposureSettings
-from common.tasks.notifications import notify_controller_about_task_acquisition_path
+from common.tasks.notifications import notify_controller_about_acquisition_path
 from common.utils import function_name
 from stage.stage import StageController as StageController
 from stage.stage import UnitNames
@@ -457,8 +457,8 @@ class Highspec(Component):
         )
         assert work is not None and work.ulid is not None
 
-        notify_controller_about_task_acquisition_path(
-            task_id=str(work.ulid),
+        notify_controller_about_acquisition_path(
+            assignment_id=str(work.ulid),
             path_on_share=acquisition_folder,
             subpath="highspec",
         )

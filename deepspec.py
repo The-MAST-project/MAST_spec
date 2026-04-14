@@ -28,7 +28,7 @@ from common.spec import (
     DeepspecBands,
     SpecExposureSettings,
 )
-from common.tasks.notifications import notify_controller_about_task_acquisition_path
+from common.tasks.notifications import notify_controller_about_acquisition_path
 
 logger = logging.Logger("deepspec")
 init_log(logger)
@@ -366,8 +366,8 @@ class Deepspec(Component):
         else:
             raise ValueError("assignment must have either batch.ulid or plan.ulid")
 
-        notify_controller_about_task_acquisition_path(
-            task_id=str(ulid),
+        notify_controller_about_acquisition_path(
+            assignment_id=str(ulid),
             path_on_share=acquisition_folder,
             subpath="deepspec",
         )
