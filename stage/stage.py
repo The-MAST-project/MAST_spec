@@ -220,10 +220,12 @@ class Stage(Component):
     ):
         if not self.detected:
             return CanonicalResponse(errors=[f"stage '{self._name}' not detected"])
+        target_position = self.position(unit=unit) + amount
         self.start_activity(
             StageActivities.Moving,
             label=f"{self.full_name}: ",
             details=[f"relative to {self.position(unit=unit):.5f} by {amount} {unit}"],
+            data={"target": {"type": "position", "value": target_position, "unit": unit.name}},
         )
 
         current_position = self.position(unit=unit)
@@ -268,10 +270,12 @@ class Stage(Component):
         #         f"{function_name()}: position {position} out of range (0-{self.max_position})"
         #     )
 
+        target_position = position
         self.start_activity(
             StageActivities.Moving,
             label=f"{self.full_name}: ",
             details=[f"absolute {position=:.5f} {unit}"],
+            data={"target": {"type": "position", "value": target_position, "unit": unit.name}},
         )
 
         assert self.axis is not None
@@ -295,6 +299,7 @@ class Stage(Component):
             StageActivities.Moving,
             label=f"{self.full_name}: ",
             details=[f"to '{preset=}' at {self.target:.5f} {self.target_units}"],
+            data={"target": {"type": "preset", "value": preset}},
         )
 
         assert self.axis is not None and self.target is not None
@@ -347,7 +352,8 @@ class Stage(Component):
         if parked:
             self.axis.unpark()
         elif not self.axis.is_homed():
-            self.start_activity(StageActivities.Homing, label=f"{self.name}: ")
+            self.start_activity(StageActivities.Homing, label=f"{self.name}: ",
+                                data={"target": {"type": "preset", "value": "home"}})
             self.axis.home(wait_until_idle=False)
 
         if self.startup_preset and not self.close_enough(
