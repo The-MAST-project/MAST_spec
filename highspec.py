@@ -468,13 +468,11 @@ class Highspec(Component):
         )
         assert work is not None and work.ulid is not None
 
-        assert notification_initiator is not None
         Notifier().assignment_notification(
             AssignmentNotification(
                 assignment_id=str(work.ulid),
-                initiator=notification_initiator,
                 state="in-progress",
-                shared_top=str(acquisition_folder),
+                shared_top=acquisition_folder,
                 shared_subpath="highspec",
             )
         )

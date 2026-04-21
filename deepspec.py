@@ -376,13 +376,11 @@ class Deepspec(Component):
         else:
             raise ValueError("assignment must have either batch.ulid or plan.ulid")
 
-        assert notification_initiator is not None
         Notifier().assignment_notification(
             AssignmentNotification(
                 assignment_id=str(ulid),
-                initiator=notification_initiator,
                 state="in-progress",
-                shared_top=str(acquisition_folder),
+                shared_top=acquisition_folder,
                 shared_subpath="deepspec",
             )
         )
