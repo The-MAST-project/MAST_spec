@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from common.config import Config
+from MAST_common.config import Config
 from cooling.chiller import Chiller
 from deepspec import Deepspec
 from filter_wheel.wheel import FilterWheels

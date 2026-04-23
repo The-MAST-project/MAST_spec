@@ -10,10 +10,10 @@ from typing import Callable, Literal
 
 from pydantic import BaseModel
 
-from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.components import Component
-from common.mast_logging import init_log
-from common.spec import SpecExposureSettings
+from MAST_common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from MAST_common.interfaces.components import Component
+from MAST_common.mast_logging import init_log
+from MAST_common.spec import SpecExposureSettings
 
 from .controls import QHYControl, QHYControlId, qhy_controls
 

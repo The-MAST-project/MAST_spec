@@ -16,7 +16,6 @@ nosetests.xml
 /coverage.xml
 /pytest_*.xml
 **/__pycache__
-greateyes/
 dlipower/
 cameras/greateyes/sdk/
 **/*.fits

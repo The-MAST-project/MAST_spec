@@ -11,24 +11,24 @@ from fastapi.routing import APIRouter
 
 from cameras.greateyes.greateyes import GreatEyes
 from cameras.greateyes.greateyes import cameras as greateyes_cameras
-from common.activities import DeepspecActivities, GreatEyesActivities
-from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config import Config
-from common.const import Const
-from common.interfaces.components import Component
-from common.mast_logging import init_log
-from common.models.assignments import (
+from MAST_common.activities import DeepspecActivities, GreatEyesActivities
+from MAST_common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from MAST_common.config import Config
+from MAST_common.const import Const
+from MAST_common.interfaces.components import Component
+from MAST_common.mast_logging import init_log
+from MAST_common.models.assignments import (
     SpectrographAssignment,
 )
-from common.models.greateyes import GreateyesSettingsModel
-from common.models.spectrographs import SpectrographModel
-from common.models.statuses import DeepspecStatus
-from common.paths import PathMaker
-from common.spec import (
+from MAST_common.models.greateyes import GreateyesSettingsModel
+from MAST_common.models.spectrographs import SpectrographModel
+from MAST_common.models.statuses import DeepspecStatus
+from MAST_common.paths import PathMaker
+from MAST_common.spec import (
     DeepspecBands,
     SpecExposureSettings,
 )
-from common.tasks.notifications import notify_controller_about_acquisition_path
+from MAST_common.tasks.notifications import notify_controller_about_acquisition_path
 
 logger = logging.Logger("deepspec")
 init_log(logger)

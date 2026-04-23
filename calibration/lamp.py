@@ -3,11 +3,11 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, List
 
-from common.activities import CalibrationLampActivities
-from common.config import Config
-from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.components import Component
-from common.models.statuses import CalibrationLampStatus
+from MAST_common.activities import CalibrationLampActivities
+from MAST_common.config import Config
+from MAST_common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from MAST_common.interfaces.components import Component
+from MAST_common.models.statuses import CalibrationLampStatus
 
 if TYPE_CHECKING:
     from spec import Spec

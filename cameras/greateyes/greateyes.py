@@ -12,18 +12,18 @@ import astropy.io.fits as fits
 from astropy.io.fits import Card
 from pydantic import BaseModel
 
-from common.activities import GreatEyesActivities
-from common.config import Config
-from common.dlipowerswitch import SwitchedOutlet
-from common.interfaces.components import Component
-from common.mast_logging import init_log
-from common.models.assignments import SpectrographAssignment
-from common.models.deepspec import DeepspecSettings
-from common.models.greateyes import GreateyesSettingsModel, ReadoutSpeed
-from common.models.statuses import GreateyesStatus
-from common.networking import NetworkedDevice
-from common.spec import DeepspecBands
-from common.utils import OperatingMode, RepeatTimer, function_name
+from MAST_common.activities import GreatEyesActivities
+from MAST_common.config import Config
+from MAST_common.dlipowerswitch import SwitchedOutlet
+from MAST_common.interfaces.components import Component
+from MAST_common.mast_logging import init_log
+from MAST_common.models.assignments import SpectrographAssignment
+from MAST_common.models.deepspec import DeepspecSettings
+from MAST_common.models.greateyes import GreateyesSettingsModel, ReadoutSpeed
+from MAST_common.models.statuses import GreateyesStatus
+from MAST_common.networking import NetworkedDevice
+from MAST_common.spec import DeepspecBands
+from MAST_common.utils import OperatingMode, RepeatTimer, function_name
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "sdk"))
 import cameras.greateyes.sdk.greateyesSDK as ge
@@ -122,7 +122,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.output_modes: list[str] = []
         self.sensor_temperature_target: float | None = None
 
-        from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+        from MAST_common.dlipowerswitch import OutletDomain, SwitchedOutlet
 
         assert self.conf.network is not None
         NetworkedDevice.__init__(self, self.conf.model_dump())
