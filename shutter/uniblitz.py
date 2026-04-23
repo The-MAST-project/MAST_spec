@@ -3,8 +3,8 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, List
 
-from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.components import Component
+from MAST_common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from MAST_common.interfaces.components import Component
 
 if TYPE_CHECKING:
     from spec import Spec

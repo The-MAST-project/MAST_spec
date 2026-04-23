@@ -9,17 +9,17 @@ import zaber_motion.ascii
 import zaber_motion.exceptions
 from fastapi import APIRouter
 
-from common.activities import StageActivities
-from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config import Config
-from common.const import Const
-from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.components import Component
-from common.mast_logging import init_log
-from common.models.statuses import SpecStageStatus
-from common.networking import NetworkedDevice
-from common.spec import GratingNames, SpecInstruments, SpecStageNames
-from common.utils import caller_name, function_name
+from MAST_common.activities import StageActivities
+from MAST_common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from MAST_common.config import Config
+from MAST_common.const import Const
+from MAST_common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from MAST_common.interfaces.components import Component
+from MAST_common.mast_logging import init_log
+from MAST_common.models.statuses import SpecStageStatus
+from MAST_common.networking import NetworkedDevice
+from MAST_common.spec import GratingNames, SpecInstruments, SpecStageNames
+from MAST_common.utils import caller_name, function_name
 
 logger = logging.getLogger("mast.spec.stage")
 init_log(logger)

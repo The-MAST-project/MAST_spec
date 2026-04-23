@@ -9,14 +9,14 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter
 
-from common.activities import Activities
-from common.config import Config
-from common.const import Const
-from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.components import Component
-from common.mast_logging import init_log
-from common.models.statuses import WheelStatus
-from common.utils import RepeatTimer
+from MAST_common.activities import Activities
+from MAST_common.config import Config
+from MAST_common.const import Const
+from MAST_common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from MAST_common.interfaces.components import Component
+from MAST_common.mast_logging import init_log
+from MAST_common.models.statuses import WheelStatus
+from MAST_common.utils import RepeatTimer
 
 if TYPE_CHECKING:
     from spec import Spec

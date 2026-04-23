@@ -15,12 +15,12 @@ from pyAndorSDK2 import (
 )
 
 from cameras.andor.sdk.pyAndorSDK2.pyAndorSDK2.atmcd import AndorCapabilities
-from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.interfaces.components import Component
-from common.mast_logging import init_log
-from common.models.newton import NewtonBinningModel, NewtonCameraSettingsModel
-from common.models.statuses import NewtonStatus
-from common.spec import SpecExposureSettings
+from MAST_common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from MAST_common.interfaces.components import Component
+from MAST_common.mast_logging import init_log
+from MAST_common.models.newton import NewtonBinningModel, NewtonCameraSettingsModel
+from MAST_common.models.statuses import NewtonStatus
+from MAST_common.spec import SpecExposureSettings
 
 logger = logging.getLogger("mast.highspec.newton")
 init_log(logger)
@@ -101,7 +101,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         return cls._instance
 
     def __init__(self):
-        from common.config import Config
+        from MAST_common.config import Config
 
         self.conf = Config().get_specs().highspec
         Component.__init__(self, NewtonActivities)
@@ -484,12 +484,12 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
     @staticmethod
     def defaults(_) -> "NewtonSettingsConfig":  # type: ignore  # noqa: F821
-        from common.config.newton import (
+        from MAST_common.config.newton import (
             NewtonBinning,
             NewtonSettingsConfig,
             NewtonTemperatureConfig,
         )
-        from common.config.shutter import ShutterConfig
+        from MAST_common.config.shutter import ShutterConfig
 
         return NewtonSettingsConfig(
             exposure_duration=10,

@@ -12,12 +12,12 @@ import zaber_motion
 from pydantic import BaseModel
 
 from cameras.greateyes.greateyes import Exposure
-from common.activities import HighspecActivities
-from common.dlipowerswitch import SwitchedOutlet
-from common.interfaces.components import Component
-from common.mast_logging import init_log
-from common.models.statuses import QHY600Status
-from common.spec import SpecExposureSettings
+from MAST_common.activities import HighspecActivities
+from MAST_common.dlipowerswitch import SwitchedOutlet
+from MAST_common.interfaces.components import Component
+from MAST_common.mast_logging import init_log
+from MAST_common.models.statuses import QHY600Status
+from MAST_common.spec import SpecExposureSettings
 
 from .controls import QHYControlId, qhy_controls
 from .prototypes import set_ctypes_prototypes

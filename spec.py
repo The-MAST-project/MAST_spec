@@ -10,24 +10,24 @@ from fastapi import APIRouter
 
 import cooling.chiller
 from calibration.lamp import CalibrationLamp
-from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from MAST_common.canonical import CanonicalResponse, CanonicalResponse_Ok
 
-# from common.config import Config
-from common.const import Const
-from common.dlipowerswitch import (
+# from MAST_common.config import Config
+from MAST_common.const import Const
+from MAST_common.dlipowerswitch import (
     DliPowerSwitch,
     OutletDomain,
     PowerSwitchFactory,
     SwitchedOutlet,
 )
-from common.interfaces.components import Component
-from common.mast_logging import init_log
-from common.models.assignments import (
+from MAST_common.interfaces.components import Component
+from MAST_common.mast_logging import init_log
+from MAST_common.models.assignments import (
     SpectrographAssignment,
 )
-from common.models.calibration import CalibrationSettings
-from common.models.statuses import SpecStatus
-from common.spec import (
+from MAST_common.models.calibration import CalibrationSettings
+from MAST_common.models.statuses import SpecStatus
+from MAST_common.spec import (
     Disperser,
     SpecAcquisitionSettings,
     SpecActivities,
@@ -35,7 +35,7 @@ from common.spec import (
     SpecId,
     SpecName,
 )
-from common.utils import function_name
+from MAST_common.utils import function_name
 from deepspec import Deepspec
 from filter_wheel.wheel import FilterWheels, Wheel
 from highspec import Highspec

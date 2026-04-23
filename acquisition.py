@@ -1,6 +1,6 @@
 import uuid
 
-from common.utils import PathMaker
+from MAST_common.utils import PathMaker
 
 
 class Acquisition:

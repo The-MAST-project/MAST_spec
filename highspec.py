@@ -20,21 +20,21 @@ from cameras.qhy.qhy600 import (
     QHYBinningModel,
     QHYCameraSettingsModel,
 )
-from common.activities import HighspecActivities
-from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config import Config
-from common.config.newton import NewtonSettingsConfig
-from common.config.shutter import ShutterConfig
-from common.const import Const
-from common.interfaces.components import Component
-from common.mast_logging import init_log
-from common.models.assignments import SpectrographAssignment
-from common.models.highspec import HighspecSettings
-from common.models.statuses import HighspecStatus
-from common.paths import PathMaker
-from common.spec import SpecExposureSettings
-from common.tasks.notifications import notify_controller_about_acquisition_path
-from common.utils import function_name
+from MAST_common.activities import HighspecActivities
+from MAST_common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from MAST_common.config import Config
+from MAST_common.config.newton import NewtonSettingsConfig
+from MAST_common.config.shutter import ShutterConfig
+from MAST_common.const import Const
+from MAST_common.interfaces.components import Component
+from MAST_common.mast_logging import init_log
+from MAST_common.models.assignments import SpectrographAssignment
+from MAST_common.models.highspec import HighspecSettings
+from MAST_common.models.statuses import HighspecStatus
+from MAST_common.paths import PathMaker
+from MAST_common.spec import SpecExposureSettings
+from MAST_common.tasks.notifications import notify_controller_about_acquisition_path
+from MAST_common.utils import function_name
 from stage.stage import StageController as StageController
 from stage.stage import UnitNames
 
