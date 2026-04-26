@@ -18,17 +18,19 @@ from common.const import Const
 from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.assignments import (
+    AssignmentNotification,
     SpectrographAssignment,
 )
 from common.models.greateyes import GreateyesSettingsModel
 from common.models.spectrographs import SpectrographModel
 from common.models.statuses import DeepspecStatus
+from common.notifications import Notifier
+from common.notifications import initiator as notification_initiator
 from common.paths import PathMaker
 from common.spec import (
     DeepspecBands,
     SpecExposureSettings,
 )
-from common.tasks.notifications import notify_controller_about_acquisition_path
 
 logger = logging.Logger("deepspec")
 init_log(logger)
@@ -366,10 +368,15 @@ class Deepspec(Component):
         else:
             raise ValueError("assignment must have either batch.ulid or plan.ulid")
 
-        notify_controller_about_acquisition_path(
-            assignment_id=str(ulid),
-            path_on_share=acquisition_folder,
-            subpath="deepspec",
+        assert notification_initiator is not None
+        Notifier().assignment_notification(
+            AssignmentNotification(
+                assignment_id=str(ulid),
+                initiator=notification_initiator,
+                state="in-progress",
+                shared_top=str(acquisition_folder),
+                shared_subpath="deepspec",
+            )
         )
 
         self.start_activity(DeepspecActivities.Acquiring)

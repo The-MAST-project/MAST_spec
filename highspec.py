@@ -28,12 +28,13 @@ from common.config.shutter import ShutterConfig
 from common.const import Const
 from common.interfaces.components import Component
 from common.mast_logging import init_log
-from common.models.assignments import SpectrographAssignment
+from common.models.assignments import AssignmentNotification, SpectrographAssignment
 from common.models.highspec import HighspecSettings
 from common.models.statuses import HighspecStatus
+from common.notifications import Notifier
+from common.notifications import initiator as notification_initiator
 from common.paths import PathMaker
 from common.spec import SpecExposureSettings
-from common.tasks.notifications import notify_controller_about_acquisition_path
 from common.utils import function_name
 from stage.stage import StageController as StageController
 from stage.stage import UnitNames
@@ -457,10 +458,15 @@ class Highspec(Component):
         )
         assert work is not None and work.ulid is not None
 
-        notify_controller_about_acquisition_path(
-            assignment_id=str(work.ulid),
-            path_on_share=acquisition_folder,
-            subpath="highspec",
+        assert notification_initiator is not None
+        Notifier().assignment_notification(
+            AssignmentNotification(
+                assignment_id=str(work.ulid),
+                initiator=notification_initiator,
+                state="in-progress",
+                shared_top=str(acquisition_folder),
+                shared_subpath="highspec",
+            )
         )
 
         spec_exposure_settings = SpecExposureSettings(
