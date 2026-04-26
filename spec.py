@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -10,6 +11,7 @@ from fastapi import APIRouter
 
 import cooling.chiller
 from calibration.lamp import CalibrationLamp
+from common.activities import StageActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 
 # from common.config import Config
@@ -29,10 +31,12 @@ from common.models.calibration import CalibrationSettings
 from common.models.statuses import SpecStatus
 from common.spec import (
     Disperser,
+    GratingNames,
     SpecAcquisitionSettings,
     SpecActivities,
     SpecExposureSettings,
     SpecId,
+    SpecInstruments,
     SpecName,
 )
 from common.utils import function_name
@@ -433,6 +437,60 @@ class Spec(Component):
         self.highspec_exposure_seconds = highspec_seconds
         self.deepspec_exposure_seconds = deepspec_seconds
 
+    async def endpoint_simulate_fiber(
+        self, instrument: SpecInstruments
+    ) -> CanonicalResponse:
+        if self.fiber_stage is None:
+            return CanonicalResponse(errors=["Fiber stage not available"])
+
+        self.fiber_stage.start_activity(
+            StageActivities.Moving, details=[f"to {instrument}"]
+        )
+        await asyncio.sleep(2.5)  # Simulate the time taken to move the fiber stage
+        self.fiber_stage.end_activity(StageActivities.Moving)
+        return CanonicalResponse_Ok
+
+    async def endpoint_simulate_disperser(
+        self, grating: GratingNames
+    ) -> CanonicalResponse:
+        if self.disperser_stage is None:
+            return CanonicalResponse(errors=["Disperser stage not available"])
+
+        self.disperser_stage.start_activity(
+            StageActivities.Moving, details=[f"to {grating}"]
+        )
+        await asyncio.sleep(5)  # Simulate the time taken to move the disperser stage
+        self.disperser_stage.end_activity(StageActivities.Moving)
+        return CanonicalResponse_Ok
+
+    async def endpoint_simulate_focus(self, grating: GratingNames) -> CanonicalResponse:
+        if self.focusing_stage is None:
+            return CanonicalResponse(errors=["Focusing stage not available"])
+
+        self.focusing_stage.start_activity(
+            StageActivities.Moving, details=[f"to {grating}"]
+        )
+        await asyncio.sleep(5)  # Simulate the time taken to move the focusing stage
+        self.focusing_stage.end_activity(StageActivities.Moving)
+        return CanonicalResponse_Ok
+
+    async def endpoint_simulate_lightpath(
+        self, instrument: SpecInstruments, onoff: bool
+    ) -> CanonicalResponse:
+        match instrument:
+            case "highspec":
+                spectrograph = self.highspec
+            case "deepspec":
+                spectrograph = self.deepspec
+            case _:
+                return CanonicalResponse(errors=[f"Unknown instrument: {instrument}"])
+        if onoff:
+            spectrograph.start_activity(SpecActivities.Exposing)
+        else:
+            spectrograph.end_activity(SpecActivities.Exposing)
+
+        return CanonicalResponse_Ok
+
     def do_execute_assignment(self, remote_assignment: SpectrographAssignment):
         assert isinstance(remote_assignment.spec, SpectrographAssignment)
 
@@ -550,5 +608,30 @@ class Spec(Component):
         #     endpoint=self.execute_assignment,
         #     tags=[tag],
         # )
+
+        tag = "Simulation"
+        router.add_api_route(
+            path=base_path + "/simulate/fiber_stage",
+            endpoint=self.endpoint_simulate_fiber,
+            tags=[tag],
+        )
+
+        router.add_api_route(
+            path=base_path + "/simulate/disperser_stage",
+            endpoint=self.endpoint_simulate_disperser,
+            tags=[tag],
+        )
+
+        router.add_api_route(
+            path=base_path + "/simulate/focus_stage",
+            endpoint=self.endpoint_simulate_focus,
+            tags=[tag],
+        )
+
+        router.add_api_route(
+            path=base_path + "/simulate/lightpath",
+            endpoint=self.endpoint_simulate_lightpath,
+            tags=[tag],
+        )
 
         return router
