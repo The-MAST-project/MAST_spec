@@ -281,7 +281,7 @@ class Deepspec(Component):
                 probing=None,
             )
 
-            camera.start_exposure(settings=settings)
+            camera.start_exposure(greateyes_settings=settings)
             if camera.errors:
                 return CanonicalResponse(
                     errors=[
