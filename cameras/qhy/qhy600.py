@@ -3,7 +3,6 @@ import logging
 import os
 import threading
 import time
-from contextlib import suppress
 from enum import IntFlag, auto
 from pathlib import Path
 from typing import Callable, Literal
@@ -139,6 +138,7 @@ class QHY600(Component, SwitchedOutlet):
 
         self.errors: list[str] = []
         self.latest_exposure: Exposure | None = None
+        self.latest_spec_exposure_settings: SpecExposureSettings | None = None
 
         self._connected = False
         self.connect()
@@ -409,7 +409,7 @@ class QHY600(Component, SwitchedOutlet):
             self.error(f"SDK function {signature}: {e=}")
             return None
 
-    def sdk_get_control(self, control_id: QHYControlId) -> float | None:
+    def sdk_get_control(self, control_id: ctypes.c_int) -> float | None:
         if not self.connected:
             self.error("Camera not connected.")
             return None
@@ -688,15 +688,23 @@ class QHY600(Component, SwitchedOutlet):
 
     def status(self) -> QHY600Status | None:
         stat = None
-        with suppress(Exception):
+        # with suppress(Exception):
+        try:
             stat = QHY600Status(
-                powered=self.is_on(),
-                # temperature=self.temperature,
+                # powered=self.is_on(),
+                temperature=self.sdk_get_control(QHYControlId.CONTROL_CURTEMP),
                 errors=self.errors,
                 latest_exposure=self.latest_exposure,
-                latest_settings=self.latest_settings,
+                latest_spec_exposure_settings=self.latest_spec_exposure_settings,
             )
-        return stat
+            return stat
+        except Exception as e:
+            self.error(f"Error getting status: {e=}")
+            return None
+
+    @property
+    def temperature_is_stabilized(self) -> bool:
+        return True  # TODO: implement proper stabilization check based on current and set temperatures, and possibly their rate of change. For now, just assume it's always stabilized to avoid blocking exposures when the temperature control is not working properly.
 
     @property
     def operational(self) -> bool:
@@ -736,7 +744,7 @@ class QHY600(Component, SwitchedOutlet):
             # gain=spec_exposure_settings.gain or 100,
             exposure_duration=spec_exposure_settings.exposure_duration,
             number_of_exposures=spec_exposure_settings.number_of_exposures or 1,
-            image_path=spec_exposure_settings.image_path,
+            image_path=spec_exposure_settings.image_full_name,
             depth=16,
         )
 
