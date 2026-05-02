@@ -4,6 +4,7 @@ import asyncio
 import logging
 import threading
 import time
+from pathlib import Path
 from threading import Thread
 from typing import Dict, List
 
@@ -352,12 +353,17 @@ class Spec(Component):
                     time.sleep(0.5)
                 self.end_activity(SpecActivities.Positioning)
 
+        assert acquisition_settings.output_folder is not None
+        image_full_path = (
+            Path(acquisition_settings.output_folder) / f"{acquisition_settings.spec}"
+        )
+
         exposure_settings = SpecExposureSettings(
             exposure_duration=acquisition_settings.exposure_duration,
             number_of_exposures=acquisition_settings.number_of_exposures,
             x_binning=acquisition_settings.x_binning,
             y_binning=acquisition_settings.y_binning,
-            folder=acquisition_settings.output_folder,
+            image_full_name=str(image_full_path),
         )
 
         selected_spec = (
