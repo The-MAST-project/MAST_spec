@@ -6,7 +6,7 @@ from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.models.statuses import BasicStatus
+from common.models.statuses import BaseStatus
 
 
 class Chiller(SwitchedOutlet, Component):
@@ -98,9 +98,9 @@ class Chiller(SwitchedOutlet, Component):
             )
         return ret
 
-    def status(self) -> BasicStatus:
-        ret = BasicStatus(
-            powered=self.is_on(),
+    def status(self) -> BaseStatus:
+        ret = BaseStatus(
+            # powered=self.is_on(),
             detected=self.detected,
             operational=self.operational,
             why_not_operational=self.why_not_operational,
