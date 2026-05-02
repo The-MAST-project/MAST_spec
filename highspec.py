@@ -9,18 +9,19 @@ from typing import List, Literal
 
 import zaber_motion
 from astropy.io import fits
-from fastapi import Body
+from fastapi import Body, Query
 from fastapi.routing import APIRouter
 from pydantic import ValidationError
 from zaber_motion.units import LITERALS_TO_UNITS
 
-from cameras.andor.newton import NewtonActivities, NewtonEMCCD
+from cameras.andor.newton import NewtonEMCCD
 from cameras.qhy.qhy600 import (
     QHY600,
+    QHYActivities,
     QHYBinningModel,
     QHYCameraSettingsModel,
 )
-from common.activities import HighspecActivities
+from common.activities import HighspecActivities, NewtonActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.newton import NewtonSettingsConfig
@@ -280,6 +281,9 @@ class Highspec(Component):
         self.camera.set_parent_spec(self)
 
         for exposure_number in range(settings.number_of_exposures):
+            logger.debug(
+                f"{function_name()} exposure_number: #{exposure_number} of {settings.number_of_exposures}"
+            )
             unit_mnemonic = next(
                 k
                 for k, v in LITERALS_TO_UNITS.items()
@@ -289,7 +293,6 @@ class Highspec(Component):
                 Path(folder)
                 / f"FOCUS_{self.focusing_stage.position(unit=reverse_units_dict[settings.unit.name]):.5f}_{unit_mnemonic}.fits"
             )
-            image_file = str(image_path)
 
             logger.debug(
                 f"{function_name()}: Exposure #{exposure_number} out of {settings.number_of_exposures} into '{image_path.as_posix()}'"
@@ -304,7 +307,7 @@ class Highspec(Component):
                         exposure_duration=settings.exposure_duration,
                         x_binning=x_binning,
                         y_binning=y_binning,
-                        image_path=image_file,
+                        image_full_name=str(image_path),
                         gain=settings.gain,
                     )
                 )
@@ -324,13 +327,18 @@ class Highspec(Component):
                     settings=QHYCameraSettingsModel(
                         exposure_duration=settings.exposure_duration,
                         binning=binning,
-                        image_path=image_file,
+                        image_path=str(image_path),
                         gain=settings.gain,
                     )
                 )
 
-            while self.is_active(HighspecActivities.Exposing):
+            while (
+                self.camera.is_active(NewtonActivities.Exposing)
+                if isinstance(self.camera, NewtonEMCCD)
+                else self.camera.is_active(QHYActivities.ExposingSingleFrame)
+            ):
                 time.sleep(0.5)
+            self.end_activity(HighspecActivities.Exposing)
 
             if exposure_number < settings.number_of_exposures - 1:
                 self.focusing_stage.move_relative(
@@ -364,7 +372,9 @@ class Highspec(Component):
         self,
         camera: Literal["newton", "qhy600"] = "qhy600",
         gain: int | None = None,
-        exposure_duration: float = 1.0,
+        exposure_duration: float = Query(
+            1.0, description="exposure duration in seconds"
+        ),
         guessed_focus_position: float | None = None,
         step_size: float = 5,
         unit: UnitNames = UnitNames("MILLIMETRES"),
@@ -470,14 +480,15 @@ class Highspec(Component):
         )
 
         spec_exposure_settings = SpecExposureSettings(
-            exposure_duration=999
+            exposure_duration=999,
+            image_full_name=str(acquisition_folder / "highspec" / "dummy.fits"),
         )  # dummy exposure_duration, temporary
         logger.info(
             f"taking {highspec_assignment.camera.number_of_exposures} exposures"
         )
         assert highspec_assignment.camera.number_of_exposures is not None
         for seq in range(1, highspec_assignment.camera.number_of_exposures + 1):
-            spec_exposure_settings.image_path = os.path.join(
+            spec_exposure_settings.image_full_name = os.path.join(
                 acquisition_folder, f"exposure-{seq:03}.fits"
             )
             self.camera.start_acquisition(spec_exposure_settings)
@@ -485,18 +496,24 @@ class Highspec(Component):
             while self.camera.is_active(NewtonActivities.Acquiring):
                 time.sleep(0.5)
 
-            with fits.open(spec_exposure_settings.image_path, mode="update") as hdul:
+            with fits.open(
+                spec_exposure_settings.image_full_name, mode="update"
+            ) as hdul:
                 hdr = hdul[0].header  # type: ignore
                 hdr["PROGRAM"] = "MAST"
                 hdr["INSTRUME"] = "Highspec"
                 hdul.flush()
         self.end_activity(HighspecActivities.Acquiring)
 
-    def can_execute(self, assignment: SpectrographAssignment):
+    def can_execute(
+        self, assignment: SpectrographAssignment
+    ) -> tuple[bool, List[str] | None]:
         if self.camera and self.camera.detected:
-            return True, None
-        else:
-            return False, ["no camera detected"]
+            if self.camera.temperature_is_stabilized:
+                return True, None
+            else:
+                return False, ["camera detected but temperature not stabilized"]
+        return False, ["no camera detected"]
 
     def execute_assignment(self, remote_assignment: SpectrographAssignment, spec):
         Thread(
