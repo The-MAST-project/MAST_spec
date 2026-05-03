@@ -99,7 +99,17 @@ class NewtonEMCCD(Component, SwitchedOutlet):
     def __init__(self):
         from common.config import Config
 
+        self.logger = logging.getLogger("mast.spec.highspec.camera")
+        init_log(self.logger)
+        self.log_label = "EMCCD"
+
         self.conf = Config().get_specs().highspec
+        self.enabled = self.conf.camera_enabled
+        if not self.enabled:
+            self.info("Camera is disabled.")
+            self._initialized = True
+            return
+
         Component.__init__(self, NewtonActivities)
         self._name = "highspec"
 
@@ -114,9 +124,6 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.power_on()
 
         self._initialized = False
-        self.logger = logging.getLogger("mast.spec.highspec.camera")
-        init_log(self.logger)
-        self.log_label = "EMCCD"
 
         self.SensorTemp = float("nan")
         self.TargetTemp = float("nan")
@@ -335,7 +342,8 @@ class NewtonEMCCD(Component, SwitchedOutlet):
     @property
     def operational(self) -> bool:
         return (
-            (self.power_switch.detected if self.power_switch is not None else False)
+            self.enabled
+            and (self.power_switch.detected if self.power_switch is not None else False)
             and self.is_on()
             and self.detected
             # and not (
@@ -348,17 +356,20 @@ class NewtonEMCCD(Component, SwitchedOutlet):
     def why_not_operational(self) -> list[str]:
         ret = []
         label = "highspec:"
-        if not self.power_switch or not self.power_switch.detected:
-            ret.append(f"{label} {self.power_switch} not detected")
-        elif self.is_off():
-            ret.append(f"{label} {self.power_switch}:{self.outlet_names[0]} is OFF")
+        if not self.enabled:
+            ret.append(f"{label} camera is disabled by configuration")
         else:
-            if not self.detected:
-                ret.append(f"{label} camera not detected")
-            if self.is_active(NewtonActivities.CoolingDown):
-                ret.append(f"{label} camera is CoolingDown")
-            if self.is_active(NewtonActivities.WarmingUp):
-                ret.append(f"{label} camera is WarmingUp")
+            if not self.power_switch or not self.power_switch.detected:
+                ret.append(f"{label} {self.power_switch} not detected")
+            elif self.is_off():
+                ret.append(f"{label} {self.power_switch}:{self.outlet_names[0]} is OFF")
+            else:
+                if not self.detected:
+                    ret.append(f"{label} camera not detected")
+                if self.is_active(NewtonActivities.CoolingDown):
+                    ret.append(f"{label} camera is CoolingDown")
+                if self.is_active(NewtonActivities.WarmingUp):
+                    ret.append(f"{label} camera is WarmingUp")
         return ret
 
     def driver_event_handler(self, event_handle):
@@ -874,6 +885,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.end_activity(NewtonActivities.Acquiring)
 
     def startup(self):
+        if not self.conf.camera_enabled:
+            self.info("Camera is disabled.")
+            return
         if not self.detected:
             self.error("camera not detected")
             return
@@ -882,6 +896,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self._was_shut_down = False
 
     def shutdown(self):
+        if not self.conf.camera_enabled:
+            self.info("Camera is disabled.")
+            return
         if not self.detected:
             self.error("camera not detected")
             return

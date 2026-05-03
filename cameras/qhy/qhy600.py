@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from cameras.greateyes.greateyes import Exposure
 from common.activities import HighspecActivities
+from common.config import Config
 from common.dlipowerswitch import SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import init_log
@@ -112,6 +113,7 @@ class QHY600(Component, SwitchedOutlet):
         qhy.InitQHYCCDResource()
         logger.info(f"running in '{os.path.realpath(os.curdir)}'")
 
+        self.conf = Config().get_specs().highspec.camera
         self.cam_id = None
         self.serial_number = None
         self.handle = None
@@ -674,6 +676,9 @@ class QHY600(Component, SwitchedOutlet):
             self.parent_spec.end_activity(HighspecActivities.Exposing)
 
     def startup(self):
+        if not self.conf.camera_enabled:
+            self.info("Camera is disabled.")
+            return
         return super().startup()
 
     def shutdown(self):
