@@ -344,9 +344,12 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             return
 
         assert self.ge_device is not None
+        op = f"ge.SetLEDStatus({'ON' if on_off else 'OFF'}, addr={self.ge_device})"
         ret = ge.SetLEDStatus(on_off, addr=self.ge_device)
-        if not ret:
-            self.error(f"could not set back LED to {'ON' if on_off else 'OFF'}")
+        if ret:
+            self.info(f"OK - {op}")
+        else:
+            self.error(f"FAILED - {op} (status: {ge.StatusMSG} ({ge.Status}))")
 
     def __repr__(self):
         return (
