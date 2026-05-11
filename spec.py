@@ -617,24 +617,28 @@ class Spec(Component):
 
         tag = "Simulation"
         router.add_api_route(
-            path=base_path + "/simulate/fiber_stage",
+            methods=["PUT"],
+            path=base_path + "/simulate/fiber_stage/{instrument}",
             endpoint=self.endpoint_simulate_fiber,
             tags=[tag],
         )
 
         router.add_api_route(
-            path=base_path + "/simulate/disperser_stage",
+            methods=["PUT"],
+            path=base_path + "/simulate/disperser_stage/{grating}",
             endpoint=self.endpoint_simulate_disperser,
             tags=[tag],
         )
 
         router.add_api_route(
-            path=base_path + "/simulate/focus_stage",
+            methods=["PUT"],
+            path=base_path + "/simulate/focus_stage/{grating}",
             endpoint=self.endpoint_simulate_focus,
             tags=[tag],
         )
 
         router.add_api_route(
+            methods=["PUT"],
             path=base_path + "/simulate/lightpath",
             endpoint=self.endpoint_simulate_lightpath,
             tags=[tag],
