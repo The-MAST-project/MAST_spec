@@ -373,6 +373,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         assert self.ge_device is not None
 
         sensor_temperature = (
+        sensor_temperature = (
             ge.TemperatureControl_GetTemperature(thermistor=0, addr=self.ge_device)
             if self.connected
             else None
@@ -406,7 +407,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             latest_spec_exposure_settings=self.latest_spec_exposure_settings
             if self.latest_spec_exposure_settings
             else None,
-            sensor_temperature_target=self.sensor_temperature_target,
+            sensor_temperature_adjustment_target=self.sensor_temperature_adjustment_target,
         )
 
         return ret
@@ -416,18 +417,9 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             return
 
         assert self.ge_device is not None
-        assert self.min_temp is not None
-        assert self.max_temp is not None
-
-        if target_temperature < self.min_temp or target_temperature > self.max_temp:
-            self.append_error(
-                f"target temperature {target_temperature}°C is out of range ({self.min_temp}°C to {self.max_temp}°C)"
-            )
-            return
-
-        self.sensor_temperature_target = target_temperature
-        if self._apply_setting(
-            ge.TemperatureControl_SetTemperature, target_temperature
+        self.sensor_temperature_adjustment_target = target_temperature
+        if ge.TemperatureControl_SetTemperature(
+            temperature=target_temperature, addr=self.ge_device
         ):
             self.start_activity(
                 GreatEyesActivities.AdjustingTemperature,
