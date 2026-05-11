@@ -8,7 +8,7 @@ dlipower.egg-info
 .coverage
 cobertura.xml
 nosetests.xml
-/venv
+.venv
 /dist
 
 /.ipynb_checkpoints
