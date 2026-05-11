@@ -29,6 +29,7 @@ from common.notifications import initiator as notification_initiator
 from common.paths import PathMaker
 from common.spec import (
     DeepspecBands,
+    FrameType,
     SpecExposureSettings,
 )
 
@@ -193,7 +194,8 @@ class Deepspec(Component):
         x_binning: int = 1,
         y_binning: int = 1,
         number_of_exposures: int | None = 1,
-    ):
+        frame_type: FrameType = FrameType.LIGHT,
+    ) -> CanonicalResponse:
         for cam in self.active_cameras:
             self.expose_one_camera(
                 band=cam.band,  # type: ignore
@@ -201,7 +203,9 @@ class Deepspec(Component):
                 x_binning=x_binning,
                 y_binning=y_binning,
                 number_of_exposures=number_of_exposures,
+                frame_type=frame_type,
             )
+        return CanonicalResponse_Ok
 
     def expose_one_camera(
         self,
@@ -211,6 +215,7 @@ class Deepspec(Component):
         y_binning: int = 1,
         delay_before_exposure: float = 0,
         number_of_exposures: int | None = 1,
+        frame_type: FrameType = FrameType.LIGHT,
     ) -> CanonicalResponse:
         self.executor.submit(
             self.do_expose_one_camera,
@@ -220,6 +225,7 @@ class Deepspec(Component):
             y_binning,
             delay_before_exposure,
             number_of_exposures,
+            frame_type,
         )
         return CanonicalResponse_Ok
 
@@ -231,6 +237,7 @@ class Deepspec(Component):
         y_binning: int = 1,
         delay_before_exposure: float = 0,
         number_of_exposures: int | None = 1,
+        frame_type: FrameType = FrameType.LIGHT,
     ) -> CanonicalResponse:
         if band not in list(get_args(DeepspecBands)):
             return CanonicalResponse(
@@ -279,6 +286,7 @@ class Deepspec(Component):
                 temp=None,
                 readout=None,
                 probing=None,
+                frame_type=frame_type,
             )
 
             camera.start_exposure(greateyes_settings=settings)

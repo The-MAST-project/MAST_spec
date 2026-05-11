@@ -22,7 +22,7 @@ from common.models.deepspec import DeepspecSettings
 from common.models.greateyes import GreateyesSettingsModel, ReadoutSpeed
 from common.models.statuses import GreateyesStatus
 from common.networking import NetworkedDevice
-from common.spec import DeepspecBands, SpecExposureSettings
+from common.spec import DeepspecBands, FrameType, SpecExposureSettings
 from common.utils import OperatingMode, RepeatTimer, function_name
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "sdk"))
@@ -605,7 +605,15 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             )
 
         self.latest_spec_exposure_settings = SpecExposureSettings(
-            **greateyes_settings.dict()
+            **greateyes_settings.model_dump(
+                include={
+                    "exposure_duration",
+                    "number_of_exposures",
+                    "x_binning",
+                    "y_binning",
+                    "frame_type",
+                }
+            )
         )
         self.end_activity(GreatEyesActivities.SettingParameters, label=self.name)
 
@@ -650,6 +658,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             x_binning=greateyes_settings.binning.x,
             y_binning=greateyes_settings.binning.y,
             number_of_exposures=greateyes_settings.number_of_exposures,
+            frame_type=greateyes_settings.frame_type,
         )
 
         self.start_activity(GreatEyesActivities.Acquiring, label=self.name)
@@ -687,7 +696,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self._apply_setting(ge.OpenShutter, mode)
 
         ret = ge.StartMeasurement_DynBitDepth(
-            addr=self.ge_device, showShutter=greateyes_settings.shutter.automatic
+            addr=self.ge_device,
+            showShutter=False
+            if greateyes_settings.frame_type == FrameType.DARK
+            else greateyes_settings.shutter.automatic,
         )
         if ret:
             self.start_activity(GreatEyesActivities.Exposing, label=self.name)
@@ -876,6 +888,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         filename = self.latest_exposure.settings.image_file
         if not filename.endswith(".fits"):
             filename += ".fits"
+        if self.latest_exposure.settings.frame_type != FrameType.LIGHT:
+            filename = filename.replace(
+                ".fits", f",{self.latest_exposure.settings.frame_type.value}.fits"
+            )
         try:
             self.start_activity(GreatEyesActivities.Saving, label=self.name)
             os.makedirs(os.path.dirname(filename), exist_ok=True)
