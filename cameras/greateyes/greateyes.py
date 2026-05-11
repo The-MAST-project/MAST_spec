@@ -623,19 +623,19 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 )
                 return
 
-            if self.is_active(GreatEyesActivities.CoolingDown):
-                ret = ge.TemperatureControl_GetTemperature(
-                    thermistor=0, addr=self.ge_device
-                )
-                if ret == FAILED_TEMPERATURE:
-                    self.append_error(f"could not read sensor temperature ({ret=})")
-                else:
-                    assert self.greateyes_settings.temp
-                    delta_temp = abs(self.greateyes_settings.temp.target_cool - ret)
-                    self.append_error(
-                        f"cannot expose while cooling down ({delta_temp=} deg to cool)"
-                    )
-                return
+            # if self.is_active(GreatEyesActivities.CoolingDown):
+            #     ret = ge.TemperatureControl_GetTemperature(
+            #         thermistor=0, addr=self.ge_device
+            #     )
+            #     if ret == FAILED_TEMPERATURE:
+            #         self.append_error(f"could not read sensor temperature ({ret=})")
+            #     else:
+            #         assert self.greateyes_settings.temp
+            #         delta_temp = abs(self.greateyes_settings.temp.target_cool - ret)
+            #         self.append_error(
+            #             f"cannot expose while cooling down ({delta_temp=} deg to cool)"
+            #         )
+            #     return
 
             if not self.is_idle():
                 self.append_error(f"camera is active ({self.activities=})")
@@ -1076,12 +1076,11 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         assert self.power_switch is not None
         return (
-            self.power_switch.detected
-            and self.detected
-            and not (
-                self.is_active(GreatEyesActivities.CoolingDown)
-                or self.is_active(GreatEyesActivities.WarmingUp)
-            )
+            self.power_switch.detected and self.detected
+            # and not (
+            #     self.is_active(GreatEyesActivities.CoolingDown)
+            #     or self.is_active(GreatEyesActivities.WarmingUp)
+            # )
         )
 
     @property
@@ -1101,10 +1100,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         else:
             if not self.detected:
                 ret.append(f"{label} camera (at {self.network.ipaddr}) not detected")
-            if self.is_active(GreatEyesActivities.CoolingDown):
-                ret.append(f"{label} camera is CoolingDown")
-            if self.is_active(GreatEyesActivities.WarmingUp):
-                ret.append(f"{label} camera is WarmingUp")
+            # if self.is_active(GreatEyesActivities.CoolingDown):
+            #     ret.append(f"{label} camera is CoolingDown")
+            # if self.is_active(GreatEyesActivities.WarmingUp):
+            #     ret.append(f"{label} camera is WarmingUp")
 
         return ret
 
@@ -1167,6 +1166,19 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 time.sleep(0.5)
 
     def execute_assignment(self, assignment: SpectrographAssignment, folder: str):
+        cooling_down = []
+        for camera in cameras.values():
+            if (
+                camera
+                and camera.enabled
+                and camera.is_active(GreatEyesActivities.CoolingDown)
+            ):
+                cooling_down.append(camera)
+        if cooling_down:
+            raise Exception(
+                f"cannot execute assignment because the following cameras are currently cooling down: {', '.join(camera.name for camera in cooling_down)}"
+            )
+
         threading.Thread(
             target=self.do_execute_assignment, args=[assignment, folder]
         ).start()
