@@ -103,27 +103,16 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         init_log(self.logger)
         self.log_label = "EMCCD"
 
-        self.conf = Config().get_specs().highspec
-        self.enabled = self.conf.camera_enabled
-        if not self.enabled:
-            self.info("Camera is disabled.")
-            self._initialized = True
-            return
-
         Component.__init__(self, NewtonActivities)
         self._name = "highspec"
-
-        self._detected = False
 
         # NOTE: The power to this camera is switched on by spec.startup()
         SwitchedOutlet.__init__(
             self, outlet_name="Highspec", domain=OutletDomain.SpecOutlets
         )
-        assert self.power_switch is not None
-        if self.power_switch.detected and not self.is_on():
-            self.power_on()
 
-        self._initialized = False
+        self._detected = False
+        self.conf = Config().get_specs().highspec
 
         self.SensorTemp = float("nan")
         self.TargetTemp = float("nan")
@@ -140,11 +129,24 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.vertical_binning: int | None = None
         self.activate_cooler: bool | None = None
         self.exposure_duration: float | None = None
+        self.errors: list[str] = []
+        self.latest_exposure_settings: SpecExposureSettings | None = None
+
+        assert self.power_switch is not None
+        if self.power_switch.detected and not self.is_on():
+            self.power_on()
+
+        self.enabled = self.conf.camera_enabled
+        if not self.enabled:
+            self.info("Camera is disabled.")
+            self._initialized = True
+            return
+
+        self._initialized = False
 
         if not self.power_switch.detected:
             return
 
-        self.errors = []
         self.sdk = atmcd()
         ret = self.sdk.Initialize("")
         if atmcd_errors.Error_Codes.DRV_SUCCESS != ret:
@@ -234,8 +236,6 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.error(f"could not GetEMGainRange() ({ret=})")
 
         # TODO: check if our camera can generate ESD events
-
-        self.latest_exposure_settings: SpecExposureSettings | None = None
 
         default_camera_settings: NewtonSettingsConfig = NewtonSettingsConfig(
             **Config().get_specs().highspec.settings.model_dump()
