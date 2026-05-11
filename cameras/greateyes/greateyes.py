@@ -945,7 +945,9 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 thermistor=1, addr=self.ge_device
             )
             if ret == FAILED_TEMPERATURE:
-                self.error(f"failed to read back temperature ({ret=})")
+                self.error(
+                    f"failed to read back temperature ({ret=}, error: {ge.StatusMSG})"
+                )
             else:
                 if ret >= 55:
                     self.backside_temp_safe = False
