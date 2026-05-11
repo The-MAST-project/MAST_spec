@@ -30,6 +30,7 @@ from common.paths import PathMaker
 from common.spec import (
     DeepspecBands,
     FrameType,
+    SpecActivities,
     SpecExposureSettings,
 )
 
@@ -155,6 +156,8 @@ class Deepspec(Component):
             ]
         ):  # type: ignore
             self.end_activity(DeepspecActivities.Acquiring)
+            if self.spec is not None:
+                self.spec.end_activity(SpecActivities.ExposingDeepspec)
 
         ret = DeepspecStatus(
             detected=self.detected,
@@ -177,6 +180,8 @@ class Deepspec(Component):
 
     def start_acquisition(self, settings: SpecExposureSettings):
         self.start_activity(DeepspecActivities.Acquiring)
+        if self.spec is not None:
+            self.spec.start_activity(SpecActivities.ExposingDeepspec)
         self.expose(
             seconds=settings.exposure_duration,
             x_binning=settings.binning.x,  # type: ignore
@@ -386,6 +391,7 @@ class Deepspec(Component):
         )
 
         self.start_activity(DeepspecActivities.Acquiring)
+        spec.start_activity(SpecActivities.ExposingDeepspec)
         for band in list(self.cameras.keys()):
             camera = self.cameras[band]
             if not camera or not camera.detected:
@@ -403,6 +409,7 @@ class Deepspec(Component):
         }:
             time.sleep(1)
         self.end_activity(DeepspecActivities.Acquiring)
+        spec.end_activity(SpecActivities.ExposingDeepspec)
 
     @property
     def api_router(self) -> APIRouter:

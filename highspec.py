@@ -35,7 +35,7 @@ from common.models.statuses import HighspecStatus
 from common.notifications import Notifier
 from common.notifications import initiator as notification_initiator
 from common.paths import PathMaker
-from common.spec import SpecExposureSettings
+from common.spec import SpecActivities, SpecExposureSettings
 from common.utils import function_name
 from stage.stage import StageController as StageController
 from stage.stage import UnitNames
@@ -280,6 +280,7 @@ class Highspec(Component):
 
         self.camera.set_parent_spec(self)
 
+        self.start_activity(SpecActivities.ExposingHighspec)
         for exposure_number in range(settings.number_of_exposures):
             logger.debug(
                 f"{function_name()} exposure_number: #{exposure_number} of {settings.number_of_exposures}"
@@ -348,6 +349,7 @@ class Highspec(Component):
                 while self.focusing_stage.is_moving:
                     time.sleep(0.5)
 
+        self.end_activity(SpecActivities.ExposingHighspec)
         if settings.lamp_on and self.spec is not None:
             self.spec.thar_lamp.power_off()
 
@@ -484,7 +486,8 @@ class Highspec(Component):
         logger.info(
             f"taking {highspec_assignment.camera.number_of_exposures} exposures"
         )
-        assert highspec_assignment.camera.number_of_exposures is not None
+        assert isinstance(highspec_assignment.camera.number_of_exposures, int)
+        spec.start_activity(SpecActivities.ExposingHighspec)
         for seq in range(1, highspec_assignment.camera.number_of_exposures + 1):
             spec_exposure_settings.image_full_name = os.path.join(
                 acquisition_folder, f"exposure-{seq:03}.fits"
@@ -502,6 +505,7 @@ class Highspec(Component):
                 hdr["INSTRUME"] = "Highspec"
                 hdul.flush()
         self.end_activity(HighspecActivities.Acquiring)
+        spec.end_activity(SpecActivities.ExposingHighspec)
 
     def can_execute(
         self, assignment: SpectrographAssignment

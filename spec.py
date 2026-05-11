@@ -485,15 +485,17 @@ class Spec(Component):
     ) -> CanonicalResponse:
         match instrument:
             case "highspec":
-                spectrograph = self.highspec
+                if onoff:
+                    self.start_activity(SpecActivities.ExposingHighspec)
+                else:
+                    self.end_activity(SpecActivities.ExposingHighspec)
             case "deepspec":
-                spectrograph = self.deepspec
+                if onoff:
+                    self.start_activity(SpecActivities.ExposingDeepspec)
+                else:
+                    self.end_activity(SpecActivities.ExposingDeepspec)
             case _:
                 return CanonicalResponse(errors=[f"Unknown instrument: {instrument}"])
-        if onoff:
-            spectrograph.start_activity(SpecActivities.Exposing)
-        else:
-            spectrograph.end_activity(SpecActivities.Exposing)
 
         return CanonicalResponse_Ok
 
