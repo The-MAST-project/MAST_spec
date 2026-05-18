@@ -456,6 +456,9 @@ class QHY600(Component, SwitchedOutlet):
             self.error(f"Error setting control {control.name} to {value}: {e=}")
             return False
 
+    def expose(self):
+        pass
+
     def start_single_exposure(self, settings: QHYCameraSettingsModel):
         if qhy is None or self.handle is None:
             self.error("Camera not connected.")
@@ -674,6 +677,12 @@ class QHY600(Component, SwitchedOutlet):
             HighspecActivities.Exposing
         ):
             self.parent_spec.end_activity(HighspecActivities.Exposing)
+
+    def start_cooldown(self):
+        pass  # camera does not have a cooling procedure, so do nothing
+
+    def start_warmup(self):
+        pass  # camera does not have a warming procedure, so do nothing
 
     def startup(self):
         if not self.conf.camera_enabled:

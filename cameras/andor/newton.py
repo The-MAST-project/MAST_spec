@@ -2,12 +2,13 @@ import datetime
 import logging
 import threading
 import time
-from enum import Enum
+from enum import Enum, StrEnum
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal, cast
 
 import win32event
 from astropy.io import fits
+from fastapi import Query
 from pyAndorSDK2 import (
     CameraCapabilities,
     atmcd,
@@ -17,15 +18,18 @@ from pyAndorSDK2 import (
 
 from cameras.andor.sdk.pyAndorSDK2.pyAndorSDK2.atmcd import AndorCapabilities
 from common.activities import NewtonActivities
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.newton import (
+    NewtonAmplifierMode,
     NewtonBinning,
     NewtonSettingsConfig,
     NewtonTemperatureConfig,
 )
 from common.models.statuses import NewtonStatus
+from common.paths import PathMaker
 from common.spec import SpecExposureSettings
 from common.utils import function_name
 
@@ -87,6 +91,59 @@ class Capabilities:
     ulTriggerModes: atmcd_capabilities.triggermodes
 
 
+class NewtoEMGainRange:
+    low: int
+    high: int
+
+
+class NewtonFrameType(StrEnum):
+    Light = "light"
+    Dark = "dark"
+    Bias = "bias"
+    Flat = "flat"
+
+
+class NewtonExposureSettings:
+    delay_before_exposure: float | None = None
+    exposure_duration: float
+    em_gain: int | None = None
+    pre_amp_gain: int | None = None
+    high_sensitivity: bool | None = None
+    horizontal_binning: int
+    vertical_binning: int
+    frame_type: NewtonFrameType = NewtonFrameType.Light
+
+
+class NewtonPreAmpGain(StrEnum):
+    x1 = "1x"
+    x2 = "2x"
+    x4 = "4x"
+
+
+_pre_amp_gains = {
+    NewtonPreAmpGain.x1: 0,
+    NewtonPreAmpGain.x2: 1,
+    NewtonPreAmpGain.x4: 2,
+}
+
+
+class NewtonHSSpeed(StrEnum):
+    MHz_3_0 = "3.0 MHz"
+    MHz_1_0 = "1.0 MHz"
+    MHz_0_05 = "0.05 MHz"
+
+
+_horizontal_shift_speed_index = {
+    NewtonHSSpeed.MHz_3_0: 0,
+    NewtonHSSpeed.MHz_1_0: 1,
+    NewtonHSSpeed.MHz_0_05: 2,
+}
+
+
+def error_code(code) -> str:
+    return atmcd_errors.Error_Codes(code).__repr__()
+
+
 class NewtonEMCCD(Component, SwitchedOutlet):
     SECONDS_BETWEEN_TEMP_LOGS = 30
     _instance = None
@@ -112,7 +169,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         )
 
         self._detected = False
-        self.conf = Config().get_specs().highspec
+        self.conf: NewtonSettingsConfig = cast(
+            NewtonSettingsConfig, Config().get_specs().highspec.settings
+        )
 
         self.SensorTemp = float("nan")
         self.TargetTemp = float("nan")
@@ -125,6 +184,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.read_mode: ReadMode | None = None
         self.cooler_mode: CoolerMode | int | None = None
         self.em_gain: int | None = None
+        self.em_gain_range: NewtoEMGainRange | None = None
         self.horizontal_binning: int | None = None
         self.vertical_binning: int | None = None
         self.activate_cooler: bool | None = None
@@ -153,7 +213,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.error(f"Could not initialize ANDOR SDK (code={error_code(ret)})")
             return
 
-        self.parse_camera_capabilities()
+        # self.parse_camera_capabilities()
 
         (ret, serial_number) = self.sdk.GetCameraSerialNumber()
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
@@ -177,11 +237,11 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             raise Exception("the camera is not a NEWTON")
 
         self.info(f"found a NEWTON camera, SN: {self.serial_number}")
-        if (
-            not self.caps.ulSetFunctions
+        self.supports_em_advanced = bool(
+            self.caps.ulSetFunctions
             & atmcd_capabilities.SetFunctions.AC_SETFUNCTION_EMADVANCED
-        ):
-            self.warning("no AC_SETFUNCTION_EMADVANCED capability")
+        )
+
         if (
             not self.caps.ulSetFunctions
             & atmcd_capabilities.SetFunctions.AC_SETFUNCTION_EMCCDGAIN
@@ -208,13 +268,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         else:
             self.error(f"could not GetTemperatureRange() (code={error_code(ret)})")
 
-        (ret, n_pre_amp_gains) = self.sdk.GetNumberPreAmpGains()
-        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.n_pre_amp_gains = n_pre_amp_gains
-            self.info(f"got n_gains: {self.n_pre_amp_gains}")
-        else:
-            self.error(f"could not GetNumberPreAmpGains() (code={error_code(ret)})")
-
+        # Max exposure time
         (ret, max_exposure_time) = self.sdk.GetMaximumExposure()
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.max_exposure_time = max_exposure_time
@@ -222,9 +276,13 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         else:
             self.error(f"could not GetMaximumExposure() (code={error_code(ret)})")
 
-        self._apply_setting(self.sdk.SetOutputAmplifier, 0)
-        # self._apply_setting(self.sdk.SetEMAdvanced, 1)
-        # self._apply_setting(self.sdk.SetEMGainMode, 1)
+        # Amplifier modes
+        self._apply_setting(
+            self.sdk.SetOutputAmplifier,
+            0 if self.conf.amplifier_mode == "conventional" else 1,
+        )
+
+        # EM Gain range
         (ret, low, high) = self.sdk.GetEMGainRange()
         if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.lowest_em_gain = low
@@ -235,13 +293,71 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         else:
             self.error(f"could not GetEMGainRange() ({ret=})")
 
+        # GetNumber Horizontal Shift Speeds
+        amplifier_mode_numeric = 0
+        self.hs_speeds = dict[NewtonAmplifierMode, list[float]]()
+        (ret, n_hs_speeds) = self.sdk.GetNumberHSSpeeds(
+            channel=0, typ=amplifier_mode_numeric
+        )
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            for i in range(n_hs_speeds):
+                ret, speed = self.sdk.GetHSSpeed(
+                    channel=0, typ=amplifier_mode_numeric, index=i
+                )
+                if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+                    self.hs_speeds.setdefault("em", []).append(speed)
+                else:
+                    self.error(
+                        f"could not GetHSSpeed() for channel 0, 'em' mode (index={i}, code={error_code(ret)})"
+                    )
+            self.info(
+                f"got horizontal shift speeds for 'em' mode: {self.hs_speeds.get('em', [])}"
+            )
+        else:
+            self.error(f"could not GetNumberHSSpeeds(channel=0, typ='em'') ({ret=})")
+
+        amplifier_mode_numeric = 1
+        (ret, n_hs_speeds) = self.sdk.GetNumberHSSpeeds(
+            channel=0, typ=amplifier_mode_numeric
+        )
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            for i in range(n_hs_speeds):
+                ret, speed = self.sdk.GetHSSpeed(
+                    channel=0, typ=amplifier_mode_numeric, index=i
+                )
+                if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+                    self.hs_speeds.setdefault("conventional", []).append(speed)
+                else:
+                    self.error(
+                        f"could not GetHSSpeed() for channel 0, 'conventional' mode (index={i}, code={error_code(ret)})"
+                    )
+            self.info(
+                f"got horizontal shift speeds for 'conventional' mode: {self.hs_speeds.get('conventional', [])}"
+            )
+        else:
+            self.error(
+                f"could not GetNumberHSSpeeds(channel=0, typ='conventional') ({ret=})"
+            )
+
+        ret, n_ad_channels = self.sdk.GetNumberADChannels()
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            self.info(f"got number of AD channels: {n_ad_channels}")
+        else:
+            self.error(f"could not GetNumberADChannels() ({ret=})")
+        if n_ad_channels == 1:
+            self._apply_setting(self.sdk.SetADChannel, 0)
+        else:
+            self.warning(
+                f"camera has {n_ad_channels} AD channels, but only channel 0 is supported by this software"
+            )
+
         # TODO: check if our camera can generate ESD events
 
         default_camera_settings: NewtonSettingsConfig = NewtonSettingsConfig(
             **Config().get_specs().highspec.settings.model_dump()
         )
         if default_camera_settings.temperature is not None:
-            self.set_point = default_camera_settings.temperature.set_point
+            self.set_point = default_camera_settings.temperature.regular_set_point
 
         self.latest_camera_settings: NewtonSettingsConfig | None = None
         self.apply_settings(default_camera_settings)
@@ -282,31 +398,31 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         print("capabilities")
         helper.print_all()
 
-    def start_cooldown(self):
-        set_point = (
-            self.conf.settings.temperature.set_point
-            if self.conf.settings.temperature
-            else None
-        )
-        if set_point is None:
-            if (
-                self.latest_camera_settings is not None
-                and self.latest_camera_settings.temperature is not None
-            ):
-                set_point = self.latest_camera_settings.temperature
-        if set_point is None:
-            self.error("no set_point specified for cooldown")
-            return
+    def start_cooldown(self, target_set_point: Literal["regular", "science"]):
+        match target_set_point:
+            case "science":
+                set_point = (
+                    self.conf.temperature.science_set_point
+                    if self.conf.temperature
+                    else None
+                )
+            case "regular":
+                set_point = (
+                    self.conf.temperature.regular_set_point
+                    if self.conf.temperature
+                    else None
+                )
 
         self.turn_cooler(True)
-        target_temp = set_point
-        ret = self.sdk.SetTemperature(target_temp)
+        ret = self.sdk.SetTemperature(set_point)
         if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.error(
-                f"failed to set temperature to {target_temp} degrees (code={error_code(ret)})"
+                f"failed to set temperature to {set_point} degrees (code={error_code(ret)})"
             )
             return
-        self.start_activity(NewtonActivities.CoolingDown)
+        self.start_activity(
+            NewtonActivities.CoolingDown, details=[f"set_point={set_point}"]
+        )
 
     def start_warmup(self):
         self.turn_cooler(True)
@@ -317,7 +433,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                 f"failed to set temperature to {target_temp} degrees (code={error_code(ret)})"
             )
             return
-        self.start_activity(NewtonActivities.WarmingUp)
+        self.start_activity(
+            NewtonActivities.WarmingUp, details=[f"set_point={target_temp}"]
+        )
 
     @property
     def name(self) -> str:
@@ -494,7 +612,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             em_gain=200,
             binning=NewtonBinning(x=1, y=1),
             shutter=ShutterConfig(open_time=9, close_time=12, automatic=True),
-            temperature=NewtonTemperatureConfig(set_point=-60),
+            temperature=NewtonTemperatureConfig(
+                regular_set_point=-10, science_set_point=-85
+            ),
             read_mode=ReadMode.IMAGE.value,
         )
 
@@ -778,7 +898,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                 ),
             )
 
-        self.set_gain(settings)
+        # self.set_gain(settings)
 
         self._apply_setting(self.sdk.SetAcquisitionMode, settings.acquisition_mode)
 
@@ -789,7 +909,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             )
 
         if settings.temperature is not None:
-            self._apply_setting(self.sdk.SetTemperature, settings.temperature.set_point)
+            self._apply_setting(
+                self.sdk.SetTemperature, settings.temperature.regular_set_point
+            )
             self._apply_setting(
                 self.sdk.SetCoolerMode, settings.temperature.cooler_mode
             )
@@ -798,24 +920,24 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
         self.end_activity(NewtonActivities.SettingParameters)
 
-    def set_gain(self, settings: NewtonSettingsConfig):
-        if settings.em_gain is not None:
-            if 0 <= settings.em_gain <= 255:
-                self._apply_setting(self.sdk.SetEMGainMode, 0)
-            elif 256 <= settings.em_gain <= 4095:
-                ret = self._apply_setting(self.sdk.SetEMAdvanced, 1)
-                if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-                    self._apply_setting(self.sdk.SetEMGainMode, 1)
+    # def set_gain(self, settings: NewtonSettingsConfig):
+    #     if settings.em_gain is not None:
+    #         if 0 <= settings.em_gain <= 255:
+    #             self._apply_setting(self.sdk.SetEMGainMode, 0)
+    #         elif 256 <= settings.em_gain <= 4095:
+    #             ret = self._apply_setting(self.sdk.SetEMAdvanced, 1)
+    #             if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+    #                 self._apply_setting(self.sdk.SetEMGainMode, 1)
 
-            self._apply_setting(self.sdk.SetEMCCDGain, settings.em_gain)
+    #         self._apply_setting(self.sdk.SetEMCCDGain, settings.em_gain)
 
-        if settings.pre_amp_gain is not None:
-            if 0 <= settings.pre_amp_gain >= self.n_pre_amp_gains:
-                self.error(
-                    f"bad {settings.pre_amp_gain=}, allowed range(0, {self.n_pre_amp_gains=})"
-                )
-            else:
-                self._apply_setting(self.sdk.SetPreAmpGain, settings.pre_amp_gain)
+    #     if settings.pre_amp_gain is not None:
+    #         if 0 <= settings.pre_amp_gain >= self.n_pre_amp_gains:
+    #             self.error(
+    #                 f"bad {settings.pre_amp_gain=}, allowed range(0, {self.n_pre_amp_gains=})"
+    #             )
+    #         else:
+    #             self._apply_setting(self.sdk.SetPreAmpGain, settings.pre_amp_gain)
 
     def start_acquisition(self, settings: SpecExposureSettings):
         self.debug(f"{function_name()} settings: {settings}")
@@ -856,9 +978,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.error("camera not detected")
             return
 
-        self.debug(
-            f"{function_name()} latest_exposure_settings: {self.latest_exposure_settings}"
-        )
+        # self.debug(
+        #     f"{function_name()} latest_exposure_settings: {self.latest_exposure_settings}"
+        # )
         assert (
             self.latest_exposure_settings
             and self.latest_exposure_settings.image_full_name
@@ -892,7 +1014,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.error("camera not detected")
             return
         self.start_activity(NewtonActivities.StartingUp)
-        self.start_cooldown()
+        self.start_cooldown(target_set_point="regular")
         self._was_shut_down = False
 
     def shutdown(self):
@@ -940,6 +1062,8 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         (ret, temp) = self.sdk.GetTemperatureF()
         if ret == atmcd_errors.Error_Codes.DRV_TEMP_STABILIZED:
             return temp
+        elif ret == atmcd_errors.Error_Codes.DRV_TEMP_NOT_STABILIZED:
+            return None
         else:
             self.error(f"Could not GetTemperatureF() (code={error_code(ret)})")
             return None
@@ -956,6 +1080,8 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         if ret == atmcd_errors.Error_Codes.DRV_TEMP_STABILIZED:
             return True
         elif ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            return False
+        elif ret == atmcd_errors.Error_Codes.DRV_TEMPERATURE_NOT_STABILIZED:
             return False
         else:
             self.error(f"Could not GetTemperatureF() (code={error_code(ret)})")
@@ -976,7 +1102,13 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             why_not_operational=self.why_not_operational,
             activities=self.activities,
             activities_verbal=self.activities_verbal,
-            set_point=self.set_point,
+            current_set_point=self.set_point,
+            regular_set_point=self.conf.temperature.regular_set_point
+            if self.conf.temperature
+            else None,
+            science_set_point=self.conf.temperature.science_set_point
+            if self.conf.temperature
+            else None,
             temperature=self.get_temperature() if self.connected else None,
             errors=self.errors,
             latest_spec_exposure_settings=self.latest_exposure_settings,
@@ -1042,6 +1174,123 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
     def debug(self, msg: str):
         self.logger.debug(f"{self.log_label}: {msg}")
+
+    def expose(
+        self,
+        exposure_duration: float = Query(
+            description="Exposure length (seconds)", default=5, ge=0.001, le=3600
+        ),
+        delay_before_exposure: float | None = Query(
+            description="Delay before starting the exposure (seconds)", default=None
+        ),
+        amplifier_mode: NewtonAmplifierMode = "em",
+        em_gain: int = Query(default=240, ge=1, le=255),
+        pre_amp_gain: NewtonPreAmpGain = NewtonPreAmpGain.x1,
+        frame_mode: NewtonFrameType = NewtonFrameType.Light,
+        horizontal_shift_speed: NewtonHSSpeed = NewtonHSSpeed.MHz_0_05,
+        bypass_temperature_stabilization_check: bool = Query(
+            description="Bypass the check for temperature stabilization (not recommended)",
+            default=False,
+        ),
+    ) -> CanonicalResponse:
+
+        if (
+            not bypass_temperature_stabilization_check
+            and not self.temperature_is_stabilized
+        ):
+            return CanonicalResponse(
+                errors=["Cannot start exposure while temperature is not stable"]
+            )
+
+        horizontal_shift_index = _horizontal_shift_speed_index[horizontal_shift_speed]
+        pre_amp_gain_index = _pre_amp_gains[pre_amp_gain]
+
+        if delay_before_exposure:
+            self.debug(
+                f"Delaying {delay_before_exposure} seconds before starting the exposure"
+            )
+            time.sleep(delay_before_exposure)
+
+        self.start_activity(NewtonActivities.SettingParameters)
+        match amplifier_mode:
+            case "em":
+                amplifier_mode_numeric = 0
+                pa_gain = _pre_amp_gains[pre_amp_gain]
+                ret, available = self.sdk.IsPreAmpGainAvailable(
+                    channel=0,
+                    amplifier=amplifier_mode_numeric,
+                    index=horizontal_shift_index,
+                    pa=pre_amp_gain_index,
+                )
+                if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
+                    self.error(
+                        f"failed to check if pre-amp gain {pa_gain} is available for horizontal shift speed {horizontal_shift_speed} (code={error_code(ret)})"
+                    )
+                    return CanonicalResponse(
+                        errors=["Failed to check if pre-amp gain is available"]
+                    )
+                elif not available:
+                    err = f"pre-amp gain {pa_gain} is not available for horizontal shift speed {horizontal_shift_speed} in 'em' mode"
+                    self.error(err)
+                    return CanonicalResponse(errors=[err])
+
+                self._apply_setting(
+                    self.sdk.SetOutputAmplifier,
+                    amplifier_mode_numeric,
+                )
+                self._apply_setting(
+                    self.sdk.SetHSSpeed,
+                    (amplifier_mode_numeric, horizontal_shift_index),
+                )
+                self._apply_setting(self.sdk.SetEMGainMode, 0)
+                self._apply_setting(self.sdk.SetEMCCDGain, em_gain)
+                self._apply_setting(self.sdk.SetPreAmpGain, pre_amp_gain_index)
+
+            case "conventional":
+                amplifier_mode_numeric = 1
+                hs_speed = self.hs_speeds["conventional"][horizontal_shift_index]
+                pa_gain = _pre_amp_gains[pre_amp_gain]
+                ret, available = self.sdk.IsPreAmpGainAvailable(
+                    channel=0,
+                    amplifier=amplifier_mode_numeric,
+                    index=horizontal_shift_index,
+                    pa=pre_amp_gain_index,
+                )
+                if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
+                    err = f"failed to check if pre-amp gain {pa_gain} is available for horizontal shift speed {hs_speed} in 'conventional' mode"
+                    self.error(err)
+                    return CanonicalResponse(errors=[err])
+                elif not available:
+                    err = f"pre-amp gain {pa_gain} is not available for horizontal shift speed {hs_speed} in 'conventional' mode"
+                    self.error(err)
+                    return CanonicalResponse(errors=[err])
+                self._apply_setting(self.sdk.SetOutputAmplifier, amplifier_mode_numeric)
+                self._apply_setting(
+                    self.sdk.SetHSSpeed,
+                    (amplifier_mode_numeric, horizontal_shift_index),
+                )
+                self._apply_setting(self.sdk.SetPreAmpGain, pre_amp_gain_index)
+
+        self.end_activity(NewtonActivities.SettingParameters)
+
+        # image Path
+        image_full_path = Path(
+            PathMaker().make_spec_exposures_folder(spec_name="highspec") + "/image.fits"
+        )
+        if frame_mode != NewtonFrameType.Light.value:
+            image_full_path = image_full_path.with_name(
+                image_full_path.stem + f"_{frame_mode.value}" + image_full_path.suffix
+            )
+        self.info(f"image will be saved to '{image_full_path}'")
+
+        self.acquire(
+            SpecExposureSettings(
+                image_full_name=str(image_full_path),
+                exposure_duration=exposure_duration,
+            )
+        )
+
+        return CanonicalResponse_Ok
 
     # def set_camera_modes(
     #     self,
@@ -1109,10 +1358,6 @@ class NewtonEMCCD(Component, SwitchedOutlet):
     #         router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort)
 
     #         return router
-
-
-def error_code(code) -> str:
-    return atmcd_errors.Error_Codes(code).__repr__()
 
 
 if __name__ == "__main__":

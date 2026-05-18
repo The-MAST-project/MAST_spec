@@ -254,7 +254,11 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if not self.enabled or self.detected:
             return
 
-        self.start_activity(GreatEyesActivities.Probing, label=self._name)
+        self.start_activity(
+            GreatEyesActivities.Probing,
+            label=self._name,
+            details=[f"band={self.band}", f"ipaddr={self.network.ipaddr}"],
+        )
         self.try_connect_camera()
 
         assert self.conf.settings is not None
@@ -373,7 +377,6 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         assert self.ge_device is not None
 
         sensor_temperature = (
-        sensor_temperature = (
             ge.TemperatureControl_GetTemperature(thermistor=0, addr=self.ge_device)
             if self.connected
             else None
@@ -407,7 +410,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             latest_spec_exposure_settings=self.latest_spec_exposure_settings
             if self.latest_spec_exposure_settings
             else None,
-            sensor_temperature_adjustment_target=self.sensor_temperature_adjustment_target,
+            sensor_temperature_target=self.sensor_temperature_target,
         )
 
         return ret
@@ -417,7 +420,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             return
 
         assert self.ge_device is not None
-        self.sensor_temperature_adjustment_target = target_temperature
+        self.sensor_temperature_target = target_temperature
         if ge.TemperatureControl_SetTemperature(
             temperature=target_temperature, addr=self.ge_device
         ):

@@ -24,16 +24,15 @@ from cameras.qhy.qhy600 import (
 from common.activities import HighspecActivities, NewtonActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
-from common.config.newton import NewtonSettingsConfig
 from common.config.shutter import ShutterConfig
 from common.const import Const
 from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.assignments import AssignmentNotification, SpectrographAssignment
 from common.models.highspec import HighspecSettings
+from common.models.newton import NewtonSettingsConfig
 from common.models.statuses import HighspecStatus
 from common.notifications import Notifier
-from common.notifications import initiator as notification_initiator
 from common.paths import PathMaker
 from common.spec import SpecActivities, SpecExposureSettings
 from common.utils import function_name
@@ -474,7 +473,7 @@ class Highspec(Component):
             AssignmentNotification(
                 assignment_id=str(work.ulid),
                 state="in-progress",
-                shared_top=acquisition_folder,
+                shared_top=str(acquisition_folder),
                 shared_subpath="highspec",
             )
         )
@@ -537,12 +536,12 @@ class Highspec(Component):
             base_path + "/shutdown", tags=[tag], endpoint=self.shutdown
         )
         router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort)
-        # router.add_api_route(
-        #     base_path + "/expose",
-        #     tags=[tag],
-        #     endpoint=self.expose,
-        #     response_model=None,
-        # )
+        router.add_api_route(
+            base_path + "/expose",
+            tags=[tag],
+            endpoint=self.camera.expose,
+            methods=["PUT"],
+        )
         router.add_api_route(
             base_path + "/manual_autofocus",
             tags=[tag],
@@ -554,6 +553,18 @@ class Highspec(Component):
             tags=[tag],
             methods=["PUT"],
             endpoint=self.autofocus,
+        )
+        router.add_api_route(
+            base_path + "/start_cooldown",
+            tags=[tag],
+            methods=["PUT"],
+            endpoint=self.camera.start_cooldown,
+        )
+        router.add_api_route(
+            base_path + "/start_warmup",
+            tags=[tag],
+            methods=["PUT"],
+            endpoint=self.camera.start_warmup,
         )
 
         return router
