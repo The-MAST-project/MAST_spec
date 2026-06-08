@@ -4,7 +4,7 @@ import threading
 import time
 from enum import Enum, StrEnum
 from pathlib import Path
-from typing import Callable, Literal, cast
+from typing import Annotated, Callable, Literal, cast
 
 import win32event
 from astropy.io import fits
@@ -1181,9 +1181,13 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         exposure_duration: float = Query(
             description="Exposure length (seconds)", default=5, ge=0.001, le=3600
         ),
-        delay_before_exposure: float | None = Query(
-            description="Delay before starting the exposure (seconds)", default=None
-        ),
+        delay_before_exposure: Annotated[
+            float,
+            Query(
+                description="Delay before starting the exposure (seconds)",
+                ge=0,
+            ),
+        ] = 0,
         amplifier_mode: NewtonAmplifierMode = "em",
         em_gain: int = Query(default=240, ge=1, le=255),
         pre_amp_gain: NewtonPreAmpGain = NewtonPreAmpGain.x1,
@@ -1193,6 +1197,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             description="Bypass the check for temperature stabilization (not recommended)",
             default=False,
         ),
+        image_full_path: Path | None = Query(default=None, include_in_schema=False),
     ) -> CanonicalResponse:
 
         if (
@@ -1206,7 +1211,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         horizontal_shift_index = _horizontal_shift_speed_index[horizontal_shift_speed]
         pre_amp_gain_index = _pre_amp_gains[pre_amp_gain]
 
-        if delay_before_exposure:
+        if delay_before_exposure > 0:
             self.debug(
                 f"Delaying {delay_before_exposure} seconds before starting the exposure"
             )
@@ -1275,14 +1280,16 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.end_activity(NewtonActivities.SettingParameters)
 
         # image Path
-        image_full_path = Path(
-            PathMaker().make_spec_exposures_folder(spec_name="highspec") + "/image.fits"
-        )
+        if image_full_path is None:
+            image_full_path = Path(
+                PathMaker().make_spec_exposures_folder(spec_name="highspec")
+                + "/image.fits"
+            )
         if frame_mode != NewtonFrameType.Light.value:
             image_full_path = image_full_path.with_name(
                 image_full_path.stem + f"_{frame_mode.value}" + image_full_path.suffix
             )
-        self.info(f"image will be saved to '{image_full_path}'")
+        # self.info(f"image will be saved to '{image_full_path}'")
 
         self.acquire(
             SpecExposureSettings(
