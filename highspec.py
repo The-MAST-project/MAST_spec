@@ -14,7 +14,12 @@ from fastapi.routing import APIRouter
 from pydantic import ValidationError
 from zaber_motion.units import LITERALS_TO_UNITS
 
-from cameras.andor.newton import NewtonEMCCD
+from cameras.andor.newton import (
+    NewtonAmplifierMode,
+    NewtonEMCCD,
+    NewtonHSSpeed,
+    NewtonPreAmpGain,
+)
 from cameras.qhy.qhy600 import (
     QHY600,
     QHYActivities,
@@ -67,6 +72,11 @@ class HighspecAutofocusSettings(NewtonSettingsConfig):
     lamp_on: bool = False  # ThAr lamp
     filters: list[str] | None = None  # optional list of filters
     gain: int | None = None  # for QHY600, em_gain for Newton
+    horizontal_shift_speed: NewtonHSSpeed = NewtonHSSpeed.MHz_0_05
+    amplifier_mode: NewtonAmplifierMode = "em"
+    em_gain: int = Query(default=240, ge=1, le=255)
+    pre_amp_gain: NewtonPreAmpGain = NewtonPreAmpGain.x1
+    bypass_temperature_stabilization_check: bool = False
 
 
 class Highspec(Component):
@@ -299,17 +309,15 @@ class Highspec(Component):
             )
             if isinstance(self.camera, NewtonEMCCD):
                 self.start_activity(HighspecActivities.Exposing)
-                x_binning = settings.binning.x if settings.binning else 1
-                y_binning = settings.binning.y if settings.binning else 1
 
-                self.camera.start_acquisition(
-                    settings=SpecExposureSettings(
-                        exposure_duration=settings.exposure_duration,
-                        x_binning=x_binning,
-                        y_binning=y_binning,
-                        image_full_name=str(image_path),
-                        gain=settings.gain,
-                    )
+                self.camera.expose(
+                    exposure_duration=settings.exposure_duration,
+                    horizontal_shift_speed=settings.horizontal_shift_speed,
+                    amplifier_mode=settings.amplifier_mode,
+                    em_gain=settings.em_gain,
+                    pre_amp_gain=settings.pre_amp_gain,
+                    bypass_temperature_stabilization_check=settings.bypass_temperature_stabilization_check,
+                    image_full_path=image_path,
                 )
 
             elif isinstance(self.camera, QHY600):
@@ -380,6 +388,14 @@ class Highspec(Component):
         step_size: float = 5,
         unit: UnitNames = UnitNames("MILLIMETRES"),
         number_of_exposures: int = 1,
+        horizontal_shift_speed: NewtonHSSpeed = NewtonHSSpeed.MHz_0_05,
+        amplifier_mode: NewtonAmplifierMode = "em",
+        em_gain: int = Query(default=240, ge=1, le=255),
+        pre_amp_gain: NewtonPreAmpGain = NewtonPreAmpGain.x1,
+        bypass_temperature_stabilization_check: bool = Query(
+            description="Bypass the check for temperature stabilization (not recommended)",
+            default=False,
+        ),
     ):
         settings = HighspecAutofocusSettings(
             camera=camera,
@@ -391,6 +407,11 @@ class Highspec(Component):
             lamp_on=False,
             filters=None,
             gain=gain,
+            amplifier_mode=amplifier_mode,
+            em_gain=em_gain,
+            pre_amp_gain=pre_amp_gain,
+            horizontal_shift_speed=horizontal_shift_speed,
+            bypass_temperature_stabilization_check=bypass_temperature_stabilization_check,
         )
         return self.autofocus(settings)
 
