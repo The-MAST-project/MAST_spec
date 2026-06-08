@@ -19,7 +19,12 @@ from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.assignments import SpectrographAssignment
 from common.models.deepspec import DeepspecSettings
-from common.models.greateyes import GreateyesSettingsModel, ReadoutSpeed
+from common.models.greateyes import (
+    GreateyesSettingsModel,
+    ReadoutAmplifiersMapping,
+    ReadoutAmplifiersNames,
+    ReadoutSpeed,
+)
 from common.models.statuses import GreateyesStatus
 from common.networking import NetworkedDevice
 from common.spec import DeepspecBands, FrameType, SpecExposureSettings
@@ -41,11 +46,6 @@ if not shown_dll_version:
 FAILED_TEMPERATURE = -300
 
 FITS_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
-
-# class ReadoutAmplifiers(IntEnum):
-#     OSR = 0,
-#     OSL = 1,
-#     OSR_AND_OSL = 2,
 
 
 class CropSettingsModel(BaseModel):
@@ -612,7 +612,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         )
         self.end_activity(GreatEyesActivities.SettingParameters, label=self.name)
 
-    def start_exposure(self, greateyes_settings: GreateyesSettingsModel):
+    def start_exposure(self, greateyes_exposure_settings: GreateyesSettingsModel):
         self.errors = []
         if not self.detected:
             self.errors.append("not detected")
@@ -644,32 +644,30 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 self.append_error(f"camera is active ({self.activities=})")
                 return
 
-        self.latest_exposure.settings = greateyes_settings
-        assert isinstance(greateyes_settings.exposure_duration, (int, float))
-        assert greateyes_settings.binning is not None
+        self.latest_exposure.settings = greateyes_exposure_settings
+        assert isinstance(greateyes_exposure_settings.exposure_duration, (int, float))
+        assert greateyes_exposure_settings.binning is not None
 
         self.latest_spec_exposure_settings = SpecExposureSettings(
-            exposure_duration=greateyes_settings.exposure_duration,
-            x_binning=greateyes_settings.binning.x,
-            y_binning=greateyes_settings.binning.y,
-            number_of_exposures=greateyes_settings.number_of_exposures,
-            frame_type=greateyes_settings.frame_type,
+            exposure_duration=greateyes_exposure_settings.exposure_duration,
+            x_binning=greateyes_exposure_settings.binning.x,
+            y_binning=greateyes_exposure_settings.binning.y,
+            number_of_exposures=greateyes_exposure_settings.number_of_exposures,
+            frame_type=greateyes_exposure_settings.frame_type,
         )
 
         self.start_activity(GreatEyesActivities.Acquiring, label=self.name)
-        assert self.latest_spec_exposure_settings and greateyes_settings.readout
-        if 0 < greateyes_settings.readout.mode >= len(self.output_modes):
+        assert (
+            self.latest_spec_exposure_settings and greateyes_exposure_settings.readout
+        )
+        if 0 < greateyes_exposure_settings.readout.mode >= len(self.output_modes):
             self.append_error(
-                f"{greateyes_settings.readout.mode=} is not in range({len(self.output_modes)}"
+                f"{greateyes_exposure_settings.readout.mode=} is not in range({len(self.output_modes)}"
             )
         else:
-            ret = ge.SetupSensorOutputMode(
-                greateyes_settings.readout.mode, addr=self.ge_device
+            self._apply_setting(
+                ge.SetupSensorOutputMode, greateyes_exposure_settings.readout.mode.value
             )
-            # if not ret:
-            #     self.append_error(
-            #         f"could not SetupSensorOutputMode({self.latest_exposure_settings.readout.mode}) (error: {ge.StatusMSG})"
-            #     )
 
             info = ge.GetImageSize(addr=self.ge_device)
             if info[0] != self.x_size or info[1] != self.y_size:
@@ -679,6 +677,14 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 self.x_size = info[0]
                 self.y_size = info[1]
 
+        readout_speed = (
+            greateyes_exposure_settings.readout.speed.value
+            if greateyes_exposure_settings.readout
+            and greateyes_exposure_settings.readout.speed is not None
+            else self.conf.readout.speed.value
+        )
+        self._apply_setting(ge.SetReadOutSpeed, readout_speed)
+
         assert self.latest_exposure.settings.exposure_duration
         if not self._apply_setting(
             ge.SetExposure, int(self.latest_exposure.settings.exposure_duration * 1000)
@@ -686,21 +692,22 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
             return
 
-        assert greateyes_settings.shutter
-        mode = 2 if greateyes_settings.shutter.automatic else 1
+        assert greateyes_exposure_settings.shutter
+        mode = 2 if greateyes_exposure_settings.shutter.automatic else 1
         self._apply_setting(ge.OpenShutter, mode)
 
         ret = ge.StartMeasurement_DynBitDepth(
             addr=self.ge_device,
             showShutter=False
-            if greateyes_settings.frame_type == FrameType.DARK
-            else greateyes_settings.shutter.automatic,
+            if greateyes_exposure_settings.frame_type == FrameType.DARK
+            else greateyes_exposure_settings.shutter.automatic,
         )
         if ret:
             self.start_activity(GreatEyesActivities.Exposing, label=self.name)
             assert self.latest_exposure.timing
             self.latest_exposure.timing.start_utc = datetime.datetime.now(datetime.UTC)
             self.latest_exposure.timing.start = datetime.datetime.now()
+            self.latest_greateyes_exposure_settings = greateyes_exposure_settings
         else:
             self.append_error(
                 f"could not ge.StartMeasurement_DynBitDepth(addr={self.ge_device}) ({ret=})"
@@ -829,6 +836,15 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                     "RDSPEED",
                     readout_speed_names[self.latest_exposure.settings.readout.speed],
                     "PIXEL READOUT FREQUENCY",
+                )
+            )
+            from common.models.greateyes import readout_amplifier_names
+
+            hdr.append(
+                Card(
+                    "RDAMPS",
+                    readout_amplifier_names[self.latest_exposure.settings.readout.mode],
+                    "READOUT AMPLIFIER(S)",
                 )
             )
 
