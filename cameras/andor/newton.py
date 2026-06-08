@@ -960,9 +960,10 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
         self.errors = []
 
-        if self.latest_exposure_settings is None:
-            self.latest_exposure_settings = settings
-        self.debug(f"{function_name()} settings: {self.latest_exposure_settings}")
+        self.latest_exposure_settings = settings
+        self.debug(
+            f"{function_name()}: latest_exposure_settings: {self.latest_exposure_settings}"
+        )
 
         self.start_activity(NewtonActivities.Acquiring)
         ret = self.sdk.StartAcquisition()
