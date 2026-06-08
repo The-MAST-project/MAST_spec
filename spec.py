@@ -6,7 +6,6 @@ import threading
 import time
 from pathlib import Path
 from threading import Thread
-from typing import Dict, List
 
 from fastapi import APIRouter
 
@@ -83,7 +82,7 @@ class Spec(Component):
         self.logger = logging.Logger("spec")
         init_log(self.logger)
 
-        self.power_switches: List[DliPowerSwitch] = [
+        self.power_switches: list[DliPowerSwitch] = [
             PowerSwitchFactory.get_instance("mast-spec-ps1"),
             PowerSwitchFactory.get_instance("mast-spec-ps2"),
         ]
@@ -96,11 +95,11 @@ class Spec(Component):
         self.disperser_stage = stage_controller.disperser_stage
         self.focusing_stage = stage_controller.focusing_stage
 
-        self.wheels: List[Wheel] = FilterWheels(self).wheels
+        self.wheels: list[Wheel] = FilterWheels(spec=self).wheels
         self.thar_wheel = [w for w in self.wheels if w.name == "ThAr"][0]
 
         self.chiller = cooling.chiller.Chiller()
-        self.lamps: List[CalibrationLamp] = [
+        self.lamps: list[CalibrationLamp] = [
             CalibrationLamp(name="ThAr", spec=self),
             CalibrationLamp(name="qTh", spec=self),
         ]
@@ -109,7 +108,7 @@ class Spec(Component):
         self.highspec_shutter = UniblitzController(spec=self, outlet_name="HighShutter")
         self.deepspec_shutter = UniblitzController(spec=self, outlet_name="DeepShutter")
 
-        self.components_dict: Dict[str, Component | List[Component]] = {  # type: ignore
+        self.components_dict: dict[str, Component | list[Component]] = {  # type: ignore
             "chiller": self.chiller,
             "power_switches": self.power_switches,
             "lamps": self.lamps,
@@ -275,7 +274,7 @@ class Spec(Component):
         return all(map(lambda component: component.operational, self.components))
 
     @property
-    def why_not_operational(self) -> List[str]:
+    def why_not_operational(self) -> list[str]:
         ret = []
         for comp in self.components:
             if comp is None:
