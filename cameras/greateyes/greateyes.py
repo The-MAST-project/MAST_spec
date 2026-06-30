@@ -249,7 +249,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         """
         assert self.power_switch
         if not self.power_switch.detected:
-            return
+            self.warning(f"power switch {self.power_switch} not detected")
 
         if not self.enabled or self.detected:
             return
@@ -264,17 +264,22 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         assert self.conf.settings is not None
         default_settings = GreateyesSettingsModel(**self.conf.settings.model_dump())
         if not self.detected:
-            if self.is_off():
-                self.info("powering ON")
-                self.power_on()
+            if self.power_switch is not None and self.power_switch.detected:
+                if self.is_off():
+                    self.info("powering ON")
+                    self.power_on()
+                else:
+                    self.info("cycling power")
+                    self.cycle()
+                assert default_settings.probing
+                boot_delay = default_settings.probing.boot_delay
+                self.info(f"waiting for the camera to boot ({boot_delay} seconds) ...")
+                assert boot_delay
+                time.sleep(boot_delay)
             else:
-                self.info("cycling power")
-                self.cycle()
-            assert default_settings.probing
-            boot_delay = default_settings.probing.boot_delay
-            self.info(f"waiting for the camera to boot ({boot_delay} seconds) ...")
-            assert boot_delay
-            time.sleep(boot_delay)
+                self.warning(
+                    f"power switch {self.power_switch} not detected, skipping power cycle, will try to connect to the camera anyway"
+                )
 
             self.try_connect_camera()
             if not self.detected:
