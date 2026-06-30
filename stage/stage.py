@@ -369,13 +369,13 @@ class Stage(Component):
 
         if parked:
             self.axis.unpark()
-        elif not self.axis.is_homed():
-            self.start_activity(
-                StageActivities.Homing,
-                label=f"{self.name}: ",
-                data={"target": {"type": "preset", "value": "home"}},
-            )
-            self.axis.home(wait_until_idle=False)
+        # elif not self.axis.is_homed():
+        #     self.start_activity(
+        #         StageActivities.Homing,
+        #         label=f"{self.name}: ",
+        #         data={"target": {"type": "preset", "value": "home"}},
+        #     )
+        #     self.axis.home(wait_until_idle=False)
 
         if self.startup_preset and not self.close_enough(
             self.presets[self.startup_preset]
