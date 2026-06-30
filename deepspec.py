@@ -5,8 +5,9 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import get_args
+from typing import Annotated, get_args
 
+from fastapi import Query
 from fastapi.routing import APIRouter
 
 from cameras.greateyes.greateyes import GreatEyes
@@ -21,11 +22,18 @@ from common.models.assignments import (
     AssignmentNotification,
     SpectrographAssignment,
 )
-from common.models.greateyes import GreateyesSettingsModel
+from common.models.greateyes import (
+    GreateyesSettingsModel,
+    ReadoutAmplifiersMapping,
+    ReadoutAmplifiersNames,
+    ReadoutModel,
+    ReadoutSpeedMapping,
+    ReadoutSpeedNames,
+    ShutterModel,
+)
 from common.models.spectrographs import SpectrographModel
 from common.models.statuses import DeepspecStatus
 from common.notifications import Notifier
-from common.notifications import initiator as notification_initiator
 from common.paths import PathMaker
 from common.spec import (
     DeepspecBands,
@@ -200,8 +208,21 @@ class Deepspec(Component):
         y_binning: int = 1,
         number_of_exposures: int | None = 1,
         frame_type: FrameType = FrameType.LIGHT,
+        readout_amplifiers: ReadoutAmplifiersNames = "OSR_AND_OSL",
+        readout_speed: ReadoutSpeedNames = "50_kHz",
+        bypass_temperature_stabilization_check: bool = Query(
+            default=False,
+            description="Bypass the check for temperature stabilization (not recommended)",
+        ),
+        base_folder: Annotated[str | None, Query(include_in_schema=False)] = None,
     ) -> CanonicalResponse:
+
+        if base_folder is None:
+            base_folder = PathMaker().make_spec_exposures_folder(spec_name="deepspec")
+
         for cam in self.active_cameras:
+            folder = str(Path(base_folder) / cam.band)  # type: ignore
+
             self.expose_one_camera(
                 band=cam.band,  # type: ignore
                 seconds=seconds,
@@ -209,20 +230,31 @@ class Deepspec(Component):
                 y_binning=y_binning,
                 number_of_exposures=number_of_exposures,
                 frame_type=frame_type,
+                readout_amplifiers=readout_amplifiers,
+                readout_speed=readout_speed,
+                bypass_temperature_stabilization_check=bypass_temperature_stabilization_check,
+                folder=folder,
             )
         return CanonicalResponse_Ok
 
     def expose_one_camera(
         self,
-        band: str,
+        band: DeepspecBands,
         seconds: float,
         x_binning: int = 1,
         y_binning: int = 1,
         delay_before_exposure: float = 0,
         number_of_exposures: int | None = 1,
         frame_type: FrameType = FrameType.LIGHT,
+        readout_amplifiers: ReadoutAmplifiersNames = "OSR_AND_OSL",
+        readout_speed: ReadoutSpeedNames = "50_kHz",
+        bypass_temperature_stabilization_check: bool = Query(
+            default=False,
+            description="Bypass the check for temperature stabilization (not recommended)",
+        ),
+        folder: Annotated[str | None, Query(include_in_schema=False)] = None,
     ) -> CanonicalResponse:
-        self.executor.submit(
+        future = self.executor.submit(
             self.do_expose_one_camera,
             band,
             seconds,
@@ -231,25 +263,31 @@ class Deepspec(Component):
             delay_before_exposure,
             number_of_exposures,
             frame_type,
+            readout_amplifiers,
+            readout_speed=readout_speed,
+            bypass_temperature_stabilization_check=bypass_temperature_stabilization_check,
+            folder=folder,
         )
+        time.sleep(0.5)  # give the thread a moment to start and potentially return an
+        if future.done():
+            if future.result() is not None:
+                return future.result()
         return CanonicalResponse_Ok
 
     def do_expose_one_camera(
         self,
-        band: str,
+        band: DeepspecBands,
         seconds: float,
         x_binning: int = 1,
         y_binning: int = 1,
         delay_before_exposure: float = 0,
         number_of_exposures: int | None = 1,
         frame_type: FrameType = FrameType.LIGHT,
+        readout_amplifiers: ReadoutAmplifiersNames = "OSR_AND_OSL",
+        readout_speed: ReadoutSpeedNames = "50_kHz",
+        bypass_temperature_stabilization_check: bool = False,
+        folder: str | None = None,
     ) -> CanonicalResponse:
-        if band not in list(get_args(DeepspecBands)):
-            return CanonicalResponse(
-                errors=[
-                    f"invalid band '{band}', must be one of {list(get_args(DeepspecBands))}"
-                ]
-            )
 
         if delay_before_exposure < 0:
             return CanonicalResponse(
@@ -258,7 +296,7 @@ class Deepspec(Component):
                 ]
             )
 
-        if not self.cameras[band]:
+        if not self.cameras[band] or not self.cameras[band].detected:  # type: ignore
             return CanonicalResponse(errors=[f"camera '{band}' not detected"])
 
         camera = self.cameras[band]
@@ -266,7 +304,17 @@ class Deepspec(Component):
         if not camera.detected:
             return CanonicalResponse(errors=[f"camera '{band}' not detected"])
 
-        folder = PathMaker().make_spec_exposures_folder(spec_name="deepspec", band=band)
+        if not bypass_temperature_stabilization_check and camera.is_active(
+            GreatEyesActivities.CoolingDown
+        ):
+            return CanonicalResponse(
+                errors=[f"camera '{band}' is still cooling down — use bypass_temperature_stabilization_check to override"]
+            )
+
+        if folder is None:
+            folder = PathMaker().make_spec_exposures_folder(
+                spec_name="deepspec", band=band
+            )
         os.makedirs(folder, exist_ok=True)
 
         if delay_before_exposure > 0:
@@ -274,6 +322,16 @@ class Deepspec(Component):
                 f"delaying before exposure for {delay_before_exposure} seconds..."
             )
             time.sleep(delay_before_exposure)
+
+        readout: ReadoutModel = ReadoutModel(
+            mode=ReadoutAmplifiersMapping[readout_amplifiers],
+            speed=ReadoutSpeedMapping[readout_speed],
+        )
+        shutter: ShutterModel = ShutterModel(
+            automatic=camera.conf.settings.shutter.automatic,
+            close_time=camera.conf.settings.shutter.close_time,
+            open_time=camera.conf.settings.shutter.open_time,
+        )
 
         for exposure_number in range(number_of_exposures or 1):
             image_file = os.path.join(
@@ -283,25 +341,27 @@ class Deepspec(Component):
             settings: GreateyesSettingsModel = GreateyesSettingsModel(
                 bytes_per_pixel=1,
                 crop=None,
-                shutter=None,
+                shutter=shutter,
                 exposure_duration=seconds,
                 number_of_exposures=number_of_exposures,
                 binning={"x": x_binning, "y": y_binning},  # type: ignore
                 image_file=image_file,
                 temp=None,
-                readout=None,
+                readout=readout,
                 probing=None,
                 frame_type=frame_type,
             )
 
-            camera.start_exposure(greateyes_settings=settings)
+            camera.start_exposure(
+                greateyes_exposure_settings=settings,
+                bypass_temperature_stabilization_check=bypass_temperature_stabilization_check,
+            )
             if camera.errors:
-                return CanonicalResponse(
-                    errors=[
-                        f"exposure #{exposure_number} of {number_of_exposures}, failed: '{e}'"
-                        for e in camera.errors
-                    ]
-                )
+                errors = [
+                    f"exposure #{exposure_number} of {number_of_exposures}, failed to start: '{e}'"
+                    for e in camera.errors
+                ]
+                return CanonicalResponse(errors=errors)
 
             while camera.is_active(GreatEyesActivities.Acquiring):
                 time.sleep(0.5)
@@ -385,7 +445,7 @@ class Deepspec(Component):
             AssignmentNotification(
                 assignment_id=str(ulid),
                 state="in-progress",
-                shared_top=acquisition_folder,
+                shared_top=str(acquisition_folder),
                 shared_subpath="deepspec",
             )
         )
