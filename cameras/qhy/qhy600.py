@@ -17,6 +17,7 @@ from common.dlipowerswitch import SwitchedOutlet
 from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.statuses import QHY600Status
+from common.paths import PathMaker
 from common.spec import SpecExposureSettings
 
 from .controls import QHYControlId, qhy_controls
@@ -685,7 +686,7 @@ class QHY600(Component, SwitchedOutlet):
         pass  # camera does not have a warming procedure, so do nothing
 
     def startup(self):
-        if not self.conf.camera_enabled:
+        if hasattr(self.conf, "camera_enabled") and not self.conf.camera_enabled:
             self.info("Camera is disabled.")
             return
         return super().startup()
@@ -747,6 +748,20 @@ class QHY600(Component, SwitchedOutlet):
     @property
     def was_shut_down(self) -> bool:
         return False
+
+    def expose_single_image(self, duration: float, gain: int | None = None):
+        folder = PathMaker().make_spec_exposures_folder(spec_name="highspec")
+        seq = PathMaker().make_seq(folder=folder)
+        settings = QHYCameraSettingsModel(
+            binning=QHYBinningModel(x=1, y=1),
+            roi=None,
+            gain=gain,
+            exposure_duration=duration,
+            number_of_exposures=1,
+            image_path=Path(folder) / f"single_exposure_{seq}.fits",
+            depth=16,
+        )
+        self.start_single_exposure(settings)
 
     def start_acquisition(self, spec_exposure_settings: SpecExposureSettings):
         settings: QHYCameraSettingsModel = QHYCameraSettingsModel(
