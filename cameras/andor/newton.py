@@ -205,7 +205,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self._initialized = False
 
         if not self.power_switch.detected:
-            return
+            self.warning(f"power switch {self.power_switch} not detected")
 
         self.sdk = atmcd()
         ret = self.sdk.Initialize("")
@@ -611,7 +611,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             number_of_exposures=1,
             em_gain=200,
             binning=NewtonBinning(x=1, y=1),
-            shutter=ShutterConfig(open_time=9, close_time=12, automatic=True),
+            shutter=ShutterConfig(open_time=20, close_time=12, automatic=True),
             temperature=NewtonTemperatureConfig(
                 regular_set_point=-10, science_set_point=-85
             ),
@@ -1194,10 +1194,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         pre_amp_gain: NewtonPreAmpGain = NewtonPreAmpGain.x1,
         frame_mode: NewtonFrameType = NewtonFrameType.Light,
         horizontal_shift_speed: NewtonHSSpeed = NewtonHSSpeed.MHz_0_05,
-        bypass_temperature_stabilization_check: bool = Query(
-            description="Bypass the check for temperature stabilization (not recommended)",
-            default=False,
-        ),
+        bypass_temperature_stabilization_check: bool = False,
         image_full_path: Path | None = Query(default=None, include_in_schema=False),
     ) -> CanonicalResponse:
 
@@ -1277,6 +1274,12 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                     (amplifier_mode_numeric, horizontal_shift_index),
                 )
                 self._apply_setting(self.sdk.SetPreAmpGain, pre_amp_gain_index)
+
+        if self.conf.shutter is not None:
+            self._apply_setting(
+                self.sdk.SetShutter,
+                (0, 0, self.conf.shutter.close_time, self.conf.shutter.open_time),
+            )
 
         self.end_activity(NewtonActivities.SettingParameters)
 
