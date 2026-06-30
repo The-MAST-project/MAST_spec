@@ -1,3 +1,4 @@
+import ctypes
 import datetime
 import logging
 import os
@@ -21,8 +22,6 @@ from common.models.assignments import SpectrographAssignment
 from common.models.deepspec import DeepspecSettings
 from common.models.greateyes import (
     GreateyesSettingsModel,
-    ReadoutAmplifiersMapping,
-    ReadoutAmplifiersNames,
     ReadoutSpeed,
 )
 from common.models.statuses import GreateyesStatus
@@ -170,7 +169,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.shutdown_event: threading.Event = threading.Event()
 
         self.last_probe_time = None
-        self.timer = RepeatTimer(1, function=self.on_timer)
+        self.timer_frequency: float = 1  # [seconds] how often to check the camera status, e.g. backside temperature
+        self.timer = RepeatTimer(self.timer_frequency, function=self.on_timer)
         self.timer.name = f"deepspec-camera-{self.band}-timer-thread"
         self.timer.start()
 
@@ -376,16 +376,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
     def status(self) -> GreateyesStatus:
         assert self.ge_device is not None
 
-        sensor_temperature = (
-            ge.TemperatureControl_GetTemperature(thermistor=0, addr=self.ge_device)
-            if self.connected
-            else None
-        )
-        back_temperature = (
-            ge.TemperatureControl_GetTemperature(thermistor=1, addr=self.ge_device)
-            if self.connected
-            else None
-        )
+        sensor_temperature = self.get_sensor_temperature()
+        back_temperature = self.get_back_temperature()
 
         ret = GreateyesStatus(
             powered=self.is_on(),
@@ -612,37 +604,109 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         )
         self.end_activity(GreatEyesActivities.SettingParameters, label=self.name)
 
-    def start_exposure(self, greateyes_exposure_settings: GreateyesSettingsModel):
+    def _start_measurement(self, show_shutter: bool) -> bool:
+        assert self.ge_device is not None
+
+        assert self.bytes_per_pixel is not None
+        geFunc = ge.greateyesDLL.StartMeasurement
+        geFunc.restype = ctypes.c_bool
+        geFunc.argtypes = [
+            ctypes.c_bool,
+            ctypes.c_bool,
+            ctypes.c_bool,
+            ctypes.c_bool,
+            ctypes.c_int,  # bitDepth (bytes per pixel)
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_int,
+        ]
+
+        c_status = ctypes.c_int(16)
+        ret = geFunc(
+            ctypes.c_bool(False),
+            ctypes.c_bool(True),
+            ctypes.c_bool(show_shutter),
+            ctypes.c_bool(False),
+            ctypes.c_int(self.bytes_per_pixel),
+            ctypes.pointer(c_status),
+            ctypes.c_int(self.ge_device),
+        )
+        op = f"StartMeasurement(show_shutter={show_shutter}, addr={self.ge_device})"
+        if ret:
+            self.info(f"OK - {op}")
+        else:
+            self.append_error(f"FAILED - {op} (status: {ge.StatusMSG} ({ge.Status}))")
+        return bool(ret)
+
+    def _get_measurement_data(self):
+        import numpy as np
+
+        assert self.ge_device is not None
+        assert (
+            self.x_size is not None
+            and self.y_size is not None
+            and self.bytes_per_pixel is not None
+        )
+
+        if self.bytes_per_pixel == 2:
+            c_pixel_type = ctypes.c_ushort
+            np_dtype = np.uint16
+        else:
+            c_pixel_type = ctypes.c_ulong
+            np_dtype = np.uint32
+
+        array_class = c_pixel_type * (self.x_size * self.y_size)
+        array_inst = array_class()
+        buf_ptr = ctypes.cast(ctypes.pointer(array_inst), ctypes.POINTER(c_pixel_type))
+
+        geFunc = ge.greateyesDLL.GetMeasurementData
+        geFunc.restype = ctypes.c_bool
+        geFunc.argtypes = [
+            ctypes.POINTER(c_pixel_type),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_int,
+        ]
+
+        c_status = ctypes.c_int(16)
+        worked = geFunc(buf_ptr, ctypes.pointer(c_status), ctypes.c_int(self.ge_device))
+
+        if worked:
+            return np.ctypeslib.as_array(array_inst)
+        else:
+            self.append_error(
+                f"FAILED - GetMeasurementData(addr={self.ge_device}) (status: {ge.StatusMSG} ({ge.Status}))"
+            )
+            return np.ndarray((self.x_size, self.y_size), dtype=np_dtype)
+
+    def start_exposure(
+        self,
+        greateyes_exposure_settings: GreateyesSettingsModel,
+        bypass_temperature_stabilization_check: bool = False,
+    ):
         self.errors = []
         if not self.detected:
             self.errors.append("not detected")
             return
 
         assert self.ge_device is not None
-        if not self.is_idle():
-            if ge.DllIsBusy(addr=self.ge_device):
-                self.append_error(
-                    f"could not start exposure: ge.DllIsBusy(addr={self.ge_device})"
-                )
-                return
+        if ge.DllIsBusy(addr=self.ge_device):
+            self.append_error(
+                f"could not start exposure: ge.DllIsBusy(addr={self.ge_device})"
+            )
+            return
 
-            # if self.is_active(GreatEyesActivities.CoolingDown):
-            #     ret = ge.TemperatureControl_GetTemperature(
-            #         thermistor=0, addr=self.ge_device
-            #     )
-            #     if ret == FAILED_TEMPERATURE:
-            #         self.append_error(f"could not read sensor temperature ({ret=})")
-            #     else:
-            #         assert self.greateyes_settings.temp
-            #         delta_temp = abs(self.greateyes_settings.temp.target_cool - ret)
-            #         self.append_error(
-            #             f"cannot expose while cooling down ({delta_temp=} deg to cool)"
-            #         )
-            #     return
-
-            if not self.is_idle():
+        if bypass_temperature_stabilization_check:
+            exposure_blocking = {
+                GreatEyesActivities.Acquiring,
+                GreatEyesActivities.Exposing,
+                GreatEyesActivities.ReadingOut,
+                GreatEyesActivities.Saving,
+            }
+            if any(self.is_active(a) for a in exposure_blocking):
                 self.append_error(f"camera is active ({self.activities=})")
                 return
+        elif not self.is_idle():
+            self.append_error(f"camera is active ({self.activities=})")
+            return
 
         self.latest_exposure.settings = greateyes_exposure_settings
         assert isinstance(greateyes_exposure_settings.exposure_duration, (int, float))
@@ -670,12 +734,17 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             )
 
             info = ge.GetImageSize(addr=self.ge_device)
-            if info[0] != self.x_size or info[1] != self.y_size:
+            if (
+                info[0] != self.x_size
+                or info[1] != self.y_size
+                or info[2] != self.bytes_per_pixel
+            ):
                 self.warning(
-                    f"image size changed after setting output mode: was {self.x_size} x {self.y_size}, now {info[0]} x {info[1]}"
+                    f"image size changed after setting output mode: was {self.x_size} x {self.y_size} x {self.bytes_per_pixel}, now {info[0]} x {info[1]} x {info[2]}"
                 )
                 self.x_size = info[0]
                 self.y_size = info[1]
+                self.bytes_per_pixel = info[2]
 
         readout_speed = (
             greateyes_exposure_settings.readout.speed.value
@@ -695,23 +764,17 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         assert greateyes_exposure_settings.shutter
         mode = 2 if greateyes_exposure_settings.shutter.automatic else 1
         self._apply_setting(ge.OpenShutter, mode)
-
-        ret = ge.StartMeasurement_DynBitDepth(
-            addr=self.ge_device,
-            showShutter=False
-            if greateyes_exposure_settings.frame_type == FrameType.DARK
-            else greateyes_exposure_settings.shutter.automatic,
-        )
+        ret = ge.StartMeasurement_DynBitDepth(addr=self.ge_device)
+        op = f"StartMeasurement_DynBitDepth(addr={self.ge_device})"
         if ret:
+            self.info(f"OK - {op}")
             self.start_activity(GreatEyesActivities.Exposing, label=self.name)
             assert self.latest_exposure.timing
             self.latest_exposure.timing.start_utc = datetime.datetime.now(datetime.UTC)
             self.latest_exposure.timing.start = datetime.datetime.now()
             self.latest_greateyes_exposure_settings = greateyes_exposure_settings
         else:
-            self.append_error(
-                f"could not ge.StartMeasurement_DynBitDepth(addr={self.ge_device}) ({ret=})"
-            )
+            self.append_error(f"FAILED - {op} (status: {ge.StatusMSG} ({ge.Status}))")
 
     def readout(self):
         if not self.detected:
@@ -813,6 +876,20 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 "TEMPFLAG",
                 self.backside_temp_safe,
                 "DETECTOR BACKSIDE TEMPERATURE SAFETY FLAG",
+            )
+        )
+        hdr.append(
+            Card(
+                "TEMPSENS",
+                self.get_sensor_temperature(),
+                "DETECTOR SENSOR TEMPERATURE",
+            )
+        )
+        hdr.append(
+            Card(
+                "TEMPBACK",
+                self.get_back_temperature(),
+                "DETECTOR BACKSIDE TEMPERATURE",
             )
         )
         hdr.append(
@@ -968,24 +1045,19 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if self.last_backside_temp_check is None or (
             now - self.last_backside_temp_check
         ) > datetime.timedelta(seconds=self.greateyes_settings.temp.check_interval):
-            ret = ge.TemperatureControl_GetTemperature(
-                thermistor=1, addr=self.ge_device
-            )
-            if ret == FAILED_TEMPERATURE:
-                self.error(
-                    f"failed to read back temperature ({ret=}, error: {ge.StatusMSG})"
-                )
+            ret = self.get_back_temperature()
+            if ret is None:
+                # self.error("failed to read back temperature")
+                pass
+            elif ret >= 55:
+                self.backside_temp_safe = False
+                self.error(f"back side temperature too high: {ret} degrees celsius")
             else:
-                if ret >= 55:
-                    self.backside_temp_safe = False
-                    self.error(f"back side temperature too high: {ret} degrees celsius")
-                else:
-                    self.backside_temp_safe = True
+                self.backside_temp_safe = True
 
             self.last_backside_temp_check = now
 
         if self.is_active(GreatEyesActivities.Exposing):
-            # check if exposure has ended
             if not ge.DllIsBusy(addr=self.ge_device):
                 self.end_activity(GreatEyesActivities.Exposing, label=self.name)
 
@@ -1011,51 +1083,47 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                     target=self.readout,
                 )
                 self.readout_thread.start()
-            # else:
-            #     elapsed = (
-            #         now - self.timings[GreatEyesActivities.Exposing].start_time
-            #     ).seconds
-            #     assert (
-            #         self.latest_exposure.settings is not None
-            #         and self.latest_exposure.settings.exposure_duration is not None
-            #     )
-            #     max_expected = self.latest_exposure.settings.exposure_duration * 10
-            #     if elapsed > max_expected:
-            #         self.append_error(
-            #             f"exposure takes too long ({elapsed=} > {max_expected=})"
-            #         )
-            #         ret = ge.StopMeasurement(addr=self.ge_device)
-            #         if ret:
-            #             self.append_error(
-            #                 f"could not ge.StopMeasurement(addr={self.ge_device}) ({ret=})"
-            #             )
-            #         else:
-            #             self.end_activity(GreatEyesActivities.Exposing, label=self.name)
+
+        if self.is_active(GreatEyesActivities.StoppingMeasurement):
+            if not ge.DllIsBusy(addr=self.ge_device):
+                self.end_activity(
+                    GreatEyesActivities.StoppingMeasurement, label=self.name
+                )
+                self.end_activity(GreatEyesActivities.Exposing, label=self.name)
+                self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
+            elif now - self.timings[
+                GreatEyesActivities.StoppingMeasurement
+            ].start_time > datetime.timedelta(seconds=5):
+                self.append_error(
+                    f"stopping measurement takes too long ({now - self.timings[GreatEyesActivities.StoppingMeasurement].start_time} > 5 seconds)"
+                )
+                self.end_activity(
+                    GreatEyesActivities.StoppingMeasurement, label=self.name
+                )
+                self.end_activity(GreatEyesActivities.Exposing, label=self.name)
+                self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
 
         if (
             self.is_active(GreatEyesActivities.AdjustingTemperature)
             and self.sensor_temperature_target is not None
         ):
-            sensor_temp = ge.TemperatureControl_GetTemperature(
-                thermistor=0, addr=self.ge_device
-            )
-            if sensor_temp == FAILED_TEMPERATURE:
-                self.append_error("failed reading sensor temperature")
-            else:
-                if abs(sensor_temp - self.sensor_temperature_target) <= 1:
-                    self.end_activity(
-                        GreatEyesActivities.AdjustingTemperature, label=self._name
-                    )
-                    self.sensor_temperature_target = None
+            sensor_temp = self.get_sensor_temperature()
+            if sensor_temp is None:
+                if not ge.DllIsBusy(addr=self.ge_device):
+                    self.append_error("failed reading sensor temperature")
+            elif abs(sensor_temp - self.sensor_temperature_target) <= 1:
+                self.end_activity(
+                    GreatEyesActivities.AdjustingTemperature, label=self._name
+                )
+                self.sensor_temperature_target = None
 
         if self.is_active(GreatEyesActivities.CoolingDown) or self.is_active(
             GreatEyesActivities.WarmingUp
         ):
-            sensor_temp = ge.TemperatureControl_GetTemperature(
-                thermistor=0, addr=self.ge_device
-            )
-            if sensor_temp == FAILED_TEMPERATURE:
-                self.append_error("failed reading sensor temperature")
+            sensor_temp = self.get_sensor_temperature()
+            if sensor_temp is None:
+                if not ge.DllIsBusy(addr=self.ge_device):
+                    self.append_error("failed reading sensor temperature")
             else:
                 switch_temp_control_off = False
                 should_power_off = False
@@ -1072,8 +1140,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
                 if (
                     self.is_active(GreatEyesActivities.WarmingUp)
-                    and abs(sensor_temp >= self.greateyes_settings.temp.target_warm)
-                    <= 1
+                    and abs(sensor_temp - self.greateyes_settings.temp.target_warm) <= 1
                 ):
                     self.end_activity(GreatEyesActivities.WarmingUp, label=self._name)
                     if self.is_active(GreatEyesActivities.ShuttingDown):
@@ -1097,6 +1164,36 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 if should_power_off:
                     self.power_off()
                     self.timer.finished.set()
+
+    def get_sensor_temperature(self) -> float | None:
+        if not self.detected:
+            return None
+
+        assert self.ge_device is not None
+        if ge.DllIsBusy(addr=self.ge_device):
+            return None
+        ret = ge.TemperatureControl_GetTemperature(thermistor=0, addr=self.ge_device)
+        if ret == FAILED_TEMPERATURE:
+            self.append_error(f"failed to read sensor temperature ({ret=})")
+            return None
+        return ret
+
+    def get_back_temperature(self) -> float | None:
+        ret = None
+        if not self.detected:
+            return ret
+
+        assert self.ge_device is not None
+        if not ge.DllIsBusy(addr=self.ge_device):
+            ret = ge.TemperatureControl_GetTemperature(
+                thermistor=1, addr=self.ge_device
+            )
+            if ret == FAILED_TEMPERATURE:
+                self.append_error(f"failed to read back temperature ({ret=})")
+                return None
+            return ret
+
+        return None
 
     @property
     def operational(self) -> bool:
