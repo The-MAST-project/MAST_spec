@@ -966,6 +966,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         )
 
         self.start_activity(NewtonActivities.Acquiring)
+        self._apply_setting(self.sdk.SetExposureTime, settings.exposure_duration)
         ret = self.sdk.StartAcquisition()
         if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.error(f"could not StartAcquisition() (code={error_code(ret)})")
