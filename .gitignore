@@ -20,3 +20,7 @@ greateyes/
 dlipower/
 cameras/greateyes/sdk/
 **/*.fits
+
+# Claude Code settings (machine/identity-scoped — never commit)
+.claude/settings.json
+.claude/settings.local.json
