@@ -189,7 +189,7 @@ class Deepspec(Component):
     def start_acquisition(self, settings: SpecExposureSettings):
         self.start_activity(DeepspecActivities.Acquiring)
         if self.spec is not None:
-            self.spec.start_activity(SpecActivities.ExposingDeepspec)
+            self.spec.start_activity(SpecActivities.ExposingDeepspec, data={"instrument": "deepspec"})
         self.expose(
             seconds=settings.exposure_duration,
             x_binning=settings.binning.x,  # type: ignore
@@ -451,7 +451,7 @@ class Deepspec(Component):
         )
 
         self.start_activity(DeepspecActivities.Acquiring)
-        spec.start_activity(SpecActivities.ExposingDeepspec)
+        spec.start_activity(SpecActivities.ExposingDeepspec, data={"instrument": "deepspec"})
         for band in list(self.cameras.keys()):
             camera = self.cameras[band]
             if not camera or not camera.detected:
