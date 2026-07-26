@@ -9,7 +9,7 @@ class CapabilityHelper:
 
     Attributes
     ----------
-        param1 : atmcd 
+        param1 : atmcd
             An active atmcd/sdk object
     """
 
@@ -19,8 +19,7 @@ class CapabilityHelper:
         self.sdk = sdk
 
     def print_all(self):
-        """ returns a printout of each set of modes and functions
-        """
+        """returns a printout of each set of modes and functions"""
         self.print_acquisition_modes()
         print("")
         self.print_read_modes()
@@ -47,8 +46,7 @@ class CapabilityHelper:
         print("")
 
     def print_acquisition_modes(self):
-        """Prints available acquisition modes
-        """
+        """Prints available acquisition modes"""
         mode = atmcd_capabilities.acquistionModes
         val = self.caps.ulAcqModes
         print("Available Acquisition modes")
@@ -56,8 +54,7 @@ class CapabilityHelper:
             self.__get_bit(val, i, mode)
 
     def print_read_modes(self):
-        """Prints available read modes
-        """
+        """Prints available read modes"""
         mode = atmcd_capabilities.readmodes
         val = self.caps.ulReadModes
         print("Available Read modes")
@@ -65,8 +62,7 @@ class CapabilityHelper:
             self.__get_bit(val, i, mode)
 
     def print_trigger_modes(self):
-        """Prints available pixel modes
-        """
+        """Prints available pixel modes"""
         mode = atmcd_capabilities.PixelModes
         val = self.caps.ulPixelMode
 
@@ -75,8 +71,7 @@ class CapabilityHelper:
             self.__get_bit(val, i, mode)
 
     def print_camera_types(self):
-        """Prints camera type
-        """
+        """Prints camera type"""
         mode = atmcd_capabilities.cameratype
         val = self.caps.ulCameraType
 
@@ -85,8 +80,7 @@ class CapabilityHelper:
             self.__get_bit(val, i, mode)
 
     def print_pixel_modes(self):
-        """Prints available pixel modes
-        """
+        """Prints available pixel modes"""
         mode = atmcd_capabilities.PixelModes
         val = self.caps.ulPixelMode
 
@@ -95,8 +89,7 @@ class CapabilityHelper:
             self.__get_bit(val, i, mode)
 
     def print_set_functions(self):
-        """Prints setter functions
-        """
+        """Prints setter functions"""
         mode = atmcd_capabilities.SetFunctions
         val = self.caps.ulSetFunctions
 
@@ -105,8 +98,7 @@ class CapabilityHelper:
             self.__get_bit(val, i, mode)
 
     def print_get_functions(self):
-        """Prints available read modes
-        """
+        """Prints available read modes"""
         mode = atmcd_capabilities.GetFunctions
         val = self.caps.ulGetFunctions
 
@@ -115,8 +107,7 @@ class CapabilityHelper:
             self.__get_bit(val, i, mode)
 
     def print_features(self):
-        """Prints available features
-        """
+        """Prints available features"""
         mode = atmcd_capabilities.Features
         val = self.caps.ulFeatures
 
@@ -125,16 +116,14 @@ class CapabilityHelper:
             self.__get_bit(val, i, mode)
 
     def print_pci_card(self):
-        """Prints maximum speed of Pci card in Hz
-        """
+        """Prints maximum speed of Pci card in Hz"""
         val = self.caps.ulPCICard
 
         print("Pci max speed in Hz ")
         print("- {}".format(val))
 
     def print_step_modes(self):
-        """Prints step type
-        """
+        """Prints step type"""
         mode = atmcd_capabilities.stepmodes
         val = self.caps.ulstepmodes
 
@@ -143,8 +132,7 @@ class CapabilityHelper:
             self.__get_bit(val, i, mode)
 
     def print_emgain_compatilibity(self):
-        """Prints available Em gain modes
-        """
+        """Prints available Em gain modes"""
         mode = atmcd_capabilities.EmGainModes
         val = self.caps.ulEMGainCapability
 
@@ -153,8 +141,7 @@ class CapabilityHelper:
             self.__get_bit(val, i, mode)
 
     def print_FTRead_modes(self):
-        """Prints available Frame Transfer compatible Read modes
-        """
+        """Prints available Frame Transfer compatible Read modes"""
         mode = atmcd_capabilities.readmodes
         val = self.caps.ulFeatures2
 
@@ -163,8 +150,7 @@ class CapabilityHelper:
             self.__get_bit(val, i, mode)
 
     def print_features2(self):
-        """Prints available features
-        """
+        """Prints available features"""
         mode = atmcd_capabilities.Features
         val = self.caps.ulFeatures
 
@@ -173,8 +159,7 @@ class CapabilityHelper:
             self.__get_bit(val, i, mode)
 
     def __get_bit(self, number, bitNumber, mode):
-        """converts from a long to binary data  
-        """
+        """converts from a long to binary data"""
         mask = 1 << bitNumber
         bit = (number & mask) >> bitNumber
         if bit != 1:
@@ -183,9 +168,8 @@ class CapabilityHelper:
             self.__iterate_through_enum(int(mask), mode)
 
     def __iterate_through_enum(self, num, mode):
-        """Checks provided enum for compatible value
-        """
+        """Checks provided enum for compatible value"""
         for x in mode:
             if x.value == num:
-                temp = x.name.split('_', -1)
+                temp = x.name.split("_", -1)
                 print("- {},".format(temp[2]))

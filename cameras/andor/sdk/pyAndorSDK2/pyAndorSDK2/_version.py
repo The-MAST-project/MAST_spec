@@ -6,4 +6,4 @@ major = 1
 minor = 2
 build = 0
 __version_info__ = (major, minor, build)
-__version__ = '.'.join(map(str, __version_info__))
+__version__ = ".".join(map(str, __version_info__))

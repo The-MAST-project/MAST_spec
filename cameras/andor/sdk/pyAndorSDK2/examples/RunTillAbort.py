@@ -19,8 +19,7 @@ if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
     while ret != atmcd_errors.Error_Codes.DRV_TEMP_STABILIZED:
         time.sleep(5)
         (ret, temperature) = sdk.GetTemperature()
-        print("Function GetTemperature returned {} current temperature = {}".format(
-            ret, temperature), end="\r")
+        print("Function GetTemperature returned {} current temperature = {}".format(ret, temperature), end="\r")
 
     print("")
     print("Temperature stabilized")
@@ -35,12 +34,14 @@ if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
     print("Function SetTriggerMode returned {} mode = Internal".format(ret))
 
     (ret, xpixels, ypixels) = sdk.GetDetector()
-    print("Function GetDetector returned {} xpixels = {} ypixels = {}".format(
-        ret, xpixels, ypixels))
+    print("Function GetDetector returned {} xpixels = {} ypixels = {}".format(ret, xpixels, ypixels))
 
     ret = sdk.SetImage(1, 1, 1, xpixels, 1, ypixels)
-    print("Function SetImage returned {} hbin = 1 vbin = 1 hstart = 1 hend = {} vstart = 1 vend = {}".format(
-        ret, xpixels, ypixels))
+    print(
+        "Function SetImage returned {} hbin = 1 vbin = 1 hstart = 1 hend = {} vstart = 1 vend = {}".format(
+            ret, xpixels, ypixels
+        )
+    )
 
     ret = sdk.SetExposureTime(0.2)
     print("Function SetExposureTime returned {} time = 0.2s".format(ret))
@@ -59,15 +60,16 @@ if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
                 imgwindow.cla()
                 (ret, index) = sdk.GetTotalNumberImagesAcquired()
                 (ret, arr) = sdk.GetMostRecentImage16(imageSize)
-                print("Function GetMostRecentImage16 returned {} first pixel = {} size = {}".format(
-                    ret, arr[0], imageSize), end="\r")
+                print(
+                    "Function GetMostRecentImage16 returned {} first pixel = {} size = {}".format(ret, arr[0], imageSize),
+                    end="\r",
+                )
                 arr = np.reshape(arr, (xpixels, ypixels))
                 imgwindow.matshow(arr)
                 imgwindow.set_title("Image number: {}".format(index))
                 plt.pause(0.1)
             else:
-                raise Exception(
-                    "can't invoke " '"update"' " command: application has been destroyed")
+                raise Exception('can\'t invoke "update" command: application has been destroyed')
 
         except Exception as e:
             # In event of error display error message and break out of loop

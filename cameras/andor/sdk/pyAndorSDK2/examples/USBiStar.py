@@ -7,10 +7,8 @@ ret = sdk.Initialize("")  # Initialize camera
 print("Function Initialize returned {}".format(ret))
 
 if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
-
     (ret, iSerialNumber) = sdk.GetCameraSerialNumber()
-    print("Function GetCameraSerialNumber returned {} Serial No {}".format(
-        ret, iSerialNumber))
+    print("Function GetCameraSerialNumber returned {} Serial No {}".format(ret, iSerialNumber))
 
     # Configure the acquisition
     ret = sdk.SetAcquisitionMode(codes.Acquisition_Mode.SINGLE_SCAN)
@@ -23,8 +21,7 @@ if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
     print("Function SetTriggerMode returned {} mode = Internal".format(ret))
 
     (ret, xpixels, ypixels) = sdk.GetDetector()
-    print("Function GetDetector returned {} xpixels = {} ypixels = {}".format(
-        ret, xpixels, ypixels))
+    print("Function GetDetector returned {} xpixels = {} ypixels = {}".format(ret, xpixels, ypixels))
 
     ret = sdk.SetExposureTime(0.01)
     print("Function SetExposureTime returned {} time = 0.01s".format(ret))
@@ -51,8 +48,11 @@ if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
     print("Function SetMCPGain returned {} gain = 10".format(ret))
 
     (ret, fminExposure, fAccumulate, fKinetic) = sdk.GetAcquisitionTimings()
-    print("Function GetAcquisitionTimings returned {} exposure = {} accumulate = {} kinetic = {}".format(
-        ret, fminExposure, fAccumulate, fKinetic))
+    print(
+        "Function GetAcquisitionTimings returned {} exposure = {} accumulate = {} kinetic = {}".format(
+            ret, fminExposure, fAccumulate, fKinetic
+        )
+    )
 
     ret = sdk.PrepareAcquisition()
     print("Function PrepareAcquisition returned {}".format(ret))
@@ -66,8 +66,7 @@ if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
 
     imageSize = xpixels
     (ret, arr, validfirst, validlast) = sdk.GetImages16(1, 1, imageSize)
-    print("Function GetImages16 returned {} first pixel = {} size = {}".format(
-        ret, arr[0], imageSize))
+    print("Function GetImages16 returned {} first pixel = {} size = {}".format(ret, arr[0], imageSize))
 
     (ret, status) = sdk.GetPhosphorStatus()
     print("Function GetPhosphorStatus returned {} status = {}".format(ret, status))

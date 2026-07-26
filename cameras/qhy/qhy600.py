@@ -23,11 +23,7 @@ from common.spec import SpecExposureSettings
 from .controls import QHYControlId, qhy_controls
 from .prototypes import set_ctypes_prototypes
 
-qhy = ctypes.CDLL(
-    os.path.join(
-        os.path.dirname(__file__), "sdk", "2024-12-26-stable", "x64", "qhyccd.dll"
-    )
-)
+qhy = ctypes.CDLL(os.path.join(os.path.dirname(__file__), "sdk", "2024-12-26-stable", "x64", "qhyccd.dll"))
 set_ctypes_prototypes(qhy)
 
 QHYCCD_SUCCESS = 0
@@ -186,10 +182,7 @@ class QHY600(Component, SwitchedOutlet):
 
         self.supported_binnings.clear()
         for binning in [1, 2, 3, 4]:
-            if (
-                self.sdk_call(qhy.SetQHYCCDBinMode, binning, binning, silent=True)
-                == QHYCCD_SUCCESS
-            ):
+            if self.sdk_call(qhy.SetQHYCCDBinMode, binning, binning, silent=True) == QHYCCD_SUCCESS:
                 self.supported_binnings.append(binning)
 
         if not self.supported_binnings:
@@ -212,10 +205,7 @@ class QHY600(Component, SwitchedOutlet):
         mode = ctypes.c_uint32()
         for m in range(nmodes.value):
             mode = ctypes.c_uint32(m)
-            if (
-                self.sdk_call(qhy.GetQHYCCDReadModeName, mode, buffer, silent=True)
-                == QHYCCD_SUCCESS
-            ):
+            if self.sdk_call(qhy.GetQHYCCDReadModeName, mode, buffer, silent=True) == QHYCCD_SUCCESS:
                 self.read_modes.append(buffer.value.decode("utf-8"))
 
         if not self.read_modes:
@@ -232,12 +222,7 @@ class QHY600(Component, SwitchedOutlet):
             self.error("Camera not connected.")
             return
 
-        if (
-            self.sdk_call(
-                qhy.IsQHYCCDControlAvailable, QHYControlId.CAM_TRIGER_OUT, silent=True
-            )
-            != QHYCCD_SUCCESS
-        ):
+        if self.sdk_call(qhy.IsQHYCCDControlAvailable, QHYControlId.CAM_TRIGER_OUT, silent=True) != QHYCCD_SUCCESS:
             self.debug("control 'CAM_TRIGER_OUT' not available")
             return
 
@@ -280,13 +265,8 @@ class QHY600(Component, SwitchedOutlet):
                 self.trigger_interfaces.append(decoded_name)
                 if "gpio" in decoded_name.lower():
                     self.debug(f"selecting trigger interface {i} ('{decoded_name}')")
-                    if (
-                        self.sdk_call(qhy.SetQHYCCDTrigerInterface, i, silent=True)
-                        != QHYCCD_SUCCESS
-                    ):
-                        self.error(
-                            f"failed to select trigger interface {i} ('{decoded_name}')"
-                        )
+                    if self.sdk_call(qhy.SetQHYCCDTrigerInterface, i, silent=True) != QHYCCD_SUCCESS:
+                        self.error(f"failed to select trigger interface {i} ('{decoded_name}')")
 
                     self.sdk_call(qhy.EnableQHYCCDTrigerOut)
                     break
@@ -346,9 +326,7 @@ class QHY600(Component, SwitchedOutlet):
                 ctypes.byref(subday),
             )
         ) == QHYCCD_SUCCESS:
-            self.debug(
-                f"SDK version: year=20{year.value} month={month.value:02} day={day.value:02}"
-            )
+            self.debug(f"SDK version: year=20{year.value} month={month.value:02} day={day.value:02}")
         else:
             self.warning(f"Failed to get SDK version {ret=}")
 
@@ -394,16 +372,12 @@ class QHY600(Component, SwitchedOutlet):
             self.error("Camera not connected.")
             return None
 
-        signature = f"{func.__name__}({[f'{arg}' for arg in args]})".replace(
-            "[", ""
-        ).replace("]", "")
+        signature = f"{func.__name__}({[f'{arg}' for arg in args]})".replace("[", "").replace("]", "")
 
         try:
             ret = func(self.handle, *args)
             if func.__name__ != "GetQHYCCDMemLength" and ret != QHYCCD_SUCCESS:
-                self.error(
-                    f"SDK function '{signature}' failed with error code {hex(ret)}"
-                )
+                self.error(f"SDK function '{signature}' failed with error code {hex(ret)}")
                 return None
             if not silent:
                 self.debug(f"SDK function {signature} returned {ret}")
@@ -440,16 +414,10 @@ class QHY600(Component, SwitchedOutlet):
             if control.range is not None:
                 min_val, max_val = control.range.min, control.range.max
                 if not (min_val <= value.value <= max_val):
-                    self.error(
-                        f"Value {value} for control '{control.name}' out of range ({min_val}, {max_val})"
-                    )
+                    self.error(f"Value {value} for control '{control.name}' out of range ({min_val}, {max_val})")
                     return False
-            if (
-                ret := qhy.SetQHYCCDParam(self.handle, control.id, value)
-            ) != QHYCCD_SUCCESS:
-                self.error(
-                    f"Failed to set control {control.name} to {value}: error code {ret}"
-                )
+            if (ret := qhy.SetQHYCCDParam(self.handle, control.id, value)) != QHYCCD_SUCCESS:
+                self.error(f"Failed to set control {control.name} to {value}: error code {ret}")
                 return False
             self.debug(f"SDK set control {control.name} to {value}")
             return True
@@ -469,23 +437,17 @@ class QHY600(Component, SwitchedOutlet):
             self.error(f"Binning {settings.binning.x} not supported.")
             return
 
-        control = next(
-            (c for c in qhy_controls if c.id == QHYControlId.CONTROL_GAIN), None
-        )
+        control = next((c for c in qhy_controls if c.id == QHYControlId.CONTROL_GAIN), None)
         if (
             control is not None
             and control.range is not None
             and settings.gain is not None
             and not (control.range.min <= settings.gain <= control.range.max)
         ):
-            self.error(
-                f"Gain setting {settings.gain} out of range {control.range.min}..{control.range.max}"
-            )
+            self.error(f"Gain setting {settings.gain} out of range {control.range.min}..{control.range.max}")
             return
 
-        if (
-            self.sdk_call(qhy.CancelQHYCCDExposingAndReadout) != QHYCCD_SUCCESS
-        ):  # cancel any ongoing exposure
+        if self.sdk_call(qhy.CancelQHYCCDExposingAndReadout) != QHYCCD_SUCCESS:  # cancel any ongoing exposure
             return
 
         self.start_activity(QHYActivities.ExposingSingleFrame)
@@ -509,33 +471,24 @@ class QHY600(Component, SwitchedOutlet):
         )
 
         if settings.gain is not None:
-            if not self.sdk_set_control(
-                QHYControlId.CONTROL_GAIN, ctypes.c_double(settings.gain)
-            ):
+            if not self.sdk_set_control(QHYControlId.CONTROL_GAIN, ctypes.c_double(settings.gain)):
                 self.end_activity(QHYActivities.SettingParameters)
                 self.end_activity(QHYActivities.ExposingSingleFrame)
                 return
 
         if settings.depth in (8, 16):
-            if not self.sdk_set_control(
-                QHYControlId.CONTROL_TRANSFERBIT, ctypes.c_double(settings.depth)
-            ):
+            if not self.sdk_set_control(QHYControlId.CONTROL_TRANSFERBIT, ctypes.c_double(settings.depth)):
                 self.end_activity(QHYActivities.SettingParameters)
                 self.end_activity(QHYActivities.ExposingSingleFrame)
                 return
 
-        if (
-            self.sdk_call(qhy.SetQHYCCDBinMode, settings.binning.x, settings.binning.y)
-            != QHYCCD_SUCCESS
-        ):
+        if self.sdk_call(qhy.SetQHYCCDBinMode, settings.binning.x, settings.binning.y) != QHYCCD_SUCCESS:
             self.end_activity(QHYActivities.SettingParameters)
             self.end_activity(QHYActivities.ExposingSingleFrame)
             return
 
         binning = settings.binning.x  # assuming x and y are the same
-        roi = settings.roi or QHYRoiModel(
-            x=0, y=0, width=self.width.value, height=self.height.value
-        )
+        roi = settings.roi or QHYRoiModel(x=0, y=0, width=self.width.value, height=self.height.value)
         if (
             self.sdk_call(
                 qhy.SetQHYCCDResolution,
@@ -552,9 +505,7 @@ class QHY600(Component, SwitchedOutlet):
             return
 
         if settings.gain is not None:
-            if not self.sdk_set_control(
-                QHYControlId.CONTROL_GAIN, ctypes.c_double(settings.gain)
-            ):
+            if not self.sdk_set_control(QHYControlId.CONTROL_GAIN, ctypes.c_double(settings.gain)):
                 self.end_activity(QHYActivities.SettingParameters)
                 self.end_activity(QHYActivities.ExposingSingleFrame)
                 return
@@ -566,9 +517,7 @@ class QHY600(Component, SwitchedOutlet):
         if self.sdk_call(qhy.ExpQHYCCDSingleFrame) != QHYCCD_SUCCESS:
             return
 
-        completer = threading.Thread(
-            name="qhy600-exposure-completer", target=self.complete_exposure
-        )
+        completer = threading.Thread(name="qhy600-exposure-completer", target=self.complete_exposure)
         completer.start()
 
     def complete_exposure(self):
@@ -585,9 +534,7 @@ class QHY600(Component, SwitchedOutlet):
         assert settings is not None, "No exposure settings available."
 
         npixels = self.width.value * self.height.value
-        self._img_buffer = (
-            ctypes.c_uint8 if settings.depth == 8 else ctypes.c_uint16 * npixels
-        )()
+        self._img_buffer = (ctypes.c_uint8 if settings.depth == 8 else ctypes.c_uint16 * npixels)()
 
         self.start_activity(QHYActivities.ReadingOut)
         if (
@@ -607,14 +554,9 @@ class QHY600(Component, SwitchedOutlet):
             return
 
         self.end_activity(QHYActivities.ReadingOut)
-        self.info(
-            f"Image acquired: {width.value}x{height.value}, {bpp.value} bpp, {channels.value} channels"
-        )
+        self.info(f"Image acquired: {width.value}x{height.value}, {bpp.value} bpp, {channels.value} channels")
 
-        if (
-            self.latest_settings is not None
-            and self.latest_settings.image_path is not None
-        ):
+        if self.latest_settings is not None and self.latest_settings.image_path is not None:
             self.start_activity(QHYActivities.Saving)
 
             import numpy as np
@@ -655,28 +597,20 @@ class QHY600(Component, SwitchedOutlet):
             hdu.header["INSTRUME"] = self.model or "QHY600MM"
             hdu.header["DATE-OBS"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
             if self.parent_spec is not None:
-                hdu.header["FOCUSPOS"] = self.parent_spec.focusing_stage.position(
-                    unit=zaber_motion.Units.LENGTH_MILLIMETRES
-                )
+                hdu.header["FOCUSPOS"] = self.parent_spec.focusing_stage.position(unit=zaber_motion.Units.LENGTH_MILLIMETRES)
                 mnemonic = next(
-                    k
-                    for k, v in zaber_motion.units.LITERALS_TO_UNITS.items()
-                    if v == zaber_motion.Units.LENGTH_MILLIMETRES
+                    k for k, v in zaber_motion.units.LITERALS_TO_UNITS.items() if v == zaber_motion.Units.LENGTH_MILLIMETRES
                 )
                 hdu.header["FOCUSUNI"] = mnemonic
             # hdu.header["GAIN"] = self.gain
             hdu.writeto(self.latest_settings.image_path, overwrite=True)
-            self.info(
-                f"{self.model}: Image saved to {str(self.latest_settings.image_path)}"
-            )
+            self.info(f"{self.model}: Image saved to {str(self.latest_settings.image_path)}")
             self.end_activity(QHYActivities.Saving)
 
         self.end_activity(QHYActivities.ReadingOut)
         self.end_activity(QHYActivities.ExposingSingleFrame)
 
-        if self.parent_spec is not None and self.parent_spec.is_active(
-            HighspecActivities.Exposing
-        ):
+        if self.parent_spec is not None and self.parent_spec.is_active(HighspecActivities.Exposing):
             self.parent_spec.end_activity(HighspecActivities.Exposing)
 
     def start_cooldown(self):

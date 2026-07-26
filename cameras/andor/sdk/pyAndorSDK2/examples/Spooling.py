@@ -31,12 +31,14 @@ if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
     print("Function SetSpool returned {} ".format(ret))
 
     (ret, xpixels, ypixels) = sdk.GetDetector()
-    print("Function GetDetector returned {} xpixels = {} ypixels = {}".format(
-        ret, xpixels, ypixels))
+    print("Function GetDetector returned {} xpixels = {} ypixels = {}".format(ret, xpixels, ypixels))
 
     ret = sdk.SetImage(1, 1, 1, xpixels, 1, ypixels)
-    print("Function SetImage returned {} hbin = 1 vbin = 1 hstart = 1 hend = {} vstart = 1 vend = {}".format(
-        ret, xpixels, ypixels))
+    print(
+        "Function SetImage returned {} hbin = 1 vbin = 1 hstart = 1 hend = {} vstart = 1 vend = {}".format(
+            ret, xpixels, ypixels
+        )
+    )
 
     ret = sdk.SetExposureTime(0.5)
     print("Function SetExposureTime returned {} time = 0.5s".format(ret))
