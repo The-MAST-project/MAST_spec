@@ -449,7 +449,9 @@ class Spec(Component):
             return CanonicalResponse(errors=["Fiber stage not available"])
 
         self.fiber_stage.start_activity(
-            StageActivities.Moving, details=[f"to {instrument}"]
+            StageActivities.Moving,
+            details=[f"to {instrument}"],
+            data={"target": {"value": instrument}},
         )
         await asyncio.sleep(2.5)  # Simulate the time taken to move the fiber stage
         self.fiber_stage.end_activity(StageActivities.Moving)
@@ -462,7 +464,9 @@ class Spec(Component):
             return CanonicalResponse(errors=["Disperser stage not available"])
 
         self.disperser_stage.start_activity(
-            StageActivities.Moving, details=[f"to {grating}"]
+            StageActivities.Moving,
+            details=[f"to {grating}"],
+            data={"target": {"value": grating}},
         )
         await asyncio.sleep(5)  # Simulate the time taken to move the disperser stage
         self.disperser_stage.end_activity(StageActivities.Moving)
@@ -473,7 +477,9 @@ class Spec(Component):
             return CanonicalResponse(errors=["Focusing stage not available"])
 
         self.focusing_stage.start_activity(
-            StageActivities.Moving, details=[f"to {grating}"]
+            StageActivities.Moving,
+            details=[f"to {grating}"],
+            data={"target": {"value": grating}},
         )
         await asyncio.sleep(5)  # Simulate the time taken to move the focusing stage
         self.focusing_stage.end_activity(StageActivities.Moving)
@@ -485,12 +491,12 @@ class Spec(Component):
         match instrument:
             case "highspec":
                 if onoff:
-                    self.start_activity(SpecActivities.ExposingHighspec)
+                    self.start_activity(SpecActivities.ExposingHighspec, data={"instrument": "highspec"})
                 else:
                     self.end_activity(SpecActivities.ExposingHighspec)
             case "deepspec":
                 if onoff:
-                    self.start_activity(SpecActivities.ExposingDeepspec)
+                    self.start_activity(SpecActivities.ExposingDeepspec, data={"instrument": "deepspec"})
                 else:
                     self.end_activity(SpecActivities.ExposingDeepspec)
             case _:

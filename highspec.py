@@ -509,7 +509,7 @@ class Highspec(Component):
             f"taking {highspec_assignment.camera.number_of_exposures} exposures"
         )
         assert isinstance(highspec_assignment.camera.number_of_exposures, int)
-        spec.start_activity(SpecActivities.ExposingHighspec)
+        spec.start_activity(SpecActivities.ExposingHighspec, data={"instrument": "highspec"})
         for seq in range(1, highspec_assignment.camera.number_of_exposures + 1):
             spec_exposure_settings.image_full_name = os.path.join(
                 acquisition_folder, f"exposure-{seq:03}.fits"
