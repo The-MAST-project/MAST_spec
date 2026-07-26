@@ -47,9 +47,7 @@ from shutter.uniblitz import UniblitzController
 from stage.stage import StageController
 
 # The Newton HighSpec camera must be switched on before the Newton.startup() is called
-highspec_outlet = SwitchedOutlet(
-    domain=OutletDomain.SpecOutlets, outlet_name="Highspec"
-)
+highspec_outlet = SwitchedOutlet(domain=OutletDomain.SpecOutlets, outlet_name="Highspec")
 assert highspec_outlet.power_switch is not None
 if highspec_outlet.power_switch.detected:
     if highspec_outlet.is_off():
@@ -188,23 +186,9 @@ class Spec(Component):
             self.shutdown()
             time.sleep(3)
 
-        if any(
-            [
-                comp
-                for comp in self.components
-                if comp is not None and comp.is_active(SpecActivities.ShuttingDown)
-            ]
-        ):
-            logger.info(
-                "waiting for components to finish shutting down before powering down..."
-            )
-            while any(
-                [
-                    comp
-                    for comp in self.components
-                    if comp is not None and comp.is_shutting_down
-                ]
-            ):
+        if any([comp for comp in self.components if comp is not None and comp.is_active(SpecActivities.ShuttingDown)]):
+            logger.info("waiting for components to finish shutting down before powering down...")
+            while any([comp for comp in self.components if comp is not None and comp.is_shutting_down]):
                 time.sleep(0.5)
             logger.info("components finished shutting down, proceeding with powerdown")
 
@@ -224,9 +208,7 @@ class Spec(Component):
                     if comp:
                         getattr(comp, method_name)()
                     else:
-                        self.logger.error(
-                            f"{op}: {key=}, {method_name=} - component is None"
-                        )
+                        self.logger.error(f"{op}: {key=}, {method_name=} - component is None")
             elif component is None:
                 self.logger.error(f"{op}: {key=}, {method_name=} - component is None")
             else:
@@ -342,10 +324,7 @@ class Spec(Component):
             #
             # A Deepspec acquisition
             #
-            if (
-                self.fiber_stage is not None
-                and not self.fiber_stage.at_preset != "deepspec"
-            ):
+            if self.fiber_stage is not None and not self.fiber_stage.at_preset != "deepspec":
                 self.start_activity(SpecActivities.Positioning)
                 self.fiber_stage.move_to_preset("deepspec")
                 while self.fiber_stage.is_moving:
@@ -353,9 +332,7 @@ class Spec(Component):
                 self.end_activity(SpecActivities.Positioning)
 
         assert acquisition_settings.output_folder is not None
-        image_full_path = (
-            Path(acquisition_settings.output_folder) / f"{acquisition_settings.spec}"
-        )
+        image_full_path = Path(acquisition_settings.output_folder) / f"{acquisition_settings.spec}"
 
         exposure_settings = SpecExposureSettings(
             exposure_duration=acquisition_settings.exposure_duration,
@@ -365,11 +342,7 @@ class Spec(Component):
             image_full_name=str(image_full_path),
         )
 
-        selected_spec = (
-            self.highspec
-            if acquisition_settings.spec == SpecId.Highspec
-            else self.deepspec
-        )
+        selected_spec = self.highspec if acquisition_settings.spec == SpecId.Highspec else self.deepspec
         self.start_activity(SpecActivities.Exposing)
         assert acquisition_settings.number_of_exposures is not None
         if acquisition_settings.number_of_exposures > 1:
@@ -433,18 +406,14 @@ class Spec(Component):
             return CanonicalResponse(errors=errors)
         self.end_activity(SpecActivities.Checking)
 
-        threading.Thread(
-            name="spec-acquisition", target=self.do_acquire, args=[acquisition_settings]
-        ).start()
+        threading.Thread(name="spec-acquisition", target=self.do_acquire, args=[acquisition_settings]).start()
         return CanonicalResponse_Ok
 
     def set_params(self, highspec_seconds: float, deepspec_seconds: float):
         self.highspec_exposure_seconds = highspec_seconds
         self.deepspec_exposure_seconds = deepspec_seconds
 
-    async def endpoint_simulate_fiber(
-        self, instrument: SpecInstruments
-    ) -> CanonicalResponse:
+    async def endpoint_simulate_fiber(self, instrument: SpecInstruments) -> CanonicalResponse:
         if self.fiber_stage is None:
             return CanonicalResponse(errors=["Fiber stage not available"])
 
@@ -457,9 +426,7 @@ class Spec(Component):
         self.fiber_stage.end_activity(StageActivities.Moving)
         return CanonicalResponse_Ok
 
-    async def endpoint_simulate_disperser(
-        self, grating: GratingNames
-    ) -> CanonicalResponse:
+    async def endpoint_simulate_disperser(self, grating: GratingNames) -> CanonicalResponse:
         if self.disperser_stage is None:
             return CanonicalResponse(errors=["Disperser stage not available"])
 
@@ -485,9 +452,7 @@ class Spec(Component):
         self.focusing_stage.end_activity(StageActivities.Moving)
         return CanonicalResponse_Ok
 
-    async def endpoint_simulate_lightpath(
-        self, instrument: SpecInstruments, onoff: bool
-    ) -> CanonicalResponse:
+    async def endpoint_simulate_lightpath(self, instrument: SpecInstruments, onoff: bool) -> CanonicalResponse:
         match instrument:
             case "highspec":
                 if onoff:
@@ -508,9 +473,7 @@ class Spec(Component):
         assert isinstance(remote_assignment.spec, SpectrographAssignment)
 
         spec_assignment = remote_assignment.spec.spec
-        executor = (
-            self.highspec if spec_assignment.instrument == "highspec" else self.deepspec
-        )
+        executor = self.highspec if spec_assignment.instrument == "highspec" else self.deepspec
 
         assert spec_assignment.calibration is not None
         assert self.fiber_stage is not None
@@ -528,10 +491,7 @@ class Spec(Component):
             thar_lamp.power_off()
 
         assert spec_assignment.instrument is not None
-        if (
-            self.fiber_stage
-            and self.fiber_stage.at_preset != spec_assignment.instrument
-        ):
+        if self.fiber_stage and self.fiber_stage.at_preset != spec_assignment.instrument:
             self.fiber_stage.move_to_preset(spec_assignment.instrument)
 
         while self.fiber_stage.is_moving or thar_wheel.is_moving:
@@ -549,39 +509,21 @@ class Spec(Component):
 
     async def execute_assignment(self, assignment: SpectrographAssignment):
         initiator = assignment.initiator
-        work = (
-            assignment.batch
-            if assignment.batch
-            else assignment.plan
-            if assignment.plan
-            else None
-        )
+        work = assignment.batch if assignment.batch else assignment.plan if assignment.plan else None
 
         if work is None:
-            logger.error(
-                f"execute_assignment called with no batch or plan in the assignment: {assignment}"
-            )
-            return CanonicalResponse(
-                errors=["Invalid assignment: no batch or plan specified"]
-            )
+            logger.error(f"execute_assignment called with no batch or plan in the assignment: {assignment}")
+            return CanonicalResponse(errors=["Invalid assignment: no batch or plan specified"])
 
         what = f"remote assignment: from='{initiator.hostname}' ({initiator.ipaddr}), {type(work).__name__}='{work.ulid}'"
 
         assert isinstance(assignment.spec, SpectrographAssignment)
 
-        if (
-            assignment.plan is not None
-            and assignment.plan.production
-            and not self.operational
-        ):
-            logger.info(
-                f"REJECTED {what} (not operational: {self.why_not_operational})"
-            )
+        if assignment.plan is not None and assignment.plan.production and not self.operational:
+            logger.info(f"REJECTED {what} (not operational: {self.why_not_operational})")
             return CanonicalResponse(errors=self.why_not_operational)
 
-        executor = (
-            self.highspec if assignment.spec.instrument == "highspec" else self.deepspec
-        )
+        executor = self.highspec if assignment.spec.instrument == "highspec" else self.deepspec
         assert isinstance(assignment.spec, SpectrographAssignment)
         can_execute, reasons = executor.can_execute(assignment.spec)
         if not can_execute:
@@ -598,21 +540,11 @@ class Spec(Component):
         tag = "Spec"
 
         router = APIRouter()
-        router.add_api_route(
-            path=base_path + "/status", endpoint=self.endpoint_status, tags=[tag]
-        )
-        router.add_api_route(
-            path=base_path + "/startup", endpoint=self.startup, tags=[tag]
-        )
-        router.add_api_route(
-            path=base_path + "/shutdown", endpoint=self.shutdown, tags=[tag]
-        )
-        router.add_api_route(
-            path=base_path + "/powerdown", endpoint=self.powerdown, tags=[tag]
-        )
-        router.add_api_route(
-            path=base_path + "/acquire", endpoint=self.acquire, tags=[tag]
-        )
+        router.add_api_route(path=base_path + "/status", endpoint=self.endpoint_status, tags=[tag])
+        router.add_api_route(path=base_path + "/startup", endpoint=self.startup, tags=[tag])
+        router.add_api_route(path=base_path + "/shutdown", endpoint=self.shutdown, tags=[tag])
+        router.add_api_route(path=base_path + "/powerdown", endpoint=self.powerdown, tags=[tag])
+        router.add_api_route(path=base_path + "/acquire", endpoint=self.acquire, tags=[tag])
 
         # tag = "Assignments"
         # router.add_api_route(

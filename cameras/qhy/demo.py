@@ -24,11 +24,7 @@ from PIL import Image as PIL_image
 from qcam.image2ascii import np_array_to_ascii
 from qcam.qCam import Qcam
 
-cam = Qcam(
-    os.path.join(
-        os.path.dirname(__file__), "sdk", "2024-12-26-stable", "x64", "qhyccd.dll"
-    )
-)
+cam = Qcam(os.path.join(os.path.dirname(__file__), "sdk", "2024-12-26-stable", "x64", "qhyccd.dll"))
 assert cam.so is not None, "Failed to load QHY SDK"
 
 cam.so.GetQHYCCDParamMinMaxStep.argtypes = [
@@ -143,20 +139,13 @@ def pnp_in(cam_id):
     os.makedirs(cam_id.decode("utf-8"), exist_ok=True)
     # select read mode
     assert cam.so is not None, "Failed to load QHY SDK"
-    success = cam.so.GetReadModesNumber(
-        cam_id, byref(cam.camera_params[cam_id]["read_mode_number"])
-    )
+    success = cam.so.GetReadModesNumber(cam_id, byref(cam.camera_params[cam_id]["read_mode_number"]))
     if success == cam.QHYCCD_SUCCESS:
         print("-  read mode - %s" % cam.camera_params[cam_id]["read_mode_number"].value)
-        for read_mode_item_index in range(
-            0, cam.camera_params[cam_id]["read_mode_number"].value
-        ):
+        for read_mode_item_index in range(0, cam.camera_params[cam_id]["read_mode_number"].value):
             read_mode_name = create_string_buffer(cam.STR_BUFFER_SIZE)
             cam.so.GetReadModeName(cam_id, read_mode_item_index, read_mode_name)
-            print(
-                "%s  %s %s"
-                % (cam_id.decode("utf-8"), read_mode_item_index, read_mode_name.value)
-            )
+            print("%s  %s %s" % (cam_id.decode("utf-8"), read_mode_item_index, read_mode_name.value))
     else:
         print("GetReadModesNumber false")
         cam.camera_params[cam_id]["read_mode_number"] = c_uint32(0)
@@ -228,9 +217,7 @@ def test_frame(cam_id, stream_mode, bit_depth, read_mode):
 
     success = cam.so.SetQHYCCDReadMode(cam.camera_params[cam_id]["handle"], read_mode)
     cam.camera_params[cam_id]["stream_mode"] = c_uint8(stream_mode)
-    success = cam.so.SetQHYCCDStreamMode(
-        cam.camera_params[cam_id]["handle"], cam.camera_params[cam_id]["stream_mode"]
-    )
+    success = cam.so.SetQHYCCDStreamMode(cam.camera_params[cam_id]["handle"], cam.camera_params[cam_id]["stream_mode"])
     print("set StreamMode   =" + str(success))
     success = cam.so.InitQHYCCD(cam.camera_params[cam_id]["handle"])
     print("init Camera   =" + str(success))
@@ -238,9 +225,7 @@ def test_frame(cam_id, stream_mode, bit_depth, read_mode):
     mode_name = create_string_buffer(cam.STR_BUFFER_SIZE)
     cam.so.GetReadModeName(cam_id, read_mode, mode_name)
 
-    success = cam.so.SetQHYCCDBitsMode(
-        cam.camera_params[cam_id]["handle"], c_uint32(bit_depth)
-    )
+    success = cam.so.SetQHYCCDBitsMode(cam.camera_params[cam_id]["handle"], c_uint32(bit_depth))
 
     success = cam.so.GetQHYCCDChipInfo(
         cam.camera_params[cam_id]["handle"],
@@ -254,9 +239,7 @@ def test_frame(cam_id, stream_mode, bit_depth, read_mode):
     )
 
     print("info.   =" + str(success))
-    cam.camera_params[cam_id]["mem_len"] = cam.so.GetQHYCCDMemLength(
-        cam.camera_params[cam_id]["handle"]
-    )
+    cam.camera_params[cam_id]["mem_len"] = cam.so.GetQHYCCDMemLength(cam.camera_params[cam_id]["handle"])
     i_w = cam.camera_params[cam_id]["image_width"].value
     i_h = cam.camera_params[cam_id]["image_height"].value
     print("c-w:     " + str(cam.camera_params[cam_id]["chip_width"].value), end="")
@@ -268,24 +251,16 @@ def test_frame(cam_id, stream_mode, bit_depth, read_mode):
     print("bit: " + str(cam.camera_params[cam_id]["bits_per_pixel"].value))
     print("mem len: " + str(cam.camera_params[cam_id]["mem_len"]))
 
-    val_temp = cam.so.GetQHYCCDParam(
-        cam.camera_params[cam_id]["handle"], cam.CONTROL_CURTEMP
-    )
-    val_pwm = cam.so.GetQHYCCDParam(
-        cam.camera_params[cam_id]["handle"], cam.CONTROL_CURPWM
-    )
+    val_temp = cam.so.GetQHYCCDParam(cam.camera_params[cam_id]["handle"], cam.CONTROL_CURTEMP)
+    val_pwm = cam.so.GetQHYCCDParam(cam.camera_params[cam_id]["handle"], cam.CONTROL_CURPWM)
 
     # todo  c_uint8 c_uint16??
     if bit_depth == cam.bit_depth_16:
         print("using c_uint16()")
-        cam.camera_params[cam_id]["prev_img_data"] = (
-            c_uint16 * int(cam.camera_params[cam_id]["mem_len"] / 2)
-        )()
+        cam.camera_params[cam_id]["prev_img_data"] = (c_uint16 * int(cam.camera_params[cam_id]["mem_len"] / 2))()
     else:
         print("using c_uint8()")
-        cam.camera_params[cam_id]["prev_img_data"] = (
-            c_uint8 * cam.camera_params[cam_id]["mem_len"]
-        )()
+        cam.camera_params[cam_id]["prev_img_data"] = (c_uint8 * cam.camera_params[cam_id]["mem_len"])()
 
     success = cam.QHYCCD_ERROR
 
@@ -315,15 +290,9 @@ def test_frame(cam_id, stream_mode, bit_depth, read_mode):
         if stream_mode == cam.stream_single_mode:
             success = cam.so.ExpQHYCCDSingleFrame(cam.camera_params[cam_id]["handle"])
             print("exp  single = " + str(success))
-        success = cam.so.SetQHYCCDParam(
-            cam.camera_params[cam_id]["handle"], cam.CONTROL_EXPOSURE, c_double(20000)
-        )
-        success = cam.so.SetQHYCCDParam(
-            cam.camera_params[cam_id]["handle"], cam.CONTROL_GAIN, c_double(30)
-        )
-        success = cam.so.SetQHYCCDParam(
-            cam.camera_params[cam_id]["handle"], cam.CONTROL_OFFSET, c_double(40)
-        )
+        success = cam.so.SetQHYCCDParam(cam.camera_params[cam_id]["handle"], cam.CONTROL_EXPOSURE, c_double(20000))
+        success = cam.so.SetQHYCCDParam(cam.camera_params[cam_id]["handle"], cam.CONTROL_GAIN, c_double(30))
+        success = cam.so.SetQHYCCDParam(cam.camera_params[cam_id]["handle"], cam.CONTROL_OFFSET, c_double(40))
         # success = cam.so.SetQHYCCDParam(cam.camera_params[cam_id]['handle'], CONTROL_EXPOSURE, EXPOSURE)
         if stream_mode == cam.stream_live_mode:
             success = cam.so.GetQHYCCDLiveFrame(
@@ -359,20 +328,13 @@ def test_frame(cam_id, stream_mode, bit_depth, read_mode):
                 continue
         frame_counter += 1
 
-        cam.camera_params[cam_id]["prev_img"] = np.ctypeslib.as_array(
-            cam.camera_params[cam_id]["prev_img_data"]
-        )
+        cam.camera_params[cam_id]["prev_img"] = np.ctypeslib.as_array(cam.camera_params[cam_id]["prev_img_data"])
         print("---------------->" + str(len(cam.camera_params[cam_id]["prev_img"])))
         image_size = i_h * i_w
         print("image size =     " + str(image_size))
-        print(
-            "prev_img_list sub length-->"
-            + str(len(cam.camera_params[cam_id]["prev_img"]))
-        )
+        print("prev_img_list sub length-->" + str(len(cam.camera_params[cam_id]["prev_img"])))
         print("Image W=" + str(i_w) + "        H=" + str(i_h))
-        cam.camera_params[cam_id]["prev_img"] = cam.camera_params[cam_id]["prev_img"][
-            0:image_size
-        ]
+        cam.camera_params[cam_id]["prev_img"] = cam.camera_params[cam_id]["prev_img"][0:image_size]
         image = np.reshape(cam.camera_params[cam_id]["prev_img"], (i_h, i_w))
 
         stream_mode_str = "stream_mode"
@@ -390,9 +352,7 @@ def test_frame(cam_id, stream_mode, bit_depth, read_mode):
         if bit_depth == cam.bit_depth_8:
             pil_image = PIL_image.fromarray(image)
             # pil_image_save = PIL_image.fromarray(image).convert('L')
-            pil_image.save(
-                "%s/%s_%s.bmp" % (cam_id.decode("utf-8"), time_string, frame_counter)
-            )
+            pil_image.save("%s/%s_%s.bmp" % (cam_id.decode("utf-8"), time_string, frame_counter))
             pil_image = pil_image.resize((400, 400))
             # pil_image.show()
             ascii_img = np_array_to_ascii(pil_image, 50, 0.5, False)

@@ -1,9 +1,9 @@
 from enum import IntEnum
 
 
-class Error_Codes (IntEnum):
-    """Error codes for sdk2
-    """
+class Error_Codes(IntEnum):
+    """Error codes for sdk2"""
+
     DRV_ERROR_CODES = 20001
     DRV_SUCCESS = 20002
     DRV_VXDNOTINSTALLED = 20003

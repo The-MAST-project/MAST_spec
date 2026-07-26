@@ -6,10 +6,8 @@ ret = sdk.Initialize("")  # Initialize camera
 print("Function Initialize returned {}".format(ret))
 
 if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
-
     (ret, iSerialNumber) = sdk.GetCameraSerialNumber()
-    print("Function GetCameraSerialNumber returned {} Serial No: {}".format(
-        ret, iSerialNumber))
+    print("Function GetCameraSerialNumber returned {} Serial No: {}".format(ret, iSerialNumber))
     # Configure the acquisition
     ret = sdk.CoolerON()
     print("Function CoolerON returned {}".format(ret))
@@ -24,19 +22,24 @@ if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
     print("Function SetTriggerMode returned {} mode = Internal".format(ret))
 
     (ret, xpixels, ypixels) = sdk.GetDetector()
-    print("Function GetDetector returned {} xpixels = {} ypixels = {}".format(
-        ret, xpixels, ypixels))
+    print("Function GetDetector returned {} xpixels = {} ypixels = {}".format(ret, xpixels, ypixels))
 
     ret = sdk.SetImage(1, 1, 1, xpixels, 1, ypixels)
-    print("Function SetImage returned {} hbin = 1 vbin = 1 hstart = 1 hend = {} vstart = 1 vend = {}".format(
-        ret, xpixels, ypixels))
+    print(
+        "Function SetImage returned {} hbin = 1 vbin = 1 hstart = 1 hend = {} vstart = 1 vend = {}".format(
+            ret, xpixels, ypixels
+        )
+    )
 
     ret = sdk.SetExposureTime(0.01)
     print("Function SetExposureTime returned {} time = 0.01s".format(ret))
 
     (ret, fminExposure, fAccumulate, fKinetic) = sdk.GetAcquisitionTimings()
-    print("Function GetAcquisitionTimings returned {} exposure = {} accumulate = {} kinetic = {}".format(
-        ret, fminExposure, fAccumulate, fKinetic))
+    print(
+        "Function GetAcquisitionTimings returned {} exposure = {} accumulate = {} kinetic = {}".format(
+            ret, fminExposure, fAccumulate, fKinetic
+        )
+    )
 
     ret = sdk.PrepareAcquisition()
     print("Function PrepareAcquisition returned {}".format(ret))
@@ -50,8 +53,7 @@ if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
 
     imageSize = xpixels * ypixels
     (ret, arr, validfirst, validlast) = sdk.GetImages16(1, 1, imageSize)
-    print("Function GetImages16 returned {} first pixel = {} size = {}".format(
-        ret, arr[0], imageSize))
+    print("Function GetImages16 returned {} first pixel = {} size = {}".format(ret, arr[0], imageSize))
 
     # Clean up
     ret = sdk.ShutDown()

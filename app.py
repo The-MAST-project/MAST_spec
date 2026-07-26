@@ -57,8 +57,6 @@ def read_favicon():
 if __name__ == "__main__":
     server_conf = Config().get_service(service_name="spec")
     assert server_conf is not None
-    uvicorn_config = uvicorn.Config(
-        app=app, host=server_conf.listen_on, port=server_conf.port
-    )
+    uvicorn_config = uvicorn.Config(app=app, host=server_conf.listen_on, port=server_conf.port)
 
     uvicorn.Server(config=uvicorn_config).run()

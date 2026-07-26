@@ -49,9 +49,7 @@ class VisXConfig(BaseConfig):
         default=0.05,
         help="Absolute percent difference between temperature setpoint and currently reported value",
     )
-    startup_temp: float = xconf.field(
-        default=-15, help="Startup temperature of the camera."
-    )
+    startup_temp: float = xconf.field(default=-15, help="Startup temperature of the camera.")
 
 
 class VisX(XDevice):
@@ -78,8 +76,7 @@ class VisX(XDevice):
     def cooling_on_target(self):
         temp_on_target = (
             abs(
-                (self.cameracamera.temperature - self.cameracamera.target_temperature)
-                / self.cameracamera.target_temperature
+                (self.cameracamera.temperature - self.cameracamera.target_temperature) / self.cameracamera.target_temperature
             )
             < self.config.temp_on_target_pct_diff
         )
@@ -107,9 +104,7 @@ class VisX(XDevice):
                     "setpt": self.cameracamera.target_temperature,
                     "status": True,
                     "ontarget": self.cooling_on_targetcooling_on_target,
-                    "statusStr": "LOCKED"
-                    if self.cooling_on_targetcooling_on_target
-                    else "UNLOCKED",
+                    "statusStr": "LOCKED" if self.cooling_on_targetcooling_on_target else "UNLOCKED",
                 },
                 "shutter": {"statusStr": None, "state": None},
                 "synchro": 0,
@@ -121,13 +116,9 @@ class VisX(XDevice):
     def handle_exptime(self, existing_property, new_message):
         log.debug("In handle_exptime")
         if self.currently_exposingcurrently_exposing:
-            self.log.debug(
-                "Ignoring exposure time change request while currently exposing"
-            )
+            self.log.debug("Ignoring exposure time change request while currently exposing")
         elif self.sdksdk is None:
-            self.log.debug(
-                "Ignoring exposure time change while we don't have an SDK handle"
-            )
+            self.log.debug("Ignoring exposure time change while we don't have an SDK handle")
         elif (
             not self.currently_exposingcurrently_exposing
             and "target" in new_message
@@ -162,40 +153,23 @@ class VisX(XDevice):
 
     def handle_expose(self, existing_property, new_message):
         if self.sdksdk is None:
-            self.log.debug(
-                "Ignoring request for exposure while we don't have an SDK handle"
-            )
-        elif (
-            "request" in new_message
-            and new_message["request"] is constants.SwitchState.ON
-        ):
+            self.log.debug("Ignoring request for exposure while we don't have an SDK handle")
+        elif "request" in new_message and new_message["request"] is constants.SwitchState.ON:
             self.log.debug("Exposure requested!")
             self.should_begin_exposureshould_begin_exposure = True
-        elif (
-            "cancel" in new_message
-            and new_message["cancel"] is constants.SwitchState.ON
-        ):
+        elif "cancel" in new_message and new_message["cancel"] is constants.SwitchState.ON:
             self.log.debug("Exposure cancellation requested")
             self.should_cancelshould_cancel = True
-        self.update_property(
-            existing_property
-        )  # ensure the switch turns back off at the client
+        self.update_property(existing_property)  # ensure the switch turns back off at the client
 
     def handle_temp_ccd(self, existing_property, new_message):
         if self.sdksdk is None:
-            self.log.debug(
-                "Ignoring temperature setpoint change while we don't have an SDK handle"
-            )
-        elif (
-            "target" in new_message
-            and new_message["target"] != existing_property["current"]
-        ):
+            self.log.debug("Ignoring temperature setpoint change while we don't have an SDK handle")
+        elif "target" in new_message and new_message["target"] != existing_property["current"]:
             existing_property["current"] = new_message["target"]
             existing_property["target"] = new_message["target"]
             self.temp_target_deg_ctemp_target_deg_c = new_message["target"]
-            self.log.debug(
-                f"CCD temperature setpoint changed to {self.temp_target_deg_c} deg C"
-            )
+            self.log.debug(f"CCD temperature setpoint changed to {self.temp_target_deg_c} deg C")
             self.telem(
                 "tempcontrol",
                 {"temp_target_deg_c": self.temp_target_deg_ctemp_target_deg_c},
@@ -236,9 +210,7 @@ class VisX(XDevice):
         sv.add_element(DefSwitch(name="cancel", _value=constants.SwitchState.OFF))
         self.add_property(sv, callback=self.handle_expose)
 
-        nv = properties.NumberVector(
-            name="exptime", perm=constants.PropertyPerm.READ_WRITE
-        )
+        nv = properties.NumberVector(name="exptime", perm=constants.PropertyPerm.READ_WRITE)
         nv.add_element(
             DefNumber(
                 name="current",
@@ -263,9 +235,7 @@ class VisX(XDevice):
         )
         self.add_property(nv, callback=self.handle_exptime)
 
-        nv = properties.NumberVector(
-            name="gain", perm=constants.PropertyPerm.READ_WRITE
-        )
+        nv = properties.NumberVector(name="gain", perm=constants.PropertyPerm.READ_WRITE)
         nv.add_element(
             DefNumber(
                 name="current",
@@ -290,9 +260,7 @@ class VisX(XDevice):
         )
         self.add_property(nv, callback=self.handle_gain)
 
-        nv = properties.NumberVector(
-            name="temp_ccd", perm=constants.PropertyPerm.READ_WRITE
-        )
+        nv = properties.NumberVector(name="temp_ccd", perm=constants.PropertyPerm.READ_WRITE)
         nv.add_element(
             DefNumber(
                 name="current",
@@ -353,9 +321,7 @@ class VisX(XDevice):
         try:
             self.client.get_properties_and_wait(devices)
         except TimeoutError as e:
-            log.warning(
-                f"Timed out waiting to get properties from external INDI devices: {e}"
-            )
+            log.warning(f"Timed out waiting to get properties from external INDI devices: {e}")
 
     def setup(self):
         os.makedirs(self.data_directorydata_directory, exist_ok=True)
@@ -390,16 +356,10 @@ class VisX(XDevice):
         current = self.properties["current_exposure"]
         if self.currently_exposingcurrently_exposing:
             remaining_sec = max(
-                (
-                    self.exposure_start_tsexposure_start_ts
-                    + self.exposure_time_secexposure_time_sec
-                )
-                - now,
+                (self.exposure_start_tsexposure_start_ts + self.exposure_time_secexposure_time_sec) - now,
                 0,
             )
-            remaining_pct = (
-                100 * remaining_sec / self.exposure_time_secexposure_time_sec
-            )
+            remaining_pct = 100 * remaining_sec / self.exposure_time_secexposure_time_sec
             self.properties["fsm"]["state"] = "OPERATING"
             self.update_property(self.properties["fsm"])
         else:
@@ -414,9 +374,7 @@ class VisX(XDevice):
 
         self.update_from_camera()
 
-        self.properties["temp_ccd"]["current"] = (
-            self.temp_current_deg_ctemp_current_deg_c
-        )
+        self.properties["temp_ccd"]["current"] = self.temp_current_deg_ctemp_current_deg_c
         self.properties["temp_ccd"]["target"] = self.temp_target_deg_ctemp_target_deg_c
         self.update_property(self.properties["temp_ccd"])
 
@@ -452,9 +410,7 @@ class VisX(XDevice):
                 value = value.value
             meta[new_kw] = value
         for fwname in RECORDED_WHEELS:
-            meta[f"{fwname.upper()} PRESET NAME"] = find_active_filter(
-                self.client, fwname
-            )
+            meta[f"{fwname.upper()} PRESET NAME"] = find_active_filter(self.client, fwname)
         return meta
 
     def begin_exposure(self):
@@ -472,14 +428,8 @@ class VisX(XDevice):
         # Populate headers
         meta = self._gather_metadata()
         self.log.debug(f"{meta=}")
-        meta["DATE-OBS"] = datetime.datetime.fromtimestamp(
-            self.exposure_start_tsexposure_start_ts
-        ).isoformat()
-        exposure_time = (
-            self.cameracamera.exposure_time
-            if actual_exptime_sec is None
-            else actual_exptime_sec
-        )
+        meta["DATE-OBS"] = datetime.datetime.fromtimestamp(self.exposure_start_tsexposure_start_ts).isoformat()
+        exposure_time = self.cameracamera.exposure_time if actual_exptime_sec is None else actual_exptime_sec
         meta["DATE-END"] = datetime.datetime.fromtimestamp(
             self.exposure_start_tsexposure_start_ts + exposure_time
         ).isoformat()
@@ -496,9 +446,7 @@ class VisX(XDevice):
         if actual_exptime_sec is not None:
             hdul[0].header["CANCELD"] = True  # type: ignore
         # Write to /data path
-        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
-            "%Y-%m-%dT%H%M%S"
-        )
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H%M%S")
         self.last_image_filenamelast_image_filename = f"camvisx_{timestamp}.fits"
         outpath = f"{self.data_directory}/{self.last_image_filename}"
         self.log.info(f"Saving to {outpath}")
@@ -519,9 +467,7 @@ class VisX(XDevice):
     def loop(self):
         if self.client.interested_properties_missing:
             self.subscribe_to_other_devices()
-            self.log.debug(
-                "Repeating subscription because some external devices we use for headers are not showing up"
-            )
+            self.log.debug("Repeating subscription because some external devices we use for headers are not showing up")
 
         if self.sdksdk is None:
             self.log.debug("Initializing camera SDK...")
@@ -536,14 +482,10 @@ class VisX(XDevice):
         now = time.time()
         if self.should_cancelshould_cancel:
             self.cancel_exposure()
-        elif (
-            not self.currently_exposingcurrently_exposing
-            and self.should_begin_exposureshould_begin_exposure
-        ):
+        elif not self.currently_exposingcurrently_exposing and self.should_begin_exposureshould_begin_exposure:
             self.begin_exposure()
         elif self.currently_exposingcurrently_exposing and now > (
-            self.exposure_time_secexposure_time_sec
-            + self.exposure_start_tsexposure_start_ts
+            self.exposure_time_secexposure_time_sec + self.exposure_start_tsexposure_start_ts
         ):
             self.currently_exposingcurrently_exposing = False
             self.log.debug("Exposure finished")

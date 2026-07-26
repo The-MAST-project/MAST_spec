@@ -32,9 +32,7 @@ class QHYCCDSDK:
         for i in range(self._number_of_cameras):
             self._ids.append(TYPE_CHAR32())
             self._sdk.GetQHYCCDId(ctypes.c_int(i), self._ids[-1])
-            log.debug(
-                "Cameras {:d} ID {:s}".format(i, self._ids[-1].value.decode("utf8"))
-            )
+            log.debug("Cameras {:d} ID {:s}".format(i, self._ids[-1].value.decode("utf8")))
 
         self._camera_handles = {}
 
@@ -91,12 +89,8 @@ class QHYCCDSDK:
         return param_min.value, param_max.value, param_step.value
 
     def get_all_limits(self, camera_handle):
-        min_gain, max_gain, step_gain = self.get_parameter_limits(
-            camera_handle, CONTROL_ID.CONTROL_GAIN
-        )
-        min_exp, max_exp, step_exp = self.get_parameter_limits(
-            camera_handle, CONTROL_ID.CONTROL_EXPOSURE
-        )
+        min_gain, max_gain, step_gain = self.get_parameter_limits(camera_handle, CONTROL_ID.CONTROL_GAIN)
+        min_exp, max_exp, step_exp = self.get_parameter_limits(camera_handle, CONTROL_ID.CONTROL_EXPOSURE)
 
         parameter_limits = {
             "exp": [min_exp, max_exp, step_exp],
@@ -172,9 +166,7 @@ class QHYCCDCamera:
         self._sdk = sdk
         self._camera = self._sdk.open_camera(camera_id)
 
-        self._stream_mode = (
-            0  # set default mode to stream mode, otherwise set 0 for single frame mode
-        )
+        self._stream_mode = 0  # set default mode to stream mode, otherwise set 0 for single frame mode
 
         self._bpp = ctypes.c_double(new_bpp)
         self.exposure_timeexposure_timeexposure_time = 0.1
@@ -195,9 +187,7 @@ class QHYCCDCamera:
             ctypes.c_uint(self._height),
         )
         self.set_roi(0, 0, self._width, self._height)
-        self._sdk.set_parameter(
-            self._camera, CONTROL_ID.CONTROL_USBTRAFFIC, ctypes.c_double(50)
-        )
+        self._sdk.set_parameter(self._camera, CONTROL_ID.CONTROL_USBTRAFFIC, ctypes.c_double(50))
         self._sdk.set_parameter(self._camera, CONTROL_ID.CONTROL_TRANSFERBIT, self._bpp)
 
     def cancel_exposure(self):
@@ -205,9 +195,7 @@ class QHYCCDCamera:
 
     @property
     def temperature(self):
-        self._temperature = self._sdk.get_parameter(
-            self._camera, CONTROL_ID.CONTROL_CURTEMP
-        )
+        self._temperature = self._sdk.get_parameter(self._camera, CONTROL_ID.CONTROL_CURTEMP)
         return self._temperature
 
     @property
@@ -249,9 +237,7 @@ class QHYCCDCamera:
     @gain.setter
     def gain(self, new_gain):
         self._gain = new_gain
-        self._sdk.set_parameter(
-            self._camera, CONTROL_ID.CONTROL_GAIN, ctypes.c_double(self._gain)
-        )
+        self._sdk.set_parameter(self._camera, CONTROL_ID.CONTROL_GAIN, ctypes.c_double(self._gain))
 
     # """ Set camera depth """
     @property
@@ -294,11 +280,7 @@ class QHYCCDCamera:
         percentage_complete = self._sdk._sdk.GetQHYCCDExposureRemaining(
             self._camera
         )  # This counts the completion rate in percentages
-        remaining = (
-            (100.0 - percentage_complete)
-            / 100.0
-            * self.exposure_timeexposure_timeexposure_time
-        )
+        remaining = (100.0 - percentage_complete) / 100.0 * self.exposure_timeexposure_timeexposure_time
         return remaining
 
     def is_exposure_finished(self):
@@ -338,9 +320,7 @@ class QHYCCDCamera:
     def set_readout_modes(self, new_read_mode):
         if new_read_mode == 0 or new_read_mode == 1:
             self._read_mode = new_read_mode
-            self._sdk.sdk.SetQHYCCDReadMode(
-                self._camera, ctypes.c_uint32(self._read_mode)
-            )
+            self._sdk.sdk.SetQHYCCDReadMode(self._camera, ctypes.c_uint32(self._read_mode))
 
 
 if __name__ == "__main__":
