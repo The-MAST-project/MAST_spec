@@ -17,8 +17,8 @@ fix = true
 
 # Submodules are owned by their own repos — never format them from here.
 # (ruff does NOT skip submodules automatically; without this, `ruff format .`
-# would recurse into and rewrite common/ and dlipower/.)
-extend-exclude = ["common", "dlipower"]
+# would recurse into and rewrite common/.)
+extend-exclude = ["common"]
 
 [lint]
 # Enable rules from common linters.
