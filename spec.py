@@ -23,7 +23,7 @@ from common.dlipowerswitch import (
     SwitchedOutlet,
 )
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.assignments import (
     SpectrographAssignment,
 )
@@ -54,10 +54,7 @@ if highspec_outlet.power_switch.detected:
         highspec_outlet.power_on()
 
 
-logger = logging.getLogger("spec")
-init_log(logger)
-
-
+logger = get_logger(__name__)
 class Spec(Component):
     """
     The main spectrograph object, managing the actual specs (deep and high), filter wheels, filters,
@@ -77,9 +74,7 @@ class Spec(Component):
             return
 
         Component.__init__(self, SpecActivities)
-        self.logger = logging.Logger("spec")
-        init_log(self.logger)
-
+        self.logger = get_logger("spec")
         self.power_switches: list[DliPowerSwitch] = [
             PowerSwitchFactory.get_instance("mast-spec-ps1"),
             PowerSwitchFactory.get_instance("mast-spec-ps2"),

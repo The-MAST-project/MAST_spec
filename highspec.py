@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import os.path
 import time
 from pathlib import Path
@@ -32,7 +31,7 @@ from common.config import Config
 from common.config.shutter import ShutterConfig
 from common.const import Const
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, SpectrographAssignment
 from common.models.highspec import HighspecSettings
 from common.models.newton import NewtonSettingsConfig
@@ -44,10 +43,7 @@ from common.utils import function_name
 from stage.stage import StageController as StageController
 from stage.stage import UnitNames
 
-logger = logging.Logger("highspec")
-init_log(logger)
-
-
+logger = get_logger(__name__)
 class HighspecAcquisitionSettings:
     """
     A series of images from the Newton camera

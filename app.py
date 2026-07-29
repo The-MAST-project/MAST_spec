@@ -1,3 +1,4 @@
+import argparse
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -13,6 +14,15 @@ from filter_wheel.wheel import FilterWheels
 from highspec import Highspec
 from spec import Spec
 from stage.stage import StageController as StageController
+from common.mast_logging import configure_logging, get_logger
+
+# Logging is configured once, here, before anything logs. Every 'mast.*' logger
+# inherits the handlers and level from root by propagation.
+# Precedence: --log-level > MAST_LOG_LEVEL > default.
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument("--log-level", default=None, help="DEBUG, INFO, WARNING, ... (overrides MAST_LOG_LEVEL)")
+configure_logging(_parser.parse_known_args()[0].log_level)
+
 
 spec = Spec()
 

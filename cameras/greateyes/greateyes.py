@@ -1,6 +1,5 @@
 import ctypes
 import datetime
-import logging
 import os
 import sys
 import threading
@@ -17,7 +16,7 @@ from common.activities import GreatEyesActivities
 from common.config import Config
 from common.dlipowerswitch import SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.assignments import SpectrographAssignment
 from common.models.deepspec import DeepspecSettings
 from common.models.greateyes import (
@@ -32,9 +31,7 @@ from common.utils import OperatingMode, RepeatTimer, function_name
 sys.path.append(os.path.join(os.path.dirname(__file__), "sdk"))
 import cameras.greateyes.sdk.greateyesSDK as ge
 
-logger = logging.getLogger("greateyes")
-init_log(logger, logging.DEBUG)
-
+logger = get_logger(__name__)
 dll_version = ge.GetDLLVersion()
 shown_dll_version = False
 

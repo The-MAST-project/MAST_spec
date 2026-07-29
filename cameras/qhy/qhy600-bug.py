@@ -1,5 +1,4 @@
 import ctypes
-import logging
 import os
 import sys
 import threading
@@ -12,7 +11,7 @@ from pydantic import BaseModel
 
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.spec import SpecExposureSettings
 
 from .controls import QHYControl, QHYControlId, qhy_controls
@@ -131,10 +130,7 @@ qhy.GetQHYCCDMemLength.argtypes = [
 ]
 qhy.GetQHYCCDMemLength.restype = ctypes.c_uint32
 
-logger = logging.getLogger(f"mast.highspec.{__name__}")
-init_log(logger)
-
-
+logger = get_logger(__name__)
 class QHYRoiModel(BaseModel):
     x: int = 0
     y: int = 0
