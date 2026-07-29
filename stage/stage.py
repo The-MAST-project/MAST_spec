@@ -15,15 +15,13 @@ from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import SpecStageStatus
 from common.networking import NetworkedDevice
 from common.spec import GratingNames, SpecInstruments, SpecStageNames
 from common.utils import caller_name, function_name
 
-logger = logging.getLogger("mast.spec.stage")
-init_log(logger)
-
+logger = get_logger(__name__)
 if TYPE_CHECKING:
     from spec import Spec
 
@@ -72,9 +70,7 @@ class Stage(Component):
         self._name = f"{name}"
         self.controller: zaber_motion.ascii.Device = controller
         self.peripheral = self.conf.peripheral  # The Zaber model name of this stage
-        self.logger = logging.getLogger(f"mast.spec.stage.{self._name}")
-        init_log(self.logger)
-
+        self.logger = get_logger(f"mast.spec.stage.{self._name}")
         self._detected = False
         self.axis: zaber_motion.ascii.Axis | None = None
         for i in range(1, self.controller.axis_count + 1):

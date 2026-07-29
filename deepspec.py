@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -17,7 +16,7 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.assignments import (
     AssignmentNotification,
     SpectrographAssignment,
@@ -42,10 +41,7 @@ from common.spec import (
     SpecExposureSettings,
 )
 
-logger = logging.Logger("deepspec")
-init_log(logger)
-
-
+logger = get_logger(__name__)
 class Deepspec(Component):
     _instance = None
     _initialized = False

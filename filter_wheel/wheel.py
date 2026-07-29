@@ -14,7 +14,7 @@ from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import WheelStatus
 from common.utils import RepeatTimer
 
@@ -77,9 +77,7 @@ class Wheel(Component, SwitchedOutlet):
             if self.is_off():
                 self.power_on()
 
-        self.logger = logging.getLogger(f"mast.spec.filter-wheel-{self.name}")
-        init_log(self.logger)
-
+        self.logger = get_logger(f"mast.spec.filter-wheel-{self.name}")
         self.serial_number = self.conf.serial_number
         self.target: int | None = None
 

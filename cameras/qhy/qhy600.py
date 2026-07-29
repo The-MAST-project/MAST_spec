@@ -1,5 +1,4 @@
 import ctypes
-import logging
 import os
 import threading
 import time
@@ -15,7 +14,7 @@ from common.activities import HighspecActivities
 from common.config import Config
 from common.dlipowerswitch import SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import QHY600Status
 from common.paths import PathMaker
 from common.spec import SpecExposureSettings
@@ -30,10 +29,7 @@ QHYCCD_SUCCESS = 0
 STR_BUFFER_SIZE = 32
 assert qhy is not None, "Failed to load QHY SDK"
 
-logger = logging.getLogger(f"mast.highspec.{__name__}")
-init_log(logger)
-
-
+logger = get_logger(__name__)
 class QHYReadMode(IntFlag):  # detected from a QHY600U3 camera
     Photographic_DSO_16BIT = 0
     High_Gain_Mode_16BIT = 1

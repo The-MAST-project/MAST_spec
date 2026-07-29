@@ -21,7 +21,7 @@ from common.activities import NewtonActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.newton import (
     NewtonAmplifierMode,
     NewtonBinning,
@@ -33,8 +33,7 @@ from common.paths import PathMaker
 from common.spec import SpecExposureSettings
 from common.utils import function_name
 
-logger = logging.getLogger("mast.highspec.newton")
-init_log(logger)
+logger = get_logger(__name__)
 label = "EMCCD"
 
 
@@ -152,8 +151,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
     def __init__(self):
         from common.config import Config
 
-        self.logger = logging.getLogger("mast.spec.highspec.camera")
-        init_log(self.logger)
+        self.logger = get_logger("mast.spec.highspec.camera")
         self.log_label = "EMCCD"
 
         Component.__init__(self, NewtonActivities)
