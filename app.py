@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from common.config import Config
@@ -29,7 +29,6 @@ app = FastAPI(
     redocs_url=None,
     lifespan=lifespan,
     debug=True,
-    default_response_class=ORJSONResponse,
 )
 
 app.add_middleware(
