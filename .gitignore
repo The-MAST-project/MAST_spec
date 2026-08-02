@@ -14,8 +14,12 @@ nosetests.xml
 /coverage.xml
 /pytest_*.xml
 **/__pycache__
-greateyes/
-cameras/greateyes/sdk/
+# Unpacked greateyes SDK archives dumped at the repo root are not source.
+# Anchored with a leading slash: the previous unanchored `greateyes/` matched
+# cameras/greateyes/ too, which meant the camera driver and its vendored SDK
+# were only in git because they had been force-added. The SDK we actually ship
+# is tracked deliberately — see cameras/greateyes/sdk/VENDOR.md.
+/greateyes/
 **/*.fits
 
 # Claude Code settings (machine/identity-scoped — never commit)

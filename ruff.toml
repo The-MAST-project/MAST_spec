@@ -15,7 +15,18 @@ target-version = "py312"
 # Submodules are owned by their own repos — never format them from here.
 # (ruff does NOT skip submodules automatically; without this, `ruff format .`
 # would recurse into and rewrite common/.)
-extend-exclude = ["common"]
+#
+# The greateyes SDK wrapper is vendored upstream code (see
+# cameras/greateyes/sdk/VENDOR.md). Formatting it rewrites the vendor's comment
+# separators and blank lines, which buries the ~80 real lines of an SDK bump in
+# hundreds of lines of cosmetic churn. Keep it byte-identical to the archive.
+extend-exclude = ["common", "cameras/greateyes/sdk/greateyesSDK.py"]
+
+# Honour the excludes above even when a path is passed explicitly. Without this,
+# editor format-on-save (.vscode/settings.json turns it on, and the ruff
+# extension passes the open file by name) and file-passing pre-commit hooks
+# would still rewrite the vendored SDK.
+force-exclude = true
 
 [lint]
 # Enable rules from common linters.
