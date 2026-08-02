@@ -16,12 +16,25 @@ The appropriate greateyes SDK needs to be located in a directory, included in PA
 
 import ctypes
 import numpy as np
+import os
 import sys
 import platform
 import time
 
+# MAST local modification -- see VENDOR.md.
+# Upstream hardcodes an absolute path that does not exist on our machines.
+# Load the DLL vendored next to this file instead, so the binary stays pinned
+# to the source that was tested against it. MAST_GREATEYES_DLL_DIR overrides
+# the location for development boxes without editing vendored code.
 if platform.system() == 'Windows':
-    greateyesDLL = ctypes.WinDLL("c:\\lib_greateyes\\greateyes.dll")
+    _dll_dir = os.environ.get(
+        'MAST_GREATEYES_DLL_DIR',
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib', 'x64'),
+    )
+    # Lets the DLL resolve its own dependencies from that directory too.
+    if os.path.isdir(_dll_dir):
+        os.add_dll_directory(_dll_dir)
+    greateyesDLL = ctypes.WinDLL(os.path.join(_dll_dir, 'greateyes.dll'))
     c_PixelDataType16bit = ctypes.c_ushort
     c_PixelDataType32bit = ctypes.c_ulong
 elif platform.system() == 'Linux':

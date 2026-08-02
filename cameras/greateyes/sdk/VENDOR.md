@@ -67,12 +67,30 @@ disagree.
 
 ## Local modifications
 
-None. `greateyesSDK.py` is upstream's file byte for byte, and is excluded from ruff in
-`ruff.toml` so the formatter cannot introduce drift. Any local change belongs in a
-**separate commit** on top of the commit that lands the pristine file, so that
+One, in `greateyesSDK.py`: **DLL location**. Upstream hardcodes
+`c:\lib_greateyes\greateyes.dll`, which exists on no MAST machine. We resolve `lib/x64/`
+relative to the wrapper, overridable via the `MAST_GREATEYES_DLL_DIR` environment
+variable, and call `os.add_dll_directory()` so the DLL can resolve its own dependencies
+from there. Requires an added `import os`.
+
+Nothing else is changed. `greateyesSDK.py` is otherwise upstream's file byte for byte, and
+is excluded from ruff in `ruff.toml` (with `force-exclude`) so the formatter cannot
+introduce drift.
+
+### How to bump the SDK
+
+Keep this property — it is what makes a bump cheap:
 
 ```
 git diff <pristine-commit> HEAD -- cameras/greateyes/sdk/greateyesSDK.py
 ```
 
-always yields exactly our patch set — which is what makes the next SDK bump cheap.
+must always yield exactly the patch described above, and nothing else. So:
+
+1. Extract the current patch with that command.
+2. Drop in the new upstream file **unmodified**; commit that alone, updating the version
+   and sha256 sums above.
+3. Re-apply the patch (`git apply`, or by hand if upstream moved the load block); commit
+   separately.
+
+The pristine-baseline commit for the current drop is `1721c11`.
