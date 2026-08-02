@@ -19,5 +19,19 @@
   "files.eol": "\n",
   "python.analysis.autoImportCompletions": true,
   "python.languageServer": "Pylance",
-  "python.analysis.typeCheckingMode": "basic"
+  "python.analysis.typeCheckingMode": "basic",
+  // The greateyes SDK wrapper is vendored upstream code, kept byte-identical to
+  // the vendor archive (see cameras/greateyes/sdk/VENDOR.md) — its diagnostics
+  // are not ours to fix. `ignore` rather than `exclude`: Pylance keeps analysing
+  // the file so `import ... greateyesSDK as ge` still resolves in greateyes.py,
+  // it just stops reporting problems located inside it. The equivalent ruff
+  // exclusion lives in ruff.toml.
+  "python.analysis.ignore": ["**/cameras/greateyes/sdk/greateyesSDK.py"],
+  "python-envs.pythonProjects": [
+    {
+      "path": ".",
+      "envManager": "ms-python.python:venv",
+      "packageManager": "ms-python.python:pip"
+    }
+  ]
 }
