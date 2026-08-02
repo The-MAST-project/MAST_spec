@@ -59,6 +59,12 @@ the September 2021 `greateyes.dll` (md5 `17a245c60174f49e57a0df2ada69f559`) that
 to load; the GUI application continues to use it. Leaving it alone keeps a working copy of
 the old binary on every machine and avoids fighting the vendor's installer.
 
+### Licensing
+
+Redistributing `greateyes.dll` inside this repository is permitted — confirmed by Arie
+Blumenzweig, 2026-08-02. The SDK archive itself ships no license file, which is why this
+is recorded here: without it the question resurfaces at every SDK bump.
+
 ## Documentation
 
 `docs/greateyes_doc-camera_sdk_c++_fw12_rev5.pdf` documents an older SDK revision and has
