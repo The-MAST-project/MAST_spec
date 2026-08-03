@@ -20,9 +20,7 @@ class CalibrationLamp(Component, SwitchedOutlet):
         Component.__init__(self, CalibrationLampActivities)
         self.conf = Config().get_specs().lamps
 
-        SwitchedOutlet.__init__(
-            self, domain=OutletDomain.SpecOutlets, outlet_name=f"{self.name}Lamp"
-        )
+        SwitchedOutlet.__init__(self, domain=OutletDomain.SpecOutlets, outlet_name=f"{self.name}Lamp")
         if not self.is_on():
             self.power_on()
         self._was_shut_down = False
@@ -65,9 +63,7 @@ class CalibrationLamp(Component, SwitchedOutlet):
         elif not self.power_switch.detected:
             ret.append(f"{self.name}: {self.power_switch} not detected")
         elif self.is_off():
-            ret.append(
-                f"{self.name}: {self.power_switch}:{self.outlet_names[0]} is OFF"
-            )
+            ret.append(f"{self.name}: {self.power_switch}:{self.outlet_names[0]} is OFF")
         return ret
 
     def startup(self):

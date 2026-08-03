@@ -23,9 +23,7 @@ class Chiller(SwitchedOutlet, Component):
             return
 
         self.conf = Config().get_specs().chiller
-        SwitchedOutlet.__init__(
-            self, domain=OutletDomain.SpecOutlets, outlet_name="Chiller"
-        )
+        SwitchedOutlet.__init__(self, domain=OutletDomain.SpecOutlets, outlet_name="Chiller")
         self._name = "chiller"
 
         assert self.power_switch is not None
@@ -93,9 +91,7 @@ class Chiller(SwitchedOutlet, Component):
         if not self.power_switch.detected:
             ret.append(f"{self.name}: {self.power_switch} not detected")
         elif self.is_off():
-            ret.append(
-                f"{self.name}: {self.power_switch}:{self.outlet_names[0]} is OFF"
-            )
+            ret.append(f"{self.name}: {self.power_switch}:{self.outlet_names[0]} is OFF")
         return ret
 
     def status(self) -> BaseStatus:

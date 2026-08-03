@@ -15,15 +15,13 @@ from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import SpecStageStatus
 from common.networking import NetworkedDevice
 from common.spec import GratingNames, SpecInstruments, SpecStageNames
 from common.utils import caller_name, function_name
 
-logger = logging.getLogger("mast.spec.stage")
-init_log(logger)
-
+logger = get_logger(__name__)
 if TYPE_CHECKING:
     from spec import Spec
 
@@ -72,23 +70,16 @@ class Stage(Component):
         self._name = f"{name}"
         self.controller: zaber_motion.ascii.Device = controller
         self.peripheral = self.conf.peripheral  # The Zaber model name of this stage
-        self.logger = logging.getLogger(f"mast.spec.stage.{self._name}")
-        init_log(self.logger)
-
+        self.logger = get_logger(f"mast.spec.stage.{self._name}")
         self._detected = False
         self.axis: zaber_motion.ascii.Axis | None = None
         for i in range(1, self.controller.axis_count + 1):
-            axis: zaber_motion.ascii.Axis = self.controller.get_axis(
-                i
-            )  # axes are numbered from 1
+            axis: zaber_motion.ascii.Axis = self.controller.get_axis(i)  # axes are numbered from 1
             try:
                 axis.activate()
                 self.controller.identify()  # MUST be called after axis.activate() to forget previous stage and identify current
             except Exception as ex:
-                if (
-                    "The command failed to execute because the axis is inactive"
-                    in f"{ex}"
-                ):
+                if "The command failed to execute because the axis is inactive" in f"{ex}":
                     self._detected = False
                     continue
 
@@ -190,19 +181,13 @@ class Stage(Component):
             if self.is_active(StageActivities.ShuttingDown):
                 if self.shutdown_preset is not None:
                     if self.close_enough(self.presets[self.shutdown_preset]):
-                        self.end_activity(
-                            StageActivities.ShuttingDown, label=f"{self.full_name}: "
-                        )
-                self.end_activity(
-                    StageActivities.ShuttingDown, label=f"{self.full_name}: "
-                )
+                        self.end_activity(StageActivities.ShuttingDown, label=f"{self.full_name}: ")
+                self.end_activity(StageActivities.ShuttingDown, label=f"{self.full_name}: ")
 
             if self.is_active(StageActivities.StartingUp):
                 if self.startup_preset is not None:
                     if self.close_enough(self.presets[self.startup_preset]):
-                        self.end_activity(
-                            StageActivities.StartingUp, label=f"{self.full_name}: "
-                        )
+                        self.end_activity(StageActivities.StartingUp, label=f"{self.full_name}: ")
                 self.end_activity(StageActivities.StartingUp)
 
             if self.is_active(StageActivities.Aborting):
@@ -222,9 +207,7 @@ class Stage(Component):
             return CanonicalResponse(errors=[f"stage '{self._name}' not detected"])
         current_position = self.position(unit=unit)
         if current_position is None:
-            self.logger.error(
-                f"{function_name()}: cannot get current position for relative move"
-            )
+            self.logger.error(f"{function_name()}: cannot get current position for relative move")
             return
         target_position = current_position + amount
         self.start_activity(
@@ -242,9 +225,7 @@ class Stage(Component):
 
         current_position = self.position(unit=unit)
         if current_position is None:
-            self.logger.error(
-                f"{function_name()}: cannot get current position for relative move"
-            )
+            self.logger.error(f"{function_name()}: cannot get current position for relative move")
             return
 
         # if self._out_of_range(current_position + amount, unit):
@@ -261,9 +242,7 @@ class Stage(Component):
 
     def _out_of_range(self, position: float, unit: zaber_motion.Units) -> bool:
         if unit != zaber_motion.Units.NATIVE:
-            raise ValueError(
-                f"{caller_name()}: only NATIVE units are supported (got {unit})"
-            )
+            raise ValueError(f"{caller_name()}: only NATIVE units are supported (got {unit})")
 
         if self.max_position is None:
             return False
@@ -307,9 +286,7 @@ class Stage(Component):
         if not self.detected:
             return CanonicalResponse(errors=[f"stage '{self._name}' not detected"])
         if preset not in self.presets:
-            raise ValueError(
-                f"Bad preset '{preset}'. Valid presets are: {','.join(self.presets.keys())}"
-            )
+            raise ValueError(f"Bad preset '{preset}'. Valid presets are: {','.join(self.presets.keys())}")
 
         self.target = self.presets[preset]
         self.target_units = zaber_motion.Units.NATIVE
@@ -336,12 +313,8 @@ class Stage(Component):
     def shutdown(self):
         if not self.detected:
             return
-        if self.shutdown_preset and not self.close_enough(
-            self.presets[self.shutdown_preset]
-        ):
-            self.start_activity(
-                StageActivities.ShuttingDown, label=f"{self.full_name}: "
-            )
+        if self.shutdown_preset and not self.close_enough(self.presets[self.shutdown_preset]):
+            self.start_activity(StageActivities.ShuttingDown, label=f"{self.full_name}: ")
             self.move_absolute(
                 self.presets[self.shutdown_preset],
                 unit=zaber_motion.Units.NATIVE,
@@ -377,9 +350,7 @@ class Stage(Component):
         #     )
         #     self.axis.home(wait_until_idle=False)
 
-        if self.startup_preset and not self.close_enough(
-            self.presets[self.startup_preset]
-        ):
+        if self.startup_preset and not self.close_enough(self.presets[self.startup_preset]):
             self.start_activity(StageActivities.StartingUp, label=f"{self.full_name}: ")
             self.move_absolute(
                 self.presets[self.startup_preset],
@@ -395,9 +366,7 @@ class Stage(Component):
         self.start_activity(StageActivities.Aborting, label=f"{self.full_name}: ")
         self.axis.stop(wait_until_idle=False)
 
-    def position(
-        self, unit: zaber_motion.units.Units = zaber_motion.units.Units.NATIVE
-    ) -> float | None:
+    def position(self, unit: zaber_motion.units.Units = zaber_motion.units.Units.NATIVE) -> float | None:
         if not self.detected:
             return float("nan")
 
@@ -465,9 +434,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
 
         self.detected = False
 
-        SwitchedOutlet.__init__(
-            self, domain=OutletDomain.SpecOutlets, outlet_name="Stage"
-        )
+        SwitchedOutlet.__init__(self, domain=OutletDomain.SpecOutlets, outlet_name="Stage")
         powered = False
 
         assert self.power_switch is not None
@@ -475,9 +442,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
             if not self.is_on():
                 self.power_on()
             if not self.is_on():
-                logger.error(
-                    f"could not power ON outlet {self.power_switch}:{self.outlet_names[0]}"
-                )
+                logger.error(f"could not power ON outlet {self.power_switch}:{self.outlet_names[0]}")
                 powered = False
             else:
                 powered = True
@@ -495,9 +460,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
             if not self.device:
                 logger.error(f"{op}: stage controller not detected")
             elif self.device.axis_count < 3:
-                logger.error(
-                    f"{op}:stage controller has too few axes ({self.device.axis_count} instead of 3)"
-                )
+                logger.error(f"{op}:stage controller has too few axes ({self.device.axis_count} instead of 3)")
             else:
                 self.detected = True
                 try:
@@ -511,9 +474,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
                     self.focusing_stage = None
 
                 try:
-                    self.disperser_stage = Stage(
-                        name="disperser", controller=self.device
-                    )
+                    self.disperser_stage = Stage(name="disperser", controller=self.device)
                 except:  # noqa: E722
                     self.disperser_stage = None
 
@@ -534,12 +495,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
             return
 
         for st in self.stages:
-            if (
-                st is not None
-                and st.detected
-                and st.axis is not None
-                and st.axis.axis_number == event.axis_number
-            ):
+            if st is not None and st.detected and st.axis is not None and st.axis.axis_number == event.axis_number:
                 st.on_event(event)
                 return
 
@@ -549,12 +505,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
             return
 
         for st in self.stages:
-            if (
-                st is not None
-                and st.detected
-                and st.axis is not None
-                and st.axis.axis_number == event.axis_number
-            ):
+            if st is not None and st.detected and st.axis is not None and st.axis.axis_number == event.axis_number:
                 st.on_event(event)
                 return
 
@@ -564,9 +515,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
         try:
             conn = zaber_motion.ascii.Connection.open_tcp(host_name=self.network.ipaddr)
         except zaber_motion.ConnectionFailedException as ex:
-            logger.error(
-                f"cannot connect to stage controller at '{self.network.ipaddr}' (error: {ex})"
-            )
+            logger.error(f"cannot connect to stage controller at '{self.network.ipaddr}' (error: {ex})")
             self.detected = False
             return None
 
@@ -609,9 +558,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
         or a canonical response with errors.
         """
         if stage_name not in self.stage_names:
-            return CanonicalResponse(
-                errors=[f"unknown '{stage_name=}' (known names: {self.stage_names})"]
-            )
+            return CanonicalResponse(errors=[f"unknown '{stage_name=}' (known names: {self.stage_names})"])
 
         stage = [s for s in self.stages if s is not None and s.name == stage_name][0]
         if not stage.detected:
@@ -620,17 +567,13 @@ class StageController(SwitchedOutlet, NetworkedDevice):
         return stage
 
     # FastApi stuff
-    def endpoint_get_stage_position(
-        self, stage_name: SpecStageNames, units: UnitNames
-    ) -> CanonicalResponse:
+    def endpoint_get_stage_position(self, stage_name: SpecStageNames, units: UnitNames) -> CanonicalResponse:
         ret = self.find_stage(stage_name)
         if isinstance(ret, CanonicalResponse):
             return ret
 
         stage = ret
-        return CanonicalResponse(
-            value=stage.position(unit=reverse_units_dict[units.value])
-        )
+        return CanonicalResponse(value=stage.position(unit=reverse_units_dict[units.value]))
 
     def endpoint_get_stage_status(self, stage_name: SpecStageNames):
         ret = self.find_stage(stage_name)
@@ -640,9 +583,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
         stage = ret
         return CanonicalResponse(value=stage.status())
 
-    def endpoint_stage_move_absolute(
-        self, stage_name: SpecStageNames, position: float, units: UnitNames
-    ):
+    def endpoint_stage_move_absolute(self, stage_name: SpecStageNames, position: float, units: UnitNames):
         ret = self.find_stage(stage_name)
         if isinstance(ret, CanonicalResponse):
             return ret
@@ -652,9 +593,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
 
         return CanonicalResponse_Ok
 
-    def endpoint_stage_move_relative(
-        self, stage_name: SpecStageNames, amount: float, units: UnitNames
-    ):
+    def endpoint_stage_move_relative(self, stage_name: SpecStageNames, amount: float, units: UnitNames):
         ret = self.find_stage(stage_name)
         if isinstance(ret, CanonicalResponse):
             return ret
@@ -664,25 +603,19 @@ class StageController(SwitchedOutlet, NetworkedDevice):
 
         return CanonicalResponse_Ok
 
-    def endpoint_move_fiber_to_preset(
-        self, preset_name: SpecInstruments
-    ) -> CanonicalResponse:
+    def endpoint_move_fiber_to_preset(self, preset_name: SpecInstruments) -> CanonicalResponse:
         if self.fiber_stage is None:
             return CanonicalResponse(errors=["self.fiber_stage is None"])
         self.fiber_stage.move_to_preset(preset=preset_name)
         return CanonicalResponse_Ok
 
-    def endpoint_move_disperser_to_preset(
-        self, preset_name: GratingNames
-    ) -> CanonicalResponse:
+    def endpoint_move_disperser_to_preset(self, preset_name: GratingNames) -> CanonicalResponse:
         if self.disperser_stage is None:
             return CanonicalResponse(errors=["self.disperser_stage is None"])
         self.disperser_stage.move_to_preset(preset=preset_name)
         return CanonicalResponse_Ok
 
-    def endpoint_move_focusing_to_preset(
-        self, preset_name: GratingNames
-    ) -> CanonicalResponse:
+    def endpoint_move_focusing_to_preset(self, preset_name: GratingNames) -> CanonicalResponse:
         if self.focusing_stage is None:
             return CanonicalResponse(errors=["self.focusing_stage is None"])
         self.focusing_stage.move_to_preset(preset=preset_name)
@@ -729,9 +662,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
             tags=[tag],
             endpoint=self.endpoint_get_stage_position,
         )
-        router.add_api_route(
-            base_path + "/status", tags=[tag], endpoint=self.endpoint_get_stage_status
-        )
+        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_get_stage_status)
         router.add_api_route(
             base_path + "/move_absolute",
             tags=[tag],
@@ -757,15 +688,9 @@ class StageController(SwitchedOutlet, NetworkedDevice):
             tags=[tag],
             endpoint=self.endpoint_move_focusing_to_preset,
         )
-        router.add_api_route(
-            base_path + "/startup", tags=[tag], endpoint=self.endpoint_stage_startup
-        )
-        router.add_api_route(
-            base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_stage_shutdown
-        )
-        router.add_api_route(
-            base_path + "/abort", tags=[tag], endpoint=self.endpoint_stage_abort
-        )
+        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_stage_startup)
+        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_stage_shutdown)
+        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_stage_abort)
 
         return router
 

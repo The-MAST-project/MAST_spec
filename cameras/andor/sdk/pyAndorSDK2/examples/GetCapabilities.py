@@ -8,10 +8,8 @@ helper = CameraCapabilities.CapabilityHelper(sdk)
 print("Function Initialize returned {}".format(ret))
 
 if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
-
     (ret, iSerialNumber) = sdk.GetCameraSerialNumber()
-    print("Function GetCameraSerialNumber returned {} Serial No: {}".format(
-        ret, iSerialNumber))
+    print("Function GetCameraSerialNumber returned {} Serial No: {}".format(ret, iSerialNumber))
     helper.print_acquisition_modes()
 
     helper.print_get_functions()

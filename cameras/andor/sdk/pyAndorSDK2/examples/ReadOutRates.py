@@ -10,12 +10,10 @@ if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
     amp_modes = []
 
     (ret, ADchannel) = sdk.GetNumberADChannels()
-    print("Function GetNumberADChannels returned {} number of available channels {}".format(
-        ret, ADchannel))
+    print("Function GetNumberADChannels returned {} number of available channels {}".format(ret, ADchannel))
     for channel in range(0, ADchannel):
         (ret, speed) = sdk.GetNumberHSSpeeds(channel, 0)
-        print("Function GetNumberHSSpeeds {} number of available speeds {}".format(
-            ret, speed))
+        print("Function GetNumberHSSpeeds {} number of available speeds {}".format(ret, speed))
         for x in range(0, speed):
             (ret, speed) = sdk.GetHSSpeed(channel, 0, x)
             HSSpeeds.append(speed)
@@ -23,8 +21,7 @@ if atmcd_errors.Error_Codes.DRV_SUCCESS == ret:
         print("Available HSSpeeds in MHz {} ".format(HSSpeeds))
 
         (ret, speed) = sdk.GetNumberVSSpeeds()
-        print("Function GetNumberVSSpeeds {} number of available speeds {}".format(
-            ret, speed))
+        print("Function GetNumberVSSpeeds {} number of available speeds {}".format(ret, speed))
         for x in range(0, speed):
             (ret, speed) = sdk.GetVSSpeed(x)
             VSSpeeds.append(speed)

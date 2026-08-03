@@ -1,9 +1,10 @@
+import argparse
 from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from common.config import Config
@@ -13,6 +14,15 @@ from filter_wheel.wheel import FilterWheels
 from highspec import Highspec
 from spec import Spec
 from stage.stage import StageController as StageController
+from common.mast_logging import configure_logging, get_logger
+
+# Logging is configured once, here, before anything logs. Every 'mast.*' logger
+# inherits the handlers and level from root by propagation.
+# Precedence: --log-level > MAST_LOG_LEVEL > default.
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument("--log-level", default=None, help="DEBUG, INFO, WARNING, ... (overrides MAST_LOG_LEVEL)")
+configure_logging(_parser.parse_known_args()[0].log_level)
+
 
 spec = Spec()
 
@@ -29,7 +39,6 @@ app = FastAPI(
     redocs_url=None,
     lifespan=lifespan,
     debug=True,
-    default_response_class=ORJSONResponse,
 )
 
 app.add_middleware(
@@ -57,8 +66,6 @@ def read_favicon():
 if __name__ == "__main__":
     server_conf = Config().get_service(service_name="spec")
     assert server_conf is not None
-    uvicorn_config = uvicorn.Config(
-        app=app, host=server_conf.listen_on, port=server_conf.port
-    )
+    uvicorn_config = uvicorn.Config(app=app, host=server_conf.listen_on, port=server_conf.port)
 
     uvicorn.Server(config=uvicorn_config).run()

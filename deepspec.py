@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -17,7 +16,7 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.assignments import (
     AssignmentNotification,
     SpectrographAssignment,
@@ -42,10 +41,7 @@ from common.spec import (
     SpecExposureSettings,
 )
 
-logger = logging.Logger("deepspec")
-init_log(logger)
-
-
+logger = get_logger(__name__)
 class Deepspec(Component):
     _instance = None
     _initialized = False
@@ -91,11 +87,7 @@ class Deepspec(Component):
 
     @property
     def active_cameras(self) -> list[GreatEyes]:
-        return [
-            cam
-            for cam in self.cameras.values()
-            if cam is not None and cam.enabled and cam.detected
-        ]  # type: ignore
+        return [cam for cam in self.cameras.values() if cam is not None and cam.enabled and cam.detected]  # type: ignore
 
     @property
     def was_shut_down(self) -> bool:
@@ -140,14 +132,10 @@ class Deepspec(Component):
         if not self.was_shut_down:
             logger.info("powerdown called without shutdown - calling shutdown first...")
             self.shutdown()
-            time.sleep(
-                3
-            )  # let cameras start shutting down before we start waiting for them to finish
+            time.sleep(3)  # let cameras start shutting down before we start waiting for them to finish
 
         while self.is_shutting_down:
-            logger.info(
-                "waiting for cameras to finish shutting down before powering off..."
-            )
+            logger.info("waiting for cameras to finish shutting down before powering off...")
             time.sleep(0.5)
 
         for cam in self.active_cameras:
@@ -157,12 +145,7 @@ class Deepspec(Component):
         self.executor.shutdown(wait=True)
 
     def status(self) -> DeepspecStatus:
-        if not any(
-            [
-                cam.is_active(GreatEyesActivities.Acquiring)
-                for cam in self.active_cameras
-            ]
-        ):  # type: ignore
+        if not any([cam.is_active(GreatEyesActivities.Acquiring) for cam in self.active_cameras]):  # type: ignore
             self.end_activity(DeepspecActivities.Acquiring)
             if self.spec is not None:
                 self.spec.end_activity(SpecActivities.ExposingDeepspec)
@@ -189,7 +172,7 @@ class Deepspec(Component):
     def start_acquisition(self, settings: SpecExposureSettings):
         self.start_activity(DeepspecActivities.Acquiring)
         if self.spec is not None:
-            self.spec.start_activity(SpecActivities.ExposingDeepspec)
+            self.spec.start_activity(SpecActivities.ExposingDeepspec, data={"instrument": "deepspec"})
         self.expose(
             seconds=settings.exposure_duration,
             x_binning=settings.binning.x,  # type: ignore
@@ -290,11 +273,7 @@ class Deepspec(Component):
     ) -> CanonicalResponse:
 
         if delay_before_exposure < 0:
-            return CanonicalResponse(
-                errors=[
-                    f"delay_before_exposure must be non-negative, got {delay_before_exposure}"
-                ]
-            )
+            return CanonicalResponse(errors=[f"delay_before_exposure must be non-negative, got {delay_before_exposure}"])
 
         if not self.cameras[band] or not self.cameras[band].detected:  # type: ignore
             return CanonicalResponse(errors=[f"camera '{band}' not detected"])
@@ -304,23 +283,17 @@ class Deepspec(Component):
         if not camera.detected:
             return CanonicalResponse(errors=[f"camera '{band}' not detected"])
 
-        if not bypass_temperature_stabilization_check and camera.is_active(
-            GreatEyesActivities.CoolingDown
-        ):
+        if not bypass_temperature_stabilization_check and camera.is_active(GreatEyesActivities.CoolingDown):
             return CanonicalResponse(
                 errors=[f"camera '{band}' is still cooling down — use bypass_temperature_stabilization_check to override"]
             )
 
         if folder is None:
-            folder = PathMaker().make_spec_exposures_folder(
-                spec_name="deepspec", band=band
-            )
+            folder = PathMaker().make_spec_exposures_folder(spec_name="deepspec", band=band)
         os.makedirs(folder, exist_ok=True)
 
         if delay_before_exposure > 0:
-            logger.info(
-                f"delaying before exposure for {delay_before_exposure} seconds..."
-            )
+            logger.info(f"delaying before exposure for {delay_before_exposure} seconds...")
             time.sleep(delay_before_exposure)
 
         readout: ReadoutModel = ReadoutModel(
@@ -334,9 +307,7 @@ class Deepspec(Component):
         )
 
         for exposure_number in range(number_of_exposures or 1):
-            image_file = os.path.join(
-                folder, "seq=" + PathMaker.make_seq(folder) + ".fits"
-            )
+            image_file = os.path.join(folder, "seq=" + PathMaker.make_seq(folder) + ".fits")
 
             settings: GreateyesSettingsModel = GreateyesSettingsModel(
                 bytes_per_pixel=1,
@@ -358,8 +329,7 @@ class Deepspec(Component):
             )
             if camera.errors:
                 errors = [
-                    f"exposure #{exposure_number} of {number_of_exposures}, failed to start: '{e}'"
-                    for e in camera.errors
+                    f"exposure #{exposure_number} of {number_of_exposures}, failed to start: '{e}'" for e in camera.errors
                 ]
                 return CanonicalResponse(errors=errors)
 
@@ -368,15 +338,9 @@ class Deepspec(Component):
 
         return CanonicalResponse_Ok
 
-    def adjust_temperature_one_camera(
-        self, band: DeepspecBands, target_temperature: int | None = None
-    ):
+    def adjust_temperature_one_camera(self, band: DeepspecBands, target_temperature: int | None = None):
         if band not in list(get_args(DeepspecBands)):
-            return CanonicalResponse(
-                errors=[
-                    f"invalid band '{band}', must be one of {list(get_args(DeepspecBands))}"
-                ]
-            )
+            return CanonicalResponse(errors=[f"invalid band '{band}', must be one of {list(get_args(DeepspecBands))}"])
 
         if not self.cameras[band]:
             return CanonicalResponse(errors=[f"camera '{band}' not detected"])
@@ -392,11 +356,7 @@ class Deepspec(Component):
         camera.adjust_temperature(target_temperature=target_temperature)
 
         if camera.errors:
-            return CanonicalResponse(
-                errors=[
-                    f"failed to adjust target temperature: '{e}'" for e in camera.errors
-                ]
-            )
+            return CanonicalResponse(errors=[f"failed to adjust target temperature: '{e}'" for e in camera.errors])
 
         return CanonicalResponse_Ok
 
@@ -423,20 +383,12 @@ class Deepspec(Component):
         while spec.is_moving:  # the fiber stage
             time.sleep(0.5)
 
-        acquisition_folder = Path(
-            PathMaker().make_spec_acquisitions_folder(spec_name="deepspec")
-        )
+        acquisition_folder = Path(PathMaker().make_spec_acquisitions_folder(spec_name="deepspec"))
 
         ulid = None
-        if (
-            remote_assignment.batch is not None
-            and remote_assignment.batch.ulid is not None
-        ):
+        if remote_assignment.batch is not None and remote_assignment.batch.ulid is not None:
             ulid = remote_assignment.batch.ulid
-        elif (
-            remote_assignment.plan is not None
-            and remote_assignment.plan.ulid is not None
-        ):
+        elif remote_assignment.plan is not None and remote_assignment.plan.ulid is not None:
             ulid = remote_assignment.plan.ulid
         else:
             raise ValueError("assignment must have either batch.ulid or plan.ulid")
@@ -451,7 +403,7 @@ class Deepspec(Component):
         )
 
         self.start_activity(DeepspecActivities.Acquiring)
-        spec.start_activity(SpecActivities.ExposingDeepspec)
+        spec.start_activity(SpecActivities.ExposingDeepspec, data={"instrument": "deepspec"})
         for band in list(self.cameras.keys()):
             camera = self.cameras[band]
             if not camera or not camera.detected:
@@ -462,11 +414,7 @@ class Deepspec(Component):
                 folder=str(acquisition_folder / band),
             )
 
-        while {
-            band: cam
-            for band, cam in self.cameras.items()
-            if (cam is not None and cam.is_working)
-        }:
+        while {band: cam for band, cam in self.cameras.items() if (cam is not None and cam.is_working)}:
             time.sleep(1)
         self.end_activity(DeepspecActivities.Acquiring)
         spec.end_activity(SpecActivities.ExposingDeepspec)
@@ -479,13 +427,9 @@ class Deepspec(Component):
 
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
         router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
-        router.add_api_route(
-            base_path + "/shutdown", tags=[tag], endpoint=self.shutdown
-        )
+        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
         router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort)
-        router.add_api_route(
-            base_path + "/expose", tags=[tag], endpoint=self.expose, response_model=None
-        )
+        router.add_api_route(base_path + "/expose", tags=[tag], endpoint=self.expose, response_model=None)
         router.add_api_route(
             base_path + "/expose_one_camera",
             tags=[tag],

@@ -14,7 +14,7 @@ from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.statuses import WheelStatus
 from common.utils import RepeatTimer
 
@@ -71,17 +71,13 @@ class Wheel(Component, SwitchedOutlet):
         self.conf = Config().get_specs().wheels[wheel_name]
         self.filters: dict = self.conf.filters
 
-        SwitchedOutlet.__init__(
-            self, domain=OutletDomain.SpecOutlets, outlet_name=f"{self.name}Wheel"
-        )
+        SwitchedOutlet.__init__(self, domain=OutletDomain.SpecOutlets, outlet_name=f"{self.name}Wheel")
         assert self.power_switch is not None
         if self.power_switch.detected:
             if self.is_off():
                 self.power_on()
 
-        self.logger = logging.getLogger(f"mast.spec.filter-wheel-{self.name}")
-        init_log(self.logger)
-
+        self.logger = get_logger(f"mast.spec.filter-wheel-{self.name}")
         self.serial_number = self.conf.serial_number
         self.target: int | None = None
 
@@ -119,9 +115,7 @@ class Wheel(Component, SwitchedOutlet):
 
         expected_number_of_positions = 6
         if number_of_positions[0] != expected_number_of_positions:
-            self.logger.error(
-                f"{prefix} expected {expected_number_of_positions} positions, got {number_of_positions[0]}"
-            )
+            self.logger.error(f"{prefix} expected {expected_number_of_positions} positions, got {number_of_positions[0]}")
             self.device = None
             return
 
@@ -131,9 +125,7 @@ class Wheel(Component, SwitchedOutlet):
         # set the speed mode to 'high' (1)
         result = FWxCSetSpeedMode(self.device, SpeedMode.High.value)
         if result < 0:
-            self.logger.error(
-                f"{prefix}: Could not set speed mode to {SpeedMode.High.value}"
-            )
+            self.logger.error(f"{prefix}: Could not set speed mode to {SpeedMode.High.value}")
             self.device = None
             return
 
@@ -164,9 +156,7 @@ class Wheel(Component, SwitchedOutlet):
             mode[0] = SensorMode.Off.value
             result = FWxCSetSensorMode(self.device, mode)
             if result < 0:
-                self.logger.error(
-                    f"{prefix}: Could not set sensor mode to {SensorMode.Off}"
-                )
+                self.logger.error(f"{prefix}: Could not set sensor mode to {SensorMode.Off}")
                 self.device = None
                 return
             result = FWxCGetSensorMode(self.device, mode)
@@ -175,9 +165,7 @@ class Wheel(Component, SwitchedOutlet):
                 self.device = None
                 return
             if mode[0] != SensorMode.Off.value:
-                self.logger.error(
-                    f"{prefix}: Could not set sensor mode to {SensorMode.Off}"
-                )
+                self.logger.error(f"{prefix}: Could not set sensor mode to {SensorMode.Off}")
                 self.device = None
                 return
             else:
@@ -198,11 +186,7 @@ class Wheel(Component, SwitchedOutlet):
         #     self.default_position = int(self.conf.filters["default"])
         # else:
         #     self.default_position = None
-        self.default_position = (
-            int(self.conf.filters["default"])
-            if "default" in self.conf.filters
-            else None
-        )
+        self.default_position = int(self.conf.filters["default"]) if "default" in self.conf.filters else None
 
         self.timer = RepeatTimer(1, function=self.ontimer)
         self.timer.name = f"{self.name}-timer-thread"
@@ -234,9 +218,7 @@ class Wheel(Component, SwitchedOutlet):
 
     def check_valid_position(self, pos: int):
         if pos not in range(1, 7):
-            raise ValueError(
-                f"invalid position {pos}, (valid positions: {range(1, 7)})"
-            )
+            raise ValueError(f"invalid position {pos}, (valid positions: {range(1, 7)})")
 
     def startup(self):
         """
@@ -304,9 +286,7 @@ class Wheel(Component, SwitchedOutlet):
             position=self.position if self.detected else None,
             speed_mode=self.speed_mode.__repr__() if self.detected else None,
             sensor_mode=self.sensor_mode.__repr__() if self.detected else None,
-            current_filter=self.filters.get(self.position, None)
-            if self.detected
-            else None,
+            current_filter=self.filters.get(self.position, None) if self.detected else None,
         )
 
         return ret
@@ -329,24 +309,16 @@ class Wheel(Component, SwitchedOutlet):
 
     def position_of_filter(self, filter_name: str) -> int:
         if filter_name not in self.filters.values():
-            raise ValueError(
-                f"bad {filter_name=}, must be one of {list(self.filters.values())}"
-            )
-        return int(
-            [key for key in self.filters.keys() if self.filters[key] == filter_name][0]
-        )
+            raise ValueError(f"bad {filter_name=}, must be one of {list(self.filters.values())}")
+        return int([key for key in self.filters.keys() if self.filters[key] == filter_name][0])
 
     def at_filter(self, filter_name: str):
         return self.position == self.position_of_filter(filter_name)
 
     def move_to_filter(self, filter_name: str):
         if filter_name not in self.filters.values():
-            raise ValueError(
-                f"bad {filter_name=}, must be one of {list(self.filters.values())}"
-            )
-        position = int(
-            [key for key in self.filters.keys() if self.filters[key] == filter_name][0]
-        )
+            raise ValueError(f"bad {filter_name=}, must be one of {list(self.filters.values())}")
+        position = int([key for key in self.filters.keys() if self.filters[key] == filter_name][0])
         self.move(position)
 
     def move(self, pos: int):
@@ -363,9 +335,7 @@ class Wheel(Component, SwitchedOutlet):
         self.logger.debug(f"Moving to position {pos}")
         result = FWxCSetPosition(self.device, pos)
         if result < 0:
-            self.logger.error(
-                f"'{self.serial_number}: Could not set position {result=}"
-            )
+            self.logger.error(f"'{self.serial_number}: Could not set position {result=}")
             return None
 
     def ontimer(self):
@@ -503,18 +473,12 @@ class FilterWheels:
         router = APIRouter()
 
         router.add_api_route(base_path, tags=[tag], endpoint=self.list_wheels)
-        router.add_api_route(
-            base_path + "/position", tags=[tag], endpoint=self.get_position
-        )
-        router.add_api_route(
-            base_path + "/status", tags=[tag], endpoint=self.get_status
-        )
+        router.add_api_route(base_path + "/position", tags=[tag], endpoint=self.get_position)
+        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.get_status)
         router.add_api_route(base_path + "/move", tags=[tag], endpoint=self.move)
 
         router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
-        router.add_api_route(
-            base_path + "/shutdown", tags=[tag], endpoint=self.shutdown
-        )
+        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
         router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort)
 
         return router

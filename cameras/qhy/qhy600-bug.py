@@ -1,5 +1,4 @@
 import ctypes
-import logging
 import os
 import sys
 import threading
@@ -12,16 +11,12 @@ from pydantic import BaseModel
 
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.spec import SpecExposureSettings
 
 from .controls import QHYControl, QHYControlId, qhy_controls
 
-qhy = ctypes.CDLL(
-    os.path.join(
-        os.path.dirname(__file__), "sdk", "2024-12-26-stable", "x64", "qhyccd.dll"
-    )
-)
+qhy = ctypes.CDLL(os.path.join(os.path.dirname(__file__), "sdk", "2024-12-26-stable", "x64", "qhyccd.dll"))
 
 QHYCCD_SUCCESS = 0
 STR_BUFFER_SIZE = 32
@@ -135,10 +130,7 @@ qhy.GetQHYCCDMemLength.argtypes = [
 ]
 qhy.GetQHYCCDMemLength.restype = ctypes.c_uint32
 
-logger = logging.getLogger(f"mast.highspec.{__name__}")
-init_log(logger)
-
-
+logger = get_logger(__name__)
 class QHYRoiModel(BaseModel):
     x: int = 0
     y: int = 0
@@ -245,16 +237,12 @@ class QHY600(Component, SwitchedOutlet):
             self.error("Camera not connected.")
             return None
 
-        signature = f"{func.__name__}({[f'{arg}' for arg in args]})".replace(
-            "[", ""
-        ).replace("]", "")
+        signature = f"{func.__name__}({[f'{arg}' for arg in args]})".replace("[", "").replace("]", "")
 
         try:
             ret = func(self.handle, *args)
             if func.__name__ != "GetQHYCCDMemLength" and ret != QHYCCD_SUCCESS:
-                self.error(
-                    f"SDK function '{signature}' failed with error code {hex(ret)}"
-                )
+                self.error(f"SDK function '{signature}' failed with error code {hex(ret)}")
                 return None
             self.debug(f"SDK function {signature} returned {ret}")
             return ret
@@ -290,16 +278,10 @@ class QHY600(Component, SwitchedOutlet):
             if control.range is not None:
                 min_val, max_val = control.range.min, control.range.max
                 if not (min_val <= value.value <= max_val):
-                    self.error(
-                        f"Value {value} for control '{control.name}' out of range ({min_val}, {max_val})"
-                    )
+                    self.error(f"Value {value} for control '{control.name}' out of range ({min_val}, {max_val})")
                     return False
-            if (
-                ret := qhy.SetQHYCCDParam(self.handle, control.id, value)
-            ) != QHYCCD_SUCCESS:
-                self.error(
-                    f"Failed to set control {control.name} to {value}: error code {ret}"
-                )
+            if (ret := qhy.SetQHYCCDParam(self.handle, control.id, value)) != QHYCCD_SUCCESS:
+                self.error(f"Failed to set control {control.name} to {value}: error code {ret}")
                 return False
             self.debug(f"SDK set control {control.name} to {value}")
             return True
@@ -409,9 +391,7 @@ class QHY600(Component, SwitchedOutlet):
                 ctypes.byref(subday),
             )
         ) == QHYCCD_SUCCESS:
-            self.debug(
-                f"SDK version: year=20{year.value} month={month.value:02} day={day.value:02}"
-            )
+            self.debug(f"SDK version: year=20{year.value} month={month.value:02} day={day.value:02}")
         else:
             self.warning(f"Failed to get SDK version {ret=}")
 
@@ -426,12 +406,8 @@ class QHY600(Component, SwitchedOutlet):
             "height": self.height.value if self.height else None,
             "pixel_width_um": self.pixel_width.value if self.pixel_width else None,
             "pixel_height_um": self.pixel_height.value if self.pixel_height else None,
-            "bits_per_pixel": self.bits_per_pixel.value
-            if self.bits_per_pixel
-            else None,
-            "latest_settings": self.latest_settings.__dict__
-            if self.latest_settings
-            else None,
+            "bits_per_pixel": self.bits_per_pixel.value if self.bits_per_pixel else None,
+            "latest_settings": self.latest_settings.__dict__ if self.latest_settings else None,
         }
 
     def abort(self):
@@ -454,9 +430,7 @@ class QHY600(Component, SwitchedOutlet):
         self.start_activity(QHYActivities.Acquiring)
         for seq in range(settings.number_of_exposures or 1):
             self.start_single_exposure(camera_settings)
-            while self.is_active(QHYActivities.ExposingAndReadingOut) or self.is_active(
-                QHYActivities.Saving
-            ):
+            while self.is_active(QHYActivities.ExposingAndReadingOut) or self.is_active(QHYActivities.Saving):
                 if self.stop_event.is_set():
                     self.info("Acquisition aborted.")
                     self.stop_event.clear()
@@ -516,9 +490,7 @@ class QHY600(Component, SwitchedOutlet):
         #             f"Binning control {binning_control.name} not available on this camera."
         #         )
 
-        roi = settings.roi or QHYRoiModel(
-            x=0, y=0, width=self.width.value, height=self.height.value
-        )
+        roi = settings.roi or QHYRoiModel(x=0, y=0, width=self.width.value, height=self.height.value)
         if (
             ret := self.sdk_call(
                 qhy.SetQHYCCDResolution,
@@ -536,9 +508,7 @@ class QHY600(Component, SwitchedOutlet):
 
         self.sdk_set_control(QHYControlId.CONTROL_USBTRAFFIC, ctypes.c_double(50))
 
-        self.sdk_set_control(
-            QHYControlId.CONTROL_TRANSFERBIT, ctypes.c_double(settings.depth)
-        )
+        self.sdk_set_control(QHYControlId.CONTROL_TRANSFERBIT, ctypes.c_double(settings.depth))
 
         # if (
         #     ret := self.sdk_call(qhy.SetQHYCCDBitsMode, settings.depth)
@@ -615,12 +585,8 @@ class QHY600(Component, SwitchedOutlet):
 
             bits_per_pixel = settings.depth
 
-        self.debug(
-            f"Image parameters for readout: {width=} {height=} {x_binning=} {y_binning=} {bits_per_pixel=}"
-        )
-        nbytes = int(
-            (width // x_binning) * (height // y_binning) * (bits_per_pixel // 8)
-        )
+        self.debug(f"Image parameters for readout: {width=} {height=} {x_binning=} {y_binning=} {bits_per_pixel=}")
+        nbytes = int((width // x_binning) * (height // y_binning) * (bits_per_pixel // 8))
 
         # if bits_per_pixel == 8:
         #     self._img_buffer = (ctypes.c_uint8 * width * height)()
@@ -635,9 +601,7 @@ class QHY600(Component, SwitchedOutlet):
         self._buffer_p_ref = buffer_p
 
         self.debug(f"Buffer at: {hex(ctypes.addressof(self._img_buffer))}")
-        self.debug(
-            f"Buffer pointer at: {hex(ctypes.cast(buffer_p, ctypes.c_void_p).value)}"
-        )
+        self.debug(f"Buffer pointer at: {hex(ctypes.cast(buffer_p, ctypes.c_void_p).value)}")
 
         # lib = ctypes.CDLL(
         #     os.path.join(os.path.dirname(__file__), "dummyqhy.dll")
@@ -703,19 +667,14 @@ class QHY600(Component, SwitchedOutlet):
         self.end_activity(QHYActivities.ExposingAndReadingOut)
         self.info(f"{self.model}: Exposure complete and image read out.")
 
-        if (
-            self.latest_settings is not None
-            and self.latest_settings.image_path is not None
-        ):
+        if self.latest_settings is not None and self.latest_settings.image_path is not None:
             self.start_activity(QHYActivities.Saving)
 
             from astropy.io import fits
 
             hdu = fits.PrimaryHDU(img_array)
             hdu.writeto(self.latest_settings.image_path, overwrite=True)
-            self.info(
-                f"{self.model}: Image saved to {str(self.latest_settings.image_path)}"
-            )
+            self.info(f"{self.model}: Image saved to {str(self.latest_settings.image_path)}")
             self.end_activity(QHYActivities.Saving)
 
         self.end_activity(QHYActivities.ExposingSingleFrame)
@@ -760,14 +719,10 @@ class QHY600(Component, SwitchedOutlet):
         logger.info(f"{self.model if hasattr(self, 'model') else 'Unknown'}: {message}")
 
     def warning(self, message):
-        logger.warning(
-            f"{self.model if hasattr(self, 'model') else 'Unknown'}: {message}"
-        )
+        logger.warning(f"{self.model if hasattr(self, 'model') else 'Unknown'}: {message}")
 
     def error(self, message):
-        logger.error(
-            f"{self.model if hasattr(self, 'model') else 'Unknown'}: {message}"
-        )
+        logger.error(f"{self.model if hasattr(self, 'model') else 'Unknown'}: {message}")
 
     def debug(self, message):
         logger.debug(f"{self.model}: {message}")
@@ -792,9 +747,7 @@ if __name__ == "__main__":
     def test_dummy_qhy():
         import os
 
-        lib = ctypes.CDLL(
-            os.path.join(os.path.dirname(__file__), "dummyqhy.dll")
-        )  # Use CDLL (cdecl)
+        lib = ctypes.CDLL(os.path.join(os.path.dirname(__file__), "dummyqhy.dll"))  # Use CDLL (cdecl)
 
         # Declare signatures
         lib.DummyGetQHYCCDSingleFrame.argtypes = [
@@ -812,9 +765,7 @@ if __name__ == "__main__":
 
         # Allocate buffer exactly like you do for QHY
         nbytes = 32
-        image_buffer = (
-            ctypes.c_uint8 * nbytes
-        )()  # <-- array object; decays to uint8_t*
+        image_buffer = (ctypes.c_uint8 * nbytes)()  # <-- array object; decays to uint8_t*
         buf_addr_py = ctypes.addressof(image_buffer)
         print("Python sees image_buffer address:", hex(buf_addr_py))
 

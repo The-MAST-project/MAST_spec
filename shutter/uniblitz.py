@@ -16,9 +16,7 @@ class UniblitzController(Component, SwitchedOutlet):
         self._name = outlet_name.replace("spec", "")
         self.spec = spec
 
-        SwitchedOutlet.__init__(
-            self, domain=OutletDomain.SpecOutlets, outlet_name=self.outlet_name
-        )
+        SwitchedOutlet.__init__(self, domain=OutletDomain.SpecOutlets, outlet_name=self.outlet_name)
         if not self.is_on():
             self.power_on()
         self._was_shut_down = False

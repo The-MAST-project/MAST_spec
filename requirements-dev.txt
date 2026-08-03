@@ -1,0 +1,6 @@
+# Development-only dependencies (not required at runtime).
+#
+# ruff is pinned so every machine/CI formats and lints identically. Config in
+# ruff.toml controls the rules; this pin controls the tool version, because
+# ruff's formatter output can change between releases.
+ruff==0.16.0
