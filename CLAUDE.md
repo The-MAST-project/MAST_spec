@@ -7,7 +7,8 @@ Spectrograph control backend. Runs on `mast-wis-spec`. Submodules `MAST_common` 
 ## Running
 
 ```bash
-MAST_PROJECT=spec python app.py
+python app.py   # role + identity come from the bootstrap config file
+                # (/etc/wis/config.toml; set MAST_CONFIG to override for dev)
 ```
 
 ## Project-wide LLM guidance
