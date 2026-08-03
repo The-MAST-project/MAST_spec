@@ -12,6 +12,14 @@
 line-length = 125
 target-version = "py312"
 
+# `common` is MAST code, not a third-party dependency, but it lives one level up
+# (the submodule is being phased out in favour of a sibling checkout reached via
+# the venv's mast.pth). Without the parent in `src`, isort cannot see it as
+# first-party and sorts `from common...` in among uvicorn/fastapi. This mirrors
+# `"python.analysis.extraPaths": [".."]` in mast-spec.code-workspace, which
+# tells Pylance the same thing.
+src = [".", ".."]
+
 # Submodules are owned by their own repos — never format them from here.
 # (ruff does NOT skip submodules automatically; without this, `ruff format .`
 # would recurse into and rewrite common/.)
