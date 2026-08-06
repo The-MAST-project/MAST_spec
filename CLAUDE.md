@@ -1,8 +1,8 @@
-@common/CLAUDE.md
+@../common/CLAUDE.md
 
 # MAST_spec — Claude Guidance
 
-Spectrograph control backend. Runs on `mast-wis-spec`. Submodules `MAST_common` as `./common/`.
+Spectrograph control backend. Runs on `mast-wis-spec`. Imports `MAST_common` as `common`, which is cloned as a **sibling** of this repo in the flat layout (`<top>/common/`, `<top>/spec/`) and put on `sys.path` by the `mast.pth` the provisioning writes into the venv. It is no longer a submodule.
 
 ## Running
 
