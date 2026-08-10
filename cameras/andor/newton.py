@@ -20,7 +20,7 @@ from cameras.andor.sdk.pyAndorSDK2.pyAndorSDK2.atmcd import AndorCapabilities
 from common.activities import NewtonActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
-from common.filer import MoveGuardian
+from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.newton import (
@@ -1175,6 +1175,10 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.end_activity(NewtonActivities.SettingParameters)
 
         # image Path
+        # Only a path this call invented is this call's to move and release. When the caller
+        # supplied one -- Highspec.do_autofocus does -- the folder belongs to that flow, and
+        # releasing it here would reap it while the caller is still exposing into it.
+        owns_folder = image_full_path is None
         if image_full_path is None:
             image_full_path = Path(PathMaker().make_spec_exposures_folder(spec_name="highspec") + "/image.fits")
         if frame_mode != NewtonFrameType.Light.value:
@@ -1190,7 +1194,28 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             )
         )
 
+        if owns_folder:
+            self._start_exposure_mover(str(image_full_path))
+
         return CanonicalResponse_Ok
+
+    def _start_exposure_mover(self, saved_path: str) -> None:
+        """Move a single exposure to the shared area, and release its folder, once it lands.
+
+        `expose` returns as soon as the exposure is started, so this waits on a watcher
+        thread. Polling `Acquiring` is safe here because `acquire()` set it on the *caller's*
+        thread before returning -- unlike a flag a worker sets later, it cannot be read
+        before it is set. (Deepspec's band threads are the counter-example: see #37.)
+        """
+        folder = str(Path(saved_path).parent)
+
+        def wait_then_hand_over():
+            while self.is_active(NewtonActivities.Acquiring):
+                time.sleep(0.5)
+            Filer().move_ram_to_shared(saved_path)
+            MoveGuardian().release_folder(folder, logger=logger)
+
+        threading.Thread(name="newton-single-exposure-mover", target=wait_then_hand_over).start()
 
     # def set_camera_modes(
     #     self,
