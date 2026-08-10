@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -15,6 +16,7 @@ from common.activities import DeepspecActivities, GreatEyesActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
+from common.filer import MoveGuardian
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.assignments import (
@@ -40,6 +42,7 @@ from common.spec import (
     SpecActivities,
     SpecExposureSettings,
 )
+from common.utils import function_name
 
 logger = get_logger(__name__)
 class Deepspec(Component):
@@ -402,22 +405,42 @@ class Deepspec(Component):
             )
         )
 
-        self.start_activity(DeepspecActivities.Acquiring)
-        spec.start_activity(SpecActivities.ExposingDeepspec, data={"instrument": "deepspec"})
-        for band in list(self.cameras.keys()):
-            camera = self.cameras[band]
-            if not camera or not camera.detected:
-                continue
+        # From here on the ram-disk folder exists and the bands write into it, so every exit
+        # path must reach release_folder() -- see the finally.
+        try:
+            self.start_activity(DeepspecActivities.Acquiring)
+            spec.start_activity(SpecActivities.ExposingDeepspec, data={"instrument": "deepspec"})
+            band_threads: list[threading.Thread] = []
+            for band in list(self.cameras.keys()):
+                camera = self.cameras[band]
+                if not camera or not camera.detected:
+                    continue
 
-            camera.execute_assignment(
-                assignment=remote_assignment.assignment.spec,  # type: ignore
-                folder=str(acquisition_folder / band),
-            )
+                band_threads.append(
+                    camera.execute_assignment(
+                        assignment=remote_assignment.assignment.spec,  # type: ignore
+                        folder=str(acquisition_folder / band),
+                    )
+                )
 
-        while {band: cam for band, cam in self.cameras.items() if (cam is not None and cam.is_working)}:
-            time.sleep(1)
-        self.end_activity(DeepspecActivities.Acquiring)
-        spec.end_activity(SpecActivities.ExposingDeepspec)
+            # Join the band threads rather than polling `cam.is_working`. That poll read
+            # `is_active(Acquiring)`, a flag each band only sets once it reaches
+            # start_exposure() -- after apply_settings(). Starting four bands and immediately
+            # polling could therefore find them all idle and fall through before any exposure
+            # had begun, ending the activities early. Harmless-ish until now; with the
+            # release below it would have reaped the folder from under the bands.
+            for thread in band_threads:
+                thread.join()
+
+            self.end_activity(DeepspecActivities.Acquiring)
+            spec.end_activity(SpecActivities.ExposingDeepspec)
+        except Exception:
+            logger.exception(f"{function_name()}: deepspec assignment failed")
+        finally:
+            # Reaped only once every protected product has reached the shared area, and
+            # never before -- an exposure that failed to move keeps its folder rather than
+            # being deleted with it.
+            MoveGuardian().release_folder(str(acquisition_folder), logger=logger)
 
     @property
     def api_router(self) -> APIRouter:
