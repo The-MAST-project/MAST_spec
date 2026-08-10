@@ -13,6 +13,7 @@ from cameras.greateyes.greateyes import Exposure
 from common.activities import HighspecActivities
 from common.config import Config
 from common.dlipowerswitch import SwitchedOutlet
+from common.filer import MoveGuardian
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import QHY600Status
@@ -599,7 +600,10 @@ class QHY600(Component, SwitchedOutlet):
                 )
                 hdu.header["FOCUSUNI"] = mnemonic
             # hdu.header["GAIN"] = self.gain
-            hdu.writeto(self.latest_settings.image_path, overwrite=True)
+            # Protect the FITS while it is being written, and record it as a product so
+            # release_folder() waits for it rather than discarding it as scratch.
+            with MoveGuardian().protect(str(self.latest_settings.image_path)):
+                hdu.writeto(self.latest_settings.image_path, overwrite=True)
             self.info(f"{self.model}: Image saved to {str(self.latest_settings.image_path)}")
             self.end_activity(QHYActivities.Saving)
 
