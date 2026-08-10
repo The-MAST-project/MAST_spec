@@ -30,6 +30,7 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.shutter import ShutterConfig
 from common.const import Const
+from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, SpectrographAssignment
@@ -451,27 +452,52 @@ class Highspec(Component):
             )
         )
 
-        spec_exposure_settings = SpecExposureSettings(
-            exposure_duration=999,
-            image_full_name=str(acquisition_folder / "highspec" / "dummy.fits"),
-        )  # dummy exposure_duration, temporary
-        logger.info(f"taking {highspec_assignment.camera.number_of_exposures} exposures")
-        assert isinstance(highspec_assignment.camera.number_of_exposures, int)
-        spec.start_activity(SpecActivities.ExposingHighspec, data={"instrument": "highspec"})
-        for seq in range(1, highspec_assignment.camera.number_of_exposures + 1):
-            spec_exposure_settings.image_full_name = os.path.join(acquisition_folder, f"exposure-{seq:03}.fits")
-            self.camera.start_acquisition(spec_exposure_settings)
-            logger.info(f"waiting for end of exposure-{seq:03} ...")
-            while self.camera.is_active(NewtonActivities.Acquiring):
-                time.sleep(0.5)
+        # From here on the ram-disk folder exists and exposures will be written into it, so
+        # every exit path must reach release_folder() -- see the finally. The except is not
+        # decoration either: this runs on the "newton-acquisition" thread, where an escaping
+        # exception would go to threading's excepthook, i.e. to a stderr nobody reads.
+        try:
+            spec_exposure_settings = SpecExposureSettings(
+                exposure_duration=999,
+                image_full_name=str(acquisition_folder / "highspec" / "dummy.fits"),
+            )  # dummy exposure_duration, temporary
+            logger.info(f"taking {highspec_assignment.camera.number_of_exposures} exposures")
+            assert isinstance(highspec_assignment.camera.number_of_exposures, int)
+            spec.start_activity(SpecActivities.ExposingHighspec, data={"instrument": "highspec"})
+            for seq in range(1, highspec_assignment.camera.number_of_exposures + 1):
+                spec_exposure_settings.image_full_name = os.path.join(acquisition_folder, f"exposure-{seq:03}.fits")
+                self.camera.start_acquisition(spec_exposure_settings)
+                logger.info(f"waiting for end of exposure-{seq:03} ...")
+                while self.camera.is_active(NewtonActivities.Acquiring):
+                    time.sleep(0.5)
 
-            with fits.open(spec_exposure_settings.image_full_name, mode="update") as hdul:
-                hdr = hdul[0].header  # type: ignore
-                hdr["PROGRAM"] = "MAST"
-                hdr["INSTRUME"] = "Highspec"
-                hdul.flush()
-        self.end_activity(HighspecActivities.Acquiring)
-        spec.end_activity(SpecActivities.ExposingHighspec)
+                # The camera protected the file while writing it; this header update is a
+                # second write to the same path, so it is protected too -- otherwise the
+                # move below could catch the file mid-flush.
+                with (
+                    MoveGuardian().protect(spec_exposure_settings.image_full_name),
+                    fits.open(spec_exposure_settings.image_full_name, mode="update") as hdul,
+                ):
+                    hdr = hdul[0].header  # type: ignore
+                    hdr["PROGRAM"] = "MAST"
+                    hdr["INSTRUME"] = "Highspec"
+                    hdul.flush()
+
+                # The exposure is complete: hand it to the mover. Moving per exposure rather
+                # than per folder keeps the local disk from holding a whole assignment, and
+                # matches how MAST_unit moves each image once the flow knows it is done
+                # (src/unit.py, src/solving.py) rather than from the camera's save path.
+                Filer().move_ram_to_shared(spec_exposure_settings.image_full_name)
+
+            self.end_activity(HighspecActivities.Acquiring)
+            spec.end_activity(SpecActivities.ExposingHighspec)
+        except Exception:
+            logger.exception(f"{function_name()}: highspec assignment failed")
+        finally:
+            # Reaped only once every protected product has reached the shared area, and
+            # never before -- an exposure that failed to move keeps its folder rather than
+            # being deleted with it.
+            MoveGuardian().release_folder(str(acquisition_folder), logger=logger)
 
     def can_execute(self, assignment: SpectrographAssignment) -> tuple[bool, List[str] | None]:
         if self.camera and self.camera.detected:

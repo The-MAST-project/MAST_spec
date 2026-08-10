@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from common.activities import GreatEyesActivities
 from common.config import Config
 from common.dlipowerswitch import SwitchedOutlet
+from common.filer import MoveGuardian
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.assignments import SpectrographAssignment
@@ -985,7 +986,12 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         try:
             self.start_activity(GreatEyesActivities.Saving, label=self.name)
             os.makedirs(os.path.dirname(filename), exist_ok=True)
-            hdul.writeto(filename)
+            # Protect the FITS from being moved to shared while it is still being written,
+            # and record it as a product so release_folder() waits for it instead of
+            # discarding it as scratch. This runs on the camera's acquisition thread; the
+            # ram->shared move runs on Filer's mover thread, so the two never deadlock.
+            with MoveGuardian().protect(filename):
+                hdul.writeto(filename)
             self.end_activity(GreatEyesActivities.Saving, label=self.name)
             self.info(f"saved exposure to '{filename}'")
         except Exception as e:

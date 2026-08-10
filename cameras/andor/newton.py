@@ -20,6 +20,7 @@ from cameras.andor.sdk.pyAndorSDK2.pyAndorSDK2.atmcd import AndorCapabilities
 from common.activities import NewtonActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.filer import MoveGuardian
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.newton import (
@@ -894,16 +895,21 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         Path(self.latest_exposure_settings.image_full_name).parent.mkdir(parents=True, exist_ok=True)
 
         self.start_activity(NewtonActivities.ReadingOut)
-        ret = self.sdk.SaveAsFITS(self.latest_exposure_settings.image_full_name, typ=0)
-        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.info(f"saved {self.latest_exposure_settings.image_full_name}")
-            fits.setval(
-                self.latest_exposure_settings.image_full_name,
-                "EXPOSURE",
-                value=self.latest_exposure_settings.exposure_duration,
-            )
-        else:
-            self.error(f"failed sdk.SaveAsFITS({self.latest_exposure_settings.image_full_name}, typ=0) (ret={ret})")
+        # The SDK writes the file and `fits.setval` then rewrites its header, so both are
+        # inside one protect: a ram->shared move must not see the file between them. This
+        # also records it as a product, so release_folder() waits for it to reach the
+        # shared area instead of discarding it as scratch.
+        with MoveGuardian().protect(self.latest_exposure_settings.image_full_name):
+            ret = self.sdk.SaveAsFITS(self.latest_exposure_settings.image_full_name, typ=0)
+            if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+                self.info(f"saved {self.latest_exposure_settings.image_full_name}")
+                fits.setval(
+                    self.latest_exposure_settings.image_full_name,
+                    "EXPOSURE",
+                    value=self.latest_exposure_settings.exposure_duration,
+                )
+            else:
+                self.error(f"failed sdk.SaveAsFITS({self.latest_exposure_settings.image_full_name}, typ=0) (ret={ret})")
 
         self.end_activity(NewtonActivities.ReadingOut)
         self.end_activity(NewtonActivities.Acquiring)
