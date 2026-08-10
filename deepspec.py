@@ -16,7 +16,7 @@ from common.activities import DeepspecActivities, GreatEyesActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
-from common.filer import MoveGuardian
+from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.assignments import (
@@ -45,6 +45,22 @@ from common.spec import (
 from common.utils import function_name
 
 logger = get_logger(__name__)
+
+
+def _hand_exposure_to_mover(camera: GreatEyes, exposure_number: int) -> None:
+    """Hand a finished exposure to the ram->shared mover.
+
+    save_image() protected the write, which is what records it as a product for
+    release_folder(). Moves the path actually written, held in `latest_saved_image_path`:
+    save_image may append ".fits" or a frame-type tag, so the requested `image_file` is not
+    reliably the one on disk.
+    """
+    if camera.latest_saved_image_path:
+        Filer().move_ram_to_shared(camera.latest_saved_image_path)
+    else:
+        logger.error(f"{function_name()}: exposure #{exposure_number} was not saved; nothing to move")
+
+
 class Deepspec(Component):
     _instance = None
     _initialized = False
@@ -295,51 +311,60 @@ class Deepspec(Component):
             folder = PathMaker().make_spec_exposures_folder(spec_name="deepspec", band=band)
         os.makedirs(folder, exist_ok=True)
 
-        if delay_before_exposure > 0:
-            logger.info(f"delaying before exposure for {delay_before_exposure} seconds...")
-            time.sleep(delay_before_exposure)
+        # `folder` is this function's alone -- it writes every exposure in it and nothing
+        # else does -- so it is the one place that can release it, and every exit path
+        # (including the early return on camera.errors) must reach the finally.
+        try:
+            if delay_before_exposure > 0:
+                logger.info(f"delaying before exposure for {delay_before_exposure} seconds...")
+                time.sleep(delay_before_exposure)
 
-        readout: ReadoutModel = ReadoutModel(
-            mode=ReadoutAmplifiersMapping[readout_amplifiers],
-            speed=ReadoutSpeedMapping[readout_speed],
-        )
-        shutter: ShutterModel = ShutterModel(
-            automatic=camera.conf.settings.shutter.automatic,
-            close_time=camera.conf.settings.shutter.close_time,
-            open_time=camera.conf.settings.shutter.open_time,
-        )
-
-        for exposure_number in range(number_of_exposures or 1):
-            image_file = os.path.join(folder, "seq=" + PathMaker.make_seq(folder) + ".fits")
-
-            settings: GreateyesSettingsModel = GreateyesSettingsModel(
-                bytes_per_pixel=1,
-                crop=None,
-                shutter=shutter,
-                exposure_duration=seconds,
-                number_of_exposures=number_of_exposures,
-                binning={"x": x_binning, "y": y_binning},  # type: ignore
-                image_file=image_file,
-                temp=None,
-                readout=readout,
-                probing=None,
-                frame_type=frame_type,
+            readout: ReadoutModel = ReadoutModel(
+                mode=ReadoutAmplifiersMapping[readout_amplifiers],
+                speed=ReadoutSpeedMapping[readout_speed],
+            )
+            shutter: ShutterModel = ShutterModel(
+                automatic=camera.conf.settings.shutter.automatic,
+                close_time=camera.conf.settings.shutter.close_time,
+                open_time=camera.conf.settings.shutter.open_time,
             )
 
-            camera.start_exposure(
-                greateyes_exposure_settings=settings,
-                bypass_temperature_stabilization_check=bypass_temperature_stabilization_check,
-            )
-            if camera.errors:
-                errors = [
-                    f"exposure #{exposure_number} of {number_of_exposures}, failed to start: '{e}'" for e in camera.errors
-                ]
-                return CanonicalResponse(errors=errors)
+            for exposure_number in range(number_of_exposures or 1):
+                image_file = os.path.join(folder, "seq=" + PathMaker.make_seq(folder) + ".fits")
 
-            while camera.is_active(GreatEyesActivities.Acquiring):
-                time.sleep(0.5)
+                settings: GreateyesSettingsModel = GreateyesSettingsModel(
+                    bytes_per_pixel=1,
+                    crop=None,
+                    shutter=shutter,
+                    exposure_duration=seconds,
+                    number_of_exposures=number_of_exposures,
+                    binning={"x": x_binning, "y": y_binning},  # type: ignore
+                    image_file=image_file,
+                    temp=None,
+                    readout=readout,
+                    probing=None,
+                    frame_type=frame_type,
+                )
 
-        return CanonicalResponse_Ok
+                camera.start_exposure(
+                    greateyes_exposure_settings=settings,
+                    bypass_temperature_stabilization_check=bypass_temperature_stabilization_check,
+                )
+                if camera.errors:
+                    errors = [
+                        f"exposure #{exposure_number} of {number_of_exposures}, failed to start: '{e}'"
+                        for e in camera.errors
+                    ]
+                    return CanonicalResponse(errors=errors)
+
+                while camera.is_active(GreatEyesActivities.Acquiring):
+                    time.sleep(0.5)
+
+                _hand_exposure_to_mover(camera, exposure_number)
+
+            return CanonicalResponse_Ok
+        finally:
+            MoveGuardian().release_folder(folder, logger=logger)
 
     def adjust_temperature_one_camera(self, band: DeepspecBands, target_temperature: int | None = None):
         if band not in list(get_args(DeepspecBands)):
