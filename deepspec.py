@@ -425,7 +425,11 @@ class Deepspec(Component):
             AssignmentNotification(
                 assignment_id=str(ulid),
                 state="in-progress",
-                shared_top=str(acquisition_folder),
+                # Relative to the shared root, not the absolute ram path this folder is
+                # written to: the controller symlinks it, and a `D:` path means nothing
+                # there. `move_ram_to_shared` only swaps ram.root for shared.root, so the
+                # ram-relative path is exactly where these products land. MAST_spec#39.
+                shared_top=os.path.relpath(acquisition_folder, Filer().ram.root),
                 shared_subpath="deepspec",
             )
         )
