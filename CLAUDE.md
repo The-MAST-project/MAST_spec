@@ -2,7 +2,7 @@
 
 # MAST_spec — Claude Guidance
 
-Spectrograph control backend. Runs on `mast-wis-spec`. Imports `MAST_common` as `common`, which is cloned as a **sibling** of this repo in the flat layout (`<top>/common/`, `<top>/spec/`) and put on `sys.path` by the `mast.pth` the provisioning writes into the venv. It is no longer a submodule.
+Spectrograph control backend. Runs on `mast-ns-spec` (the active site is `ns`). Imports `MAST_common` as `common`, which is cloned as a **sibling** of this repo in the flat layout (`<top>/common/`, `<top>/spec/`) and put on `sys.path` by the `mast.pth` the provisioning writes into the venv. It is no longer a submodule.
 
 ## Running
 
