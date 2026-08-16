@@ -1,3 +1,16 @@
+# Normalize line endings: LF in the repository and in the working tree, so the
+# ruff formatter (line-ending = "lf" in ruff.toml) and Windows checkouts stop
+# rewriting each other's files. Matches MAST_common's .gitattributes.
+#
+# This repo is Windows-only, but nothing in it wants CRLF: there are no tracked
+# .bat/.cmd/.ps1/.sh files, and Python on Windows is newline-agnostic. The blobs
+# were already LF (core.autocrlf=true has been converting on commit all along) --
+# only the checkout was CRLF, and that mismatch was what made `ruff format`
+# condemn every file in the repo.
+#
+# The vendored-SDK rules below deliberately override this line; keep them last.
+* text=auto eol=lf
+
 # Vendored greateyes SDK — keep exactly as the vendor shipped it.
 #
 # core.autocrlf is true on the MAST machines, which would rewrite the wrapper's
