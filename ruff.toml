@@ -14,7 +14,20 @@ target-version = "py312"
 
 # MAST_common is no longer checked out inside this repo (it was the `common`
 # submodule; it is now a sibling clone, <top>/common/), so there is nothing here
-# to exclude. Keep this file scoped to this repo's own sources.
+# to exclude. Keep this file scoped to this repo's own sources. First-party
+# classification of `common` comes from [lint.isort] below, not from `src`.
+#
+# The greateyes SDK wrapper, which this branch vendors, is upstream code (see
+# cameras/greateyes/sdk/VENDOR.md). Formatting it rewrites the vendor's comment
+# separators and blank lines, which buries the ~80 real lines of an SDK bump in
+# hundreds of lines of cosmetic churn. Keep it byte-identical to the archive.
+extend-exclude = ["cameras/greateyes/sdk/greateyesSDK.py"]
+
+# Honour the exclude above even when a path is passed explicitly. Without this,
+# editor format-on-save (.vscode/settings.json turns it on, and the ruff
+# extension passes the open file by name) and file-passing pre-commit hooks
+# would still rewrite the vendored SDK.
+force-exclude = true
 
 [lint]
 # Enable rules from common linters.

@@ -1,4 +1,3 @@
-import ctypes
 import datetime
 import os
 import sys
@@ -9,6 +8,7 @@ from enum import IntEnum
 from typing import Callable, get_args
 
 import astropy.io.fits as fits
+import numpy as np
 from astropy.io.fits import Card
 from pydantic import BaseModel
 
@@ -609,79 +609,6 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         )
         self.end_activity(GreatEyesActivities.SettingParameters, label=self.name)
 
-    def _start_measurement(self, show_shutter: bool) -> bool:
-        assert self.ge_device is not None
-
-        assert self.bytes_per_pixel is not None
-        geFunc = ge.greateyesDLL.StartMeasurement
-        geFunc.restype = ctypes.c_bool
-        geFunc.argtypes = [
-            ctypes.c_bool,
-            ctypes.c_bool,
-            ctypes.c_bool,
-            ctypes.c_bool,
-            ctypes.c_int,  # bitDepth (bytes per pixel)
-            ctypes.POINTER(ctypes.c_int),
-            ctypes.c_int,
-        ]
-
-        c_status = ctypes.c_int(16)
-        ret = geFunc(
-            ctypes.c_bool(False),
-            ctypes.c_bool(True),
-            ctypes.c_bool(show_shutter),
-            ctypes.c_bool(False),
-            ctypes.c_int(self.bytes_per_pixel),
-            ctypes.pointer(c_status),
-            ctypes.c_int(self.ge_device),
-        )
-        op = f"StartMeasurement(show_shutter={show_shutter}, addr={self.ge_device})"
-        if ret:
-            self.info(f"OK - {op}")
-        else:
-            self.append_error(f"FAILED - {op} (status: {ge.StatusMSG} ({ge.Status}))")
-        return bool(ret)
-
-    def _get_measurement_data(self):
-        import numpy as np
-
-        assert self.ge_device is not None
-        assert (
-            self.x_size is not None
-            and self.y_size is not None
-            and self.bytes_per_pixel is not None
-        )
-
-        if self.bytes_per_pixel == 2:
-            c_pixel_type = ctypes.c_ushort
-            np_dtype = np.uint16
-        else:
-            c_pixel_type = ctypes.c_ulong
-            np_dtype = np.uint32
-
-        array_class = c_pixel_type * (self.x_size * self.y_size)
-        array_inst = array_class()
-        buf_ptr = ctypes.cast(ctypes.pointer(array_inst), ctypes.POINTER(c_pixel_type))
-
-        geFunc = ge.greateyesDLL.GetMeasurementData
-        geFunc.restype = ctypes.c_bool
-        geFunc.argtypes = [
-            ctypes.POINTER(c_pixel_type),
-            ctypes.POINTER(ctypes.c_int),
-            ctypes.c_int,
-        ]
-
-        c_status = ctypes.c_int(16)
-        worked = geFunc(buf_ptr, ctypes.pointer(c_status), ctypes.c_int(self.ge_device))
-
-        if worked:
-            return np.ctypeslib.as_array(array_inst)
-        else:
-            self.append_error(
-                f"FAILED - GetMeasurementData(addr={self.ge_device}) (status: {ge.StatusMSG} ({ge.Status}))"
-            )
-            return np.ndarray((self.x_size, self.y_size), dtype=np_dtype)
-
     def start_exposure(
         self,
         greateyes_exposure_settings: GreateyesSettingsModel,
@@ -781,6 +708,17 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         else:
             self.append_error(f"FAILED - {op} (status: {ge.StatusMSG} ({ge.Status}))")
 
+    def _close_shutter_if_manual(self):
+        """Close the shutter, unless the camera is driving it automatically."""
+        assert self.ge_device is not None
+        settings = self.latest_greateyes_exposure_settings
+        if not settings or not settings.shutter or settings.shutter.automatic:
+            return
+        if not ge.OpenShutter(0, addr=self.ge_device):
+            self.append_error(
+                f"could not close shutter with ge.OpenShutter(0, addr={self.ge_device})"
+            )
+
     def readout(self):
         if not self.detected:
             self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
@@ -797,15 +735,21 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.end_activity(GreatEyesActivities.ReadingOut, label=self.name)
 
         assert self.latest_greateyes_exposure_settings
-        if (
-            self.latest_greateyes_exposure_settings.shutter
-            and not self.latest_greateyes_exposure_settings.shutter.automatic
-        ):
-            ret = ge.OpenShutter(0, addr=self.ge_device)
-            if not ret:
-                self.append_error(
-                    f"could not close shutter with ge.OpenShutter(0, addr={self.ge_device})"
-                )
+        self._close_shutter_if_manual()
+
+        # SDK 22.5 rev2 signals a failed readout with None (and False when the
+        # reported bit depth was unusable). Earlier wrappers returned a
+        # zero-filled array instead, which we would have written out as a
+        # perfectly valid-looking FITS full of zeros. Checked after the shutter
+        # block above so a failed readout still closes the shutter, and by type
+        # rather than truthiness because a truth test on an ndarray raises.
+        if not isinstance(image_array, np.ndarray):
+            self.append_error(
+                f"FAILED - GetMeasurementData_DynBitDepth(addr={self.ge_device}) "
+                f"(status: {ge.StatusMSG} ({ge.Status}))"
+            )
+            self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
+            return
 
         self.start_activity(GreatEyesActivities.Saving, label=self.name)
         hdr = fits.Header()

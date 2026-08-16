@@ -3,6 +3,9 @@
 Created on Wed Mar 18 11:21:55 2020
 20200512 Updated SetFunctions
 20220214 Updated GetSensorOutputModeStrings (SDK 22.5)
+20250122 Updated StartContinuousMeasurement (greateyesBeta.h)
+20250122 Updated GetMeasurementData_DynBitDepth returns "None" on error or noImage
+
 
 @author: Marcel Behrendt
 
@@ -13,12 +16,25 @@ The appropriate greateyes SDK needs to be located in a directory, included in PA
 
 import ctypes
 import numpy as np
+import os
 import sys
 import platform
 import time
 
+# MAST local modification -- see VENDOR.md.
+# Upstream hardcodes an absolute path that does not exist on our machines.
+# Load the DLL vendored next to this file instead, so the binary stays pinned
+# to the source that was tested against it. MAST_GREATEYES_DLL_DIR overrides
+# the location for development boxes without editing vendored code.
 if platform.system() == 'Windows':
-    greateyesDLL = ctypes.WinDLL("C:\\Program Files\\greateyes\\greateyesVision\\greateyes.dll")
+    _dll_dir = os.environ.get(
+        'MAST_GREATEYES_DLL_DIR',
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib', 'x64'),
+    )
+    # Lets the DLL resolve its own dependencies from that directory too.
+    if os.path.isdir(_dll_dir):
+        os.add_dll_directory(_dll_dir)
+    greateyesDLL = ctypes.WinDLL(os.path.join(_dll_dir, 'greateyes.dll'))
     c_PixelDataType16bit = ctypes.c_ushort
     c_PixelDataType32bit = ctypes.c_ulong
 elif platform.system() == 'Linux':
@@ -29,7 +45,7 @@ elif platform.system() == 'Linux':
 
 # 1. Constant
 # 1.1 Possible value of statusMSG
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 StatusMSG = ''
 c_Status = ctypes.c_int(16)
 Status = int(16)
@@ -66,7 +82,7 @@ def UpdateStatus():
         
 
 # 1.2 Function Constant
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 TemperatureHardwareOption = int(42223)
 maxPixelBurstTransfer = int(8823794)
 
@@ -84,14 +100,14 @@ readoutSpeed_3_MHz = int(3000)
 connectionType_USB = int(0)
 connectionType_Ethernet = int(3)
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # 2. Exported DLL Functions
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # 2.1 Setup camera interface (USB/Ethernet)
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # sets the connection type to either USB or Ethernet
 # IN: connectionType    connectionType_USB (0) (default): Camera connected via USB
@@ -121,11 +137,11 @@ def SetupCameraInterface(connectionType = connectionType_USB, ipAddress = '192.1
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # 2.2 Connecting to a greateyes camera server
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # Necessary for connection via Ethernet only. Call this function to connect to a greateyesCameraServer which is connected to up to four cameras. (MultiCamMode)
 # Suitable for operating multiple greateyes cameras with USB interface connected to a greateyes camera server.
@@ -144,7 +160,7 @@ def ConnectToMultiCameraServer():
     # returning return value
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # Necessary for connection via Ethernet only. Call this function to connect to up to four greateyesCameraServers. Each greateyesCameraServer operates one camera. (MultiServerMode)
 # Suitable for all greateyes cameras with ethernet interface.
@@ -163,12 +179,10 @@ def ConnectToSingleCameraServer(addr = 0):
     # calling function
     retValue = geFunc(ge_addr)
 
-    UpdateStatus()
-
     # returning return value
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # In:      addr             index of connected devices; begins at addr = 0 for first device; max. 4 devices
 #                           The function ignores the parameter addr when connected with ConnectToCameraServer() (MultiCamMode)
@@ -189,11 +203,11 @@ def DisconnectCameraServer(addr = 0):
     # returning return value
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # 2.3 Connecting to a greateyes camera (USB/Ethernet)
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # Result:               number of devices connected
 #                       Call this funktion before calling ConnectCamera()
@@ -212,7 +226,7 @@ def GetNumberOfConnectedCams():
     # returning return value
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 #    -replaces CheckCamera function; connects up to 4 devices; Ethernet and USB
 #    -call GetNumberOfConnectedCams before in case of connecting to cameras with USB interface directly or through a MultiCamMode
@@ -249,7 +263,7 @@ def ConnectCamera(model = [], addr=0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # disconnects a single camera with the given addr index
 # In:      addr             index of connected devices; begins at addr = 0 for first device
@@ -274,11 +288,11 @@ def DisconnectCamera(addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # 2.4 Initialization of greateyes camera (USB/Ethernet)
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # It is recommended to call InitCamera(..) at least one time after connecting to the camera.
 # OUT:    statusMSG         updates index and string of status message
@@ -304,11 +318,11 @@ def InitCamera(addr = 0):
     time.sleep(2)
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # 2.5 Set Functions
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # sets the exposure time for measurements
 # IN:       exposureTime        exposure time [0..2^31] ms
@@ -335,7 +349,7 @@ def SetExposure(exposureTime, addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # sets the pixel frequency for measurements
 # IN:       readoutSpeed        sets pixel clock to [0..6]
@@ -366,7 +380,7 @@ def SetReadOutSpeed(readOutSpeed, addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # sets binning options for measurements
 # IN:       binningX        Number of pixels [1...numPixelInX] to be binned in x-direction (if supported by CCD)
@@ -391,8 +405,6 @@ def SetReadOutSpeed(readOutSpeed, addr = 0):
 # OUT:      statusMSG       updates index and string of status message
 # In:       addr            index of connected devices; begins at addr = 0 for first device
 # Result:   Bool            success true/false
-
-
 def SetBinningMode(binningX, binningY, addr = 0):
     # referring to DLL function
     geFunc = greateyesDLL.SetBinningMode
@@ -414,7 +426,7 @@ def SetBinningMode(binningX, binningY, addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # sets the exposure time for measurements
 # IN:       openTime            time to wait before exposure [ms]
@@ -422,8 +434,6 @@ def SetBinningMode(binningX, binningY, addr = 0):
 # OUT:      statusMSG           updates index and string of status message
 # In:       addr                index of connected devices; begins at addr = 0 for first device
 # Result:   Bool                success true/false
-
-
 def SetShutterTimings(openTime, closeTime, addr = 0):
     # referring to DLL function
     geFunc = greateyesDLL.SetShutterTimings
@@ -445,7 +455,7 @@ def SetShutterTimings(openTime, closeTime, addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # sets the TTL shutter output of the camera high or low on function call.
 # or sets the output to be handled automatically by the camera during measurements
@@ -478,15 +488,13 @@ def OpenShutter(state, addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # Call this function to manually set the “SYNC” TTL trigger output high/low.
 # IN:       syncHigh            sync output high/low
 # OUT:      statusMSG           updates index and string of status message
 # In:       addr                index of connected devices; begins at addr = 0 for first device
 # Result:   Bool                success true/false
-
-
 def SyncOutput(syncHigh, addr = 0):
     # referring to DLL function
     geFunc = greateyesDLL.OpenShutter
@@ -507,14 +515,12 @@ def SyncOutput(syncHigh, addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # IN:       numberOfMeasurements    number of measurements in series. Mind the maximum Number of Pixels, see above
 # OUT:      statusMSG               updates index and string of status message
 # In:       addr                    index of connected devices; begins at addr = 0 for first device
 # Result:   Bool                    success true/false
-
-
 def SetupBurstMode(numberOfMeasurements, addr = 0):
     # referring to DLL function
     geFunc = greateyesDLL.SetupBurstMode
@@ -535,14 +541,12 @@ def SetupBurstMode(numberOfMeasurements, addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # IN:       status                  sets burst mode on/off
 # OUT:      statusMSG               updates index and string of status message
 # In:       addr                    index of connected devices; begins at addr = 0 for first device
 # Result:   Bool                    success true/false
-
-
 def ActivateBurstMode(status, addr = 0):
     # referring to DLL function
     geFunc = greateyesDLL.ActivateBurstMode
@@ -563,15 +567,13 @@ def ActivateBurstMode(status, addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # IN:       col                     number of columns to read out
 # IN:       line                    number of lines to read out
 # OUT:      statusMSG               updates index and string of status message
 # In:       addr                    index of connected devices; begins at addr = 0 for first device
 # Result:   Bool                    success true/false
-
-
 def SetupCropMode2D(col, line, addr = 0):
     # referring to DLL function
     geFunc = greateyesDLL.SetupCropMode2D
@@ -593,14 +595,12 @@ def SetupCropMode2D(col, line, addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # IN:       status                  bool: sets crop mode on/off
 # OUT:      statusMSG               updates index and string of status message
 # In:       addr                    index of connected devices; begins at addr = 0 for first device
 # Result:   Bool                    success true/false
-
-
 def ActivateCropMode(status, addr = 0):
     # referring to DLL function
     geFunc = greateyesDLL.ActivateCropMode
@@ -621,7 +621,7 @@ def ActivateCropMode(status, addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # IN:       gainSetting             0 -> Low ( Max. Dyn. Range )
 #                                   1 -> Std ( High Sensitivity )
@@ -648,7 +648,7 @@ def SetupGain(gainSetting, addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # IN:       capacityMode            false -> Standard ( Low Noise )
 #                                   true -> Extended ( High Signal )
@@ -676,7 +676,7 @@ def SetupCapacityMode(capacityMode, addr = 0):
     time.sleep(2)
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # IN:       safeFifoMode            true/false
 #                                   default: true
@@ -700,7 +700,7 @@ def SetupTransferOptions(safeFifoMode = True, saveUsbMode = False):
     # returning return value
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # IN:       sensorOutputMode        [ 0 .. (NumberOfSensorOutputModes - 1) ]
 # In:       addr                    index of connected devices; begins at addr = 0 for first device
@@ -722,7 +722,7 @@ def SetupSensorOutputMode(sensorOutputMode, addr = 0):
     # returning return value
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # OUT:      statusMSG               updates index and string of status message
 # In:       addr                    index of connected devices; begins at addr = 0 for first device
@@ -746,7 +746,7 @@ def ClearFifo(addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # IN:       bytesPerPixel           [2 .. 4]
 #                                   set bytes per pixel for cameras with 18 bit adc (max. 20 bit dynamic range through oversampling)
@@ -774,7 +774,7 @@ def SetBitDepth(bytesPerPixel, addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # IN:       extTriggerTimeOut       [0..65535]ms
 #                                   set timeout for Startmeaseurement_V2() function with external trigger.
@@ -797,7 +797,7 @@ def SetExtTriggerTimeOut(extTriggerTimeOut, addr = 0):
     # returning return value
     return retValue
 	
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 	
 # In: timeOut				>= 0 ms (Default : 3000ms)
 # Result: bool	            success true/false
@@ -820,7 +820,7 @@ def SetBusyTimeout(timeout):
     return retValue
 				
 	
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
  # Switch backside LED's on/off
 # In: status				true/false 
@@ -845,10 +845,10 @@ def SetLEDStatus(status, addr=0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # 2.6 Get Functions
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # returns the DLL Version as string
 def GetDLLVersion():
@@ -866,7 +866,7 @@ def GetDLLVersion():
 
     # returning return value
     return DLLVersion.decode('ASCII')
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # returns the firmware version of the camera as integer value
 # In: addr					index of connected devices; begins at addr = 0 for first device
@@ -887,7 +887,7 @@ def GetFirmwareVersion(addr = 0):
     # returning return value
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # information about the image array to be expected.
 # returns list with 3 values:
@@ -924,7 +924,7 @@ def GetImageSize(addr = 0):
     # returning return value
     return results
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # returns size of each pixel
 # In: addr      index of connected devices; begins at addr = 0 for first device
@@ -945,7 +945,7 @@ def GetSizeOfPixel(addr = 0):
     # returning return value
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # returns current state of DLL operation
 # In: addr		index of connected devices; begins at addr = 0 for first device
@@ -966,7 +966,7 @@ def DllIsBusy(addr = 0):
     # returning return value
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # returns maximum exposure time to be set
 # In: addr		index of connected devices; begins at addr = 0 for first device
@@ -987,7 +987,7 @@ def GetMaxExposureTime(addr = 0):
     # returning return value
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # returns maximum setting for horizontal binning to be set
 # In:   addr	           index of connected devices; begins at addr = 0 for first device
@@ -1012,7 +1012,7 @@ def GetMaxBinningX(addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # returns maximum setting for vertical binning to be set
 # In:   addr	           index of connected devices; begins at addr = 0 for first device
@@ -1037,7 +1037,7 @@ def GetMaxBinningY(addr = 0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # provides information about the supported sensor features of the camera.
 # In: feature       possible features:
@@ -1067,7 +1067,7 @@ def SupportedSensorFeature(feature, addr=0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # returns the number of output modes the specific camera model provides
 # In: addr          index of connected devices; begins at addr = 0 for first device
@@ -1092,7 +1092,7 @@ def GetNumberOfSensorOutputModes(addr=0):
     # returning return value
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # returns a string containing information on the single indexed output mode
 # In: index         [ 0 .. (NumberOfSensorOutputModes - 1) ]
@@ -1118,7 +1118,7 @@ def GetSensorOutputModeStrings(index, addr = 0):
     # returning return value
     return OutputModeString
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # returns the time that passed between the last call for measurement and the data being available in the DLL
 # In: addr	         index of connected devices; begins at addr = 0 for first device
@@ -1139,11 +1139,11 @@ def GetLastMeasTimeNeeded(addr = 0):
     # returning return value
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # 2.7 Temperature Control Functions
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # This function inits the sensor cooling control. It is based upon the coolingHardware Parameter.
 #   To get the CoolingHardware for your camera please have a
@@ -1185,7 +1185,7 @@ def TemperatureControl_Init(coolingHardware = TemperatureHardwareOption, addr=0)
     UpdateStatus()
     return Temp_limits
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # returns the actual temperature of the indexed thermistor
 # In:       thermistor      0: sensor temperature   1: backside temperature
@@ -1221,7 +1221,7 @@ def TemperatureControl_GetTemperature(thermistor = 0, addr=0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # adjust temperature of CCD sensor in °C --> (Kelvin - 273.15).
 # In:       temperature      value must be between TemperatureControl_GetMinTemperature() and TemperatureControl_GetMaxTemperature()
@@ -1248,7 +1248,7 @@ def TemperatureControl_SetTemperature(temperature, addr=0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # switch sensor cooling off completely
 # In:       addr            index of connected devices; begins at addr = 0 for first device
@@ -1273,10 +1273,10 @@ def TemperatureControl_SwitchOff(addr=0):
     UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # 2.8 Image Acquisition
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # Starts measurement in a thread
 # IN:       correctBias         if true, each line will be intensity corrected dependent on the dark pixel values left and right of this line
@@ -1306,10 +1306,10 @@ def StartMeasurement_DynBitDepth(correctBias = False, showSync = True, showShutt
     retValue = geFunc(ge_correctBias, ge_showSync, ge_showShutter, ge_triggerMode, ge_statusMSG, ge_addr)
 
     # returning return value
-    UpdateStatus
+    UpdateStatus()
     return retValue
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # Gets measurement started with StartMeasurement() function. Use DllIsBusy() function to check whether measurement is ready. Use GetImageSize() function to get size of sample.
 # IN:       pInDataStart        pointer to image array
@@ -1332,7 +1332,9 @@ def GetMeasurementData_DynBitDepth(addr = 0):
     else:
         print('GetImageSize returned unexpected value for bitDepth.')
         print('DataDimensions:', DataDimensions)
-        sys.exit()
+        UpdateStatus()
+        print(Status, StatusMSG)
+        return False
 
     # casting arguments
     geFunc.argtypes = [ctypes.POINTER(c_PixelDataType), ctypes.POINTER(ctypes.c_int), ctypes.c_int]
@@ -1352,12 +1354,12 @@ def GetMeasurementData_DynBitDepth(addr = 0):
     if worked:
         imageData=np.ctypeslib.as_array(array_inst)
     else:
-        imageData = np.ndarray((DataDimensions[0],DataDimensions[1]),dtype=py_PixelDataType)
+        imageData = None
     # returning return value
-    UpdateStatus
+    UpdateStatus()
     return imageData
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # Start and wait for measurement. Function blocks for duration of measurement. Function returns measurement in pInDataStart mem. Use GetImageSize() function to get size of sample.
 # (This function has more that six input parameters and might not work with some environments (for example Matlab). Alternatively use StartMeasurement_DynBitDepth() and GetMeasurementData_DynBitDepth()  )
@@ -1385,7 +1387,9 @@ def PerformMeasurement_Blocking_DynBitDepth(correctBias = False, showSync = True
     else:
         print('GetImageSize returned unexpected value for bitDepth.')
         print('DataDimensions:', DataDimensions)
-        sys.exit()
+        UpdateStatus()
+        print(Status, StatusMSG)
+        return False
 
     # casting arguments
     geFunc.argtypes = [ctypes.c_bool, ctypes.c_bool, ctypes.c_bool, ctypes.c_bool, ctypes.c_int,ctypes.POINTER(c_PixelDataType) , ctypes.POINTER(ctypes.c_int), ctypes.c_int]
@@ -1413,10 +1417,10 @@ def PerformMeasurement_Blocking_DynBitDepth(correctBias = False, showSync = True
         imageData = np.ndarray((DataDimensions[0],DataDimensions[1]),dtype=py_PixelDataType)
 
     # returning return value
-    UpdateStatus
+    UpdateStatus()
     return imageData
 
-# -------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------
 
 # Stops measurement started by StartMeasurement() function. Do not work with PerformMeasurement_Blocking().
 # After stopped measurement the DllIsBusy() function will return false and the GetMeasurementData() funktion will return StatusMSG=12 (Message_MeasurementStopped).
@@ -1434,6 +1438,67 @@ def StopMeasurement(addr = 0):
 
     # calling function
     retValue = geFunc(ge_addr)
+
+    # returning return value
+    return retValue
+
+#--------------------------------------------------------------------------------------------------------
+
+# Starts continuous measurement in a thread
+# IN:       correctBias         if true, each line will be intensity corrected dependent on the dark pixel values left and right of this line
+# IN:       showSync            if true, the sync output of the camera will rise during exposure time otherwise it remains low.
+# IN:       showShutter         use auto shutter
+# IN:       triggerMode         external trigger
+# IN:       triggerTimeOut	timeout for external trigger
+# IN:       msDelay		delay in ms between two consecutive measurements
+# Out:      statusMSG           index of status message
+# In:       addr                index of connected devices; begins at addr = 0 for first device
+# Result:   Bool                success true/false
+def StartContinuousMeasurement_DynBitDepth(correctBias = False, showSync = True, showShutter = False, triggerMode = False, triggerTimeOut = 65000, msDelay = 0, addr = 0):
+    # referring to DLL function
+    geFunc = greateyesDLL.StartContinousMeasurement
+    geFunc.restype = ctypes.c_bool
+
+    # casting arguments
+    geFunc.argtypes = [ctypes.c_bool, ctypes.c_bool, ctypes.c_bool, ctypes.c_bool, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.c_int]
+
+    ge_correctBias = ctypes.c_bool(correctBias)
+    ge_showSync = ctypes.c_bool(showSync)
+    ge_showShutter = ctypes.c_bool(showShutter)
+    ge_triggerMode = ctypes.c_bool(triggerMode)
+    ge_triggerTimeOut = ctypes.c_int(triggerTimeOut)
+    ge_msDelay = ctypes.c_int(msDelay)
+    
+    global c_Status
+    ge_statusMSG = ctypes.pointer(c_Status)
+    ge_addr = ctypes.c_int(addr)
+
+    # calling function
+    retValue = geFunc(ge_correctBias, ge_showSync, ge_showShutter, ge_triggerMode, ge_triggerTimeOut, ge_msDelay, ge_statusMSG, ge_addr)
+
+    # returning return value
+    UpdateStatus()
+    return retValue
+
+#--------------------------------------------------------------------------------------------------------
+
+# Stops continuous measurement started by StartContinousMeasurement_DynBitDepth() function.
+# In:       addr	       index of connected devices; begins at addr = 0 for first device
+# Result:              success true/false
+def StopContinuousMeasurement(addr = 0):
+    # referring to DLL function
+    geFunc = greateyesDLL.StopContinousMeasurement
+    geFunc.restype = ctypes.c_bool
+
+    # casting arguments
+    geFunc.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int]
+
+    ge_addr = ctypes.c_int(addr)
+    global c_Status
+    ge_statusMSG = ctypes.pointer(c_Status)
+
+    # calling function
+    retValue = geFunc(ge_statusMSG, ge_addr)
 
     # returning return value
     return retValue

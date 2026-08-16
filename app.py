@@ -9,13 +9,13 @@ from fastapi.staticfiles import StaticFiles
 
 from common.config import Config
 from common.filer import Filer
+from common.mast_logging import configure_logging, get_logger
 from cooling.chiller import Chiller
 from deepspec import Deepspec
 from filter_wheel.wheel import FilterWheels
 from highspec import Highspec
 from spec import Spec
-from stage.stage import StageController as StageController
-from common.mast_logging import configure_logging, get_logger
+from stage.stage import StageController
 
 # Logging is configured once, here, before anything logs. Every 'mast.*' logger
 # inherits the handlers and level from root by propagation.

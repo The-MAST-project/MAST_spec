@@ -1,0 +1,10 @@
+# Vendored greateyes SDK — keep exactly as the vendor shipped it.
+#
+# core.autocrlf is true on the MAST machines, which would rewrite the wrapper's
+# CRLF endings to LF in the blob and break byte-for-byte comparison against the
+# upstream archive. `-text` disables EOL conversion so the sha256 recorded in
+# cameras/greateyes/sdk/VENDOR.md verifies directly against a fresh checkout.
+cameras/greateyes/sdk/greateyesSDK.py -text
+
+# The SDK DLL must never be touched by EOL or diff heuristics.
+cameras/greateyes/sdk/lib/** binary
