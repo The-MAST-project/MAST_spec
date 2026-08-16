@@ -5,3 +5,6 @@
 
 # style(ruff): normalize repo with ruff format
 f4931969e96af5ad0b9ae958d4ec0f1271a6f94d
+
+# style(ruff): format repo (mostly greateyes.py, reflowed from ~88 to 125 cols)
+fb32ded2503a87164bd98cfa38d53b4812d2ce5a
