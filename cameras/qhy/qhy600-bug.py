@@ -131,6 +131,8 @@ qhy.GetQHYCCDMemLength.argtypes = [
 qhy.GetQHYCCDMemLength.restype = ctypes.c_uint32
 
 logger = get_logger(__name__)
+
+
 class QHYRoiModel(BaseModel):
     x: int = 0
     y: int = 0

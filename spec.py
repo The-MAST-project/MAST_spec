@@ -55,6 +55,8 @@ if highspec_outlet.power_switch.detected:
 
 
 logger = get_logger(__name__)
+
+
 class Spec(Component):
     """
     The main spectrograph object, managing the actual specs (deep and high), filter wheels, filters,
