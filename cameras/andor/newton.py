@@ -1,15 +1,15 @@
 import datetime
-import logging
 import threading
 import time
+from collections.abc import Callable
 from enum import Enum, StrEnum
 from pathlib import Path
-from typing import Annotated, Callable, Literal, cast
+from typing import Annotated, Literal, cast
 
 import win32event
 from astropy.io import fits
 from fastapi import Query
-from pyAndorSDK2 import (
+from sdk.pyAndorSDK2.pyAndorSDK2 import (
     CameraCapabilities,
     atmcd,
     atmcd_capabilities,
@@ -46,10 +46,7 @@ class AcquisitionMode(Enum):
     RUN_TILL_ABORT = 5
 
 
-acquisition_modes = Enum(
-    "AcquisitionModes",
-    list(zip(list(AcquisitionMode.__members__), list(AcquisitionMode.__members__))),
-)
+acquisition_modes = Enum("AcquisitionModes", {name: name for name in AcquisitionMode.__members__})
 
 
 class ReadMode(Enum):
@@ -60,7 +57,7 @@ class ReadMode(Enum):
     IMAGE = 4
 
 
-read_modes = Enum("ReadModes", list(zip(list(ReadMode.__members__), list(ReadMode.__members__))))
+read_modes = Enum("ReadModes", {name: name for name in ReadMode.__members__})
 
 
 class CoolerMode(Enum):
@@ -68,7 +65,7 @@ class CoolerMode(Enum):
     MAINTAIN_CURRENT_TEMP = 1
 
 
-cooler_modes = Enum("CoolerModes", list(zip(list(CoolerMode.__members__), list(CoolerMode.__members__))))
+cooler_modes = Enum("CoolerModes", {name: name for name in CoolerMode.__members__})
 
 
 class Capabilities:
@@ -146,7 +143,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(NewtonEMCCD, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self):
@@ -200,7 +197,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
         self.sdk = atmcd()
         ret = self.sdk.Initialize("")
-        if atmcd_errors.Error_Codes.DRV_SUCCESS != ret:
+        if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.error(f"Could not initialize ANDOR SDK (code={error_code(ret)})")
             return
 
@@ -526,7 +523,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
     #             self.logger.error(f"failed to win32event.WaitForSingleObject() ({result=}")
 
     @staticmethod
-    def defaults(_) -> NewtonSettingsConfig:  # type: ignore  # noqa: F821
+    def defaults(_) -> NewtonSettingsConfig:  # type: ignore
         from common.config.shutter import ShutterConfig
 
         return NewtonSettingsConfig(
@@ -987,9 +984,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         (ret, temp) = self.sdk.GetTemperatureF()
         if ret == atmcd_errors.Error_Codes.DRV_TEMP_STABILIZED:
             return True
-        elif ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-            return False
-        elif ret == atmcd_errors.Error_Codes.DRV_TEMPERATURE_NOT_STABILIZED:
+        elif ret == atmcd_errors.Error_Codes.DRV_SUCCESS or ret == atmcd_errors.Error_Codes.DRV_TEMPERATURE_NOT_STABILIZED:
             return False
         else:
             self.error(f"Could not GetTemperatureF() (code={error_code(ret)})")

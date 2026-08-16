@@ -45,6 +45,8 @@ from stage.stage import StageController as StageController
 from stage.stage import UnitNames
 
 logger = get_logger(__name__)
+
+
 class HighspecAcquisitionSettings:
     """
     A series of images from the Newton camera

@@ -31,6 +31,8 @@ STR_BUFFER_SIZE = 32
 assert qhy is not None, "Failed to load QHY SDK"
 
 logger = get_logger(__name__)
+
+
 class QHYReadMode(IntFlag):  # detected from a QHY600U3 camera
     Photographic_DSO_16BIT = 0
     High_Gain_Mode_16BIT = 1
