@@ -13,6 +13,7 @@ from cameras.greateyes.greateyes import Exposure
 from common.activities import HighspecActivities
 from common.config import Config
 from common.dlipowerswitch import SwitchedOutlet
+from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import QHY600Status
@@ -599,7 +600,10 @@ class QHY600(Component, SwitchedOutlet):
                 )
                 hdu.header["FOCUSUNI"] = mnemonic
             # hdu.header["GAIN"] = self.gain
-            hdu.writeto(self.latest_settings.image_path, overwrite=True)
+            # Protect the FITS while it is being written, and record it as a product so
+            # release_folder() waits for it rather than discarding it as scratch.
+            with MoveGuardian().protect(str(self.latest_settings.image_path)):
+                hdu.writeto(self.latest_settings.image_path, overwrite=True)
             self.info(f"{self.model}: Image saved to {str(self.latest_settings.image_path)}")
             self.end_activity(QHYActivities.Saving)
 
@@ -692,6 +696,20 @@ class QHY600(Component, SwitchedOutlet):
             depth=16,
         )
         self.start_single_exposure(settings)
+
+        # This endpoint returns as soon as the exposure is started, so the move and the
+        # release happen on a watcher rather than here. Polling ExposingSingleFrame is safe
+        # precisely because start_single_exposure() set it on *this* thread before
+        # returning -- unlike a flag a worker sets later, it cannot be read too early.
+        image_path = str(settings.image_path)
+
+        def wait_then_hand_over():
+            while self.is_active(QHYActivities.ExposingSingleFrame):
+                time.sleep(0.5)
+            Filer().move_ram_to_shared(image_path)
+            MoveGuardian().release_folder(folder, logger=logger)
+
+        threading.Thread(name="qhy600-single-exposure-mover", target=wait_then_hand_over).start()
 
     def start_acquisition(self, spec_exposure_settings: SpecExposureSettings):
         settings: QHYCameraSettingsModel = QHYCameraSettingsModel(

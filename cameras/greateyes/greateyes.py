@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from common.activities import GreatEyesActivities
 from common.config import Config
 from common.dlipowerswitch import SwitchedOutlet
+from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.assignments import SpectrographAssignment
@@ -112,6 +113,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         )
         self.latest_spec_exposure_settings: SpecExposureSettings | None = None
         self.latest_greateyes_exposure_settings: GreateyesSettingsModel | None = None
+        # Path save_image() actually wrote, which may differ from the requested image_file.
+        self.latest_saved_image_path: str | None = None
 
         self.ge_device = self.conf.device
         self._name = f"Deepspec-{self.band}"
@@ -929,7 +932,16 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         try:
             self.start_activity(GreatEyesActivities.Saving, label=self.name)
             os.makedirs(os.path.dirname(filename), exist_ok=True)
-            hdul.writeto(filename)
+            # Protect the FITS from being moved to shared while it is still being written,
+            # and record it as a product so release_folder() waits for it instead of
+            # discarding it as scratch. This runs on the camera's acquisition thread; the
+            # ram->shared move runs on Filer's mover thread, so the two never deadlock.
+            with MoveGuardian().protect(filename):
+                hdul.writeto(filename)
+            # Record what was actually written, not what was requested: the name above may
+            # have gained a ".fits" suffix or a frame-type tag. do_execute_assignment moves
+            # this path, so it has to be the real one.
+            self.latest_saved_image_path = filename
             self.end_activity(GreatEyesActivities.Saving, label=self.name)
             self.info(f"saved exposure to '{filename}'")
         except Exception as e:
@@ -1220,24 +1232,50 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         logger.debug(*args, **kwargs)
 
     def do_execute_assignment(self, assignment: SpectrographAssignment, folder: str):
-        assert isinstance(assignment.spec.settings, DeepspecSettings)
-        deepspec_settings: DeepspecSettings = assignment.spec.settings
+        # Runs on this band's own thread (see execute_assignment). Everything is caught and
+        # logged here: an escaping exception would go to threading's excepthook, i.e. to a
+        # stderr nobody reads, and Deepspec would only see the thread end.
+        try:
+            assert isinstance(assignment.spec.settings, DeepspecSettings)
+            deepspec_settings: DeepspecSettings = assignment.spec.settings
 
-        assert deepspec_settings.camera is not None
-        greateyes_settings: GreateyesSettingsModel = deepspec_settings.camera[self.band]
+            assert deepspec_settings.camera is not None
+            greateyes_settings: GreateyesSettingsModel = deepspec_settings.camera[self.band]
 
-        self.apply_settings(greateyes_settings=greateyes_settings)
+            self.apply_settings(greateyes_settings=greateyes_settings)
 
-        assert greateyes_settings.number_of_exposures is not None
-        for exposure_number in range(1, greateyes_settings.number_of_exposures + 1):
-            greateyes_settings.image_file = os.path.join(
-                folder, f"exposure-{exposure_number:03}.fits"
-            )
-            self.start_exposure(greateyes_settings)
-            while self.is_active(GreatEyesActivities.Acquiring):
-                time.sleep(0.5)
+            assert greateyes_settings.number_of_exposures is not None
+            for exposure_number in range(1, greateyes_settings.number_of_exposures + 1):
+                greateyes_settings.image_file = os.path.join(
+                    folder, f"exposure-{exposure_number:03}.fits"
+                )
+                # Cleared before each exposure so a failed save cannot leave the previous
+                # exposure's path here and have it moved twice.
+                self.latest_saved_image_path = None
+                self.start_exposure(greateyes_settings)
+                while self.is_active(GreatEyesActivities.Acquiring):
+                    time.sleep(0.5)
 
-    def execute_assignment(self, assignment: SpectrographAssignment, folder: str):
+                # This exposure is finished: hand it to the mover. Per exposure rather than
+                # per folder, so the local disk never holds a whole assignment. save_image()
+                # already protected the write, which is what records it as a product.
+                if self.latest_saved_image_path:
+                    Filer().move_ram_to_shared(self.latest_saved_image_path)
+                else:
+                    self.error(f"exposure-{exposure_number:03} was not saved; nothing to move")
+        except Exception:
+            self.error(f"{function_name()}: deepspec-{self.band} assignment failed")
+            logger.exception(f"{function_name()}: deepspec-{self.band} assignment failed")
+
+    def execute_assignment(self, assignment: SpectrographAssignment, folder: str) -> threading.Thread:
+        """Start this band's exposures on its own thread and return that thread.
+
+        The caller (Deepspec.execute_assignment) joins it. It used to be discarded, leaving
+        the coordinator to poll `is_working`, i.e. `is_active(Acquiring)` -- a flag this
+        thread does not set until it reaches start_exposure(), after apply_settings(). The
+        coordinator could therefore see every band idle and conclude the assignment was over
+        before a single exposure had begun. A thread cannot be observed finished too early.
+        """
         cooling_down = []
         for camera in cameras.values():
             if (
@@ -1251,9 +1289,13 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 f"cannot execute assignment because the following cameras are currently cooling down: {', '.join(camera.name for camera in cooling_down)}"
             )
 
-        threading.Thread(
-            target=self.do_execute_assignment, args=[assignment, folder]
-        ).start()
+        thread = threading.Thread(
+            name=f"deepspec-{self.band}-assignment",
+            target=self.do_execute_assignment,
+            args=[assignment, folder],
+        )
+        thread.start()
+        return thread
 
 
 class GreateyesFactory:

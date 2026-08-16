@@ -8,7 +8,8 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from common.config import Config
-from common.mast_logging import configure_logging
+from common.filer import Filer
+from common.mast_logging import configure_logging, get_logger
 from cooling.chiller import Chiller
 from deepspec import Deepspec
 from filter_wheel.wheel import FilterWheels
@@ -23,15 +24,27 @@ _parser = argparse.ArgumentParser(add_help=False)
 _parser.add_argument("--log-level", default=None, help="DEBUG, INFO, WARNING, ... (overrides MAST_LOG_LEVEL)")
 configure_logging(_parser.parse_known_args()[0].log_level)
 
+logger = get_logger(__name__)
 
 spec = Spec()
 
 
 @asynccontextmanager
 async def lifespan(fast_app: FastAPI):
+    # Before anything is operational, so everything left on D: is by definition a leftover
+    # from a previous run -- no live folder to race. Note this must sit here rather than
+    # inside spec.startup(): that same method is exposed as an HTTP endpoint, and a later
+    # /startup would re-trigger the sweep against folders that are in use.
+    # MAST_common#52.
+    Filer(logger).start_product_relocation_sweep(logger=logger)
+
     spec.startup()
     yield
     spec.shutdown()
+
+    # Drain outstanding ram->shared moves while the process is still healthy, rather than
+    # leaving them to be abandoned at interpreter teardown.
+    Filer(logger).flush()
 
 
 app = FastAPI(

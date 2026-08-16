@@ -30,6 +30,7 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.shutter import ShutterConfig
 from common.const import Const
+from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, SpectrographAssignment
@@ -257,87 +258,105 @@ class Highspec(Component):
         #     ):
         #         self.spec.thar_wheel.move_to_filter(filter_name=filter)
 
-        folder = PathMaker().make_autofocus_folder()
+        # `subfolder` names the instrument being focused. Without it this lands in
+        # <date>/Autofocus/, the flat location MAST_unit uses for the TELESCOPE focuser --
+        # so spec's HighSpec focus runs and a unit's would collide in one directory, and
+        # each would read as the other's. The parameter was added in MAST_common#41 for
+        # exactly this caller (MAST_unit#87 is the same mistake in the other direction).
+        folder = PathMaker().make_autofocus_folder(subfolder=self.name)
         # if filter:
         #     folder = str(Path(folder) / f"filter={filter}")
         Path(folder).mkdir(parents=True, exist_ok=True)
 
-        self.camera.set_parent_spec(self)
+        # Everything below writes into the ram-disk folder created above, so every exit
+        # path must reach release_folder() -- see the finally.
+        try:
+            self.camera.set_parent_spec(self)
 
-        self.start_activity(SpecActivities.ExposingHighspec)
-        for exposure_number in range(autofocus_settings.number_of_exposures):
-            logger.debug(
-                f"{function_name()} exposure_number: #{exposure_number} of {autofocus_settings.number_of_exposures}"
-            )
-            unit_mnemonic = next(
-                k for k, v in LITERALS_TO_UNITS.items() if v == reverse_units_dict[autofocus_settings.unit.name]
-            )
-            image_path = (
-                Path(folder)
-                / f"FOCUS_{self.focusing_stage.position(unit=reverse_units_dict[autofocus_settings.unit.name]):.5f}_{unit_mnemonic}.fits"
-            )
-
-            logger.debug(
-                f"{function_name()}: Exposure #{exposure_number} out of {autofocus_settings.number_of_exposures} into '{image_path.as_posix()}'"
-            )
-            if isinstance(self.camera, NewtonEMCCD):
-                self.start_activity(HighspecActivities.Exposing)
-
-                self.camera.expose(
-                    exposure_duration=autofocus_settings.exposure_duration,
-                    horizontal_shift_speed=autofocus_settings.horizontal_shift_speed,
-                    amplifier_mode=autofocus_settings.amplifier_mode,
-                    em_gain=autofocus_settings.em_gain,
-                    pre_amp_gain=autofocus_settings.pre_amp_gain,
-                    bypass_temperature_stabilization_check=autofocus_settings.bypass_temperature_stabilization_check,
-                    image_full_path=image_path,
+            self.start_activity(SpecActivities.ExposingHighspec)
+            for exposure_number in range(autofocus_settings.number_of_exposures):
+                logger.debug(
+                    f"{function_name()} exposure_number: #{exposure_number} of {autofocus_settings.number_of_exposures}"
                 )
-
-            elif isinstance(self.camera, QHY600):
-                self.start_activity(HighspecActivities.Exposing)
-                binning = (
-                    QHYBinningModel(
-                        x=autofocus_settings.binning.x,
-                        y=autofocus_settings.binning.y,
-                    )
-                    if autofocus_settings.binning
-                    else QHYBinningModel(x=1, y=1)
+                unit_mnemonic = next(
+                    k for k, v in LITERALS_TO_UNITS.items() if v == reverse_units_dict[autofocus_settings.unit.name]
                 )
+                focus_position = self.focusing_stage.position(unit=reverse_units_dict[autofocus_settings.unit.name])
+                image_path = Path(folder) / f"FOCUS_{focus_position:.5f}_{unit_mnemonic}.fits"
 
-                self.camera.start_single_exposure(
-                    settings=QHYCameraSettingsModel(
+                logger.debug(
+                    f"{function_name()}: Exposure #{exposure_number} out of "
+                    f"{autofocus_settings.number_of_exposures} into '{image_path.as_posix()}'"
+                )
+                if isinstance(self.camera, NewtonEMCCD):
+                    self.start_activity(HighspecActivities.Exposing)
+
+                    self.camera.expose(
                         exposure_duration=autofocus_settings.exposure_duration,
-                        binning=binning,
-                        image_path=str(image_path),
-                        gain=autofocus_settings.gain,
+                        horizontal_shift_speed=autofocus_settings.horizontal_shift_speed,
+                        amplifier_mode=autofocus_settings.amplifier_mode,
+                        em_gain=autofocus_settings.em_gain,
+                        pre_amp_gain=autofocus_settings.pre_amp_gain,
+                        bypass_temperature_stabilization_check=autofocus_settings.bypass_temperature_stabilization_check,
+                        image_full_path=image_path,
                     )
-                )
 
-            while (
-                self.camera.is_active(NewtonActivities.Exposing)
-                if isinstance(self.camera, NewtonEMCCD)
-                else self.camera.is_active(QHYActivities.ExposingSingleFrame)
-            ):
-                time.sleep(0.5)
-            self.end_activity(HighspecActivities.Exposing)
+                elif isinstance(self.camera, QHY600):
+                    self.start_activity(HighspecActivities.Exposing)
+                    binning = (
+                        QHYBinningModel(
+                            x=autofocus_settings.binning.x,
+                            y=autofocus_settings.binning.y,
+                        )
+                        if autofocus_settings.binning
+                        else QHYBinningModel(x=1, y=1)
+                    )
 
-            if exposure_number < autofocus_settings.number_of_exposures - 1:
-                self.focusing_stage.move_relative(
-                    autofocus_settings.positions_per_step,
-                    unit=reverse_units_dict[autofocus_settings.unit.name],
-                )
-                while self.focusing_stage.is_moving:
+                    self.camera.start_single_exposure(
+                        settings=QHYCameraSettingsModel(
+                            exposure_duration=autofocus_settings.exposure_duration,
+                            binning=binning,
+                            image_path=str(image_path),
+                            gain=autofocus_settings.gain,
+                        )
+                    )
+
+                while (
+                    self.camera.is_active(NewtonActivities.Exposing)
+                    if isinstance(self.camera, NewtonEMCCD)
+                    else self.camera.is_active(QHYActivities.ExposingSingleFrame)
+                ):
                     time.sleep(0.5)
+                self.end_activity(HighspecActivities.Exposing)
 
-        self.end_activity(SpecActivities.ExposingHighspec)
-        if autofocus_settings.lamp_on and self.spec is not None:
-            self.spec.thar_lamp.power_off()
+                # This frame is finished: hand it to the mover. The camera protected the write,
+                # which is what records it as a product for the release below.
+                Filer().move_ram_to_shared(str(image_path))
 
-        #
-        # Call Yahel's code to make known_as_good_focus_position
-        # Update known_as_good_focus_position in config DB
-        #
-        self.end_activity(HighspecActivities.AutoFocusing)
+                if exposure_number < autofocus_settings.number_of_exposures - 1:
+                    self.focusing_stage.move_relative(
+                        autofocus_settings.positions_per_step,
+                        unit=reverse_units_dict[autofocus_settings.unit.name],
+                    )
+                    while self.focusing_stage.is_moving:
+                        time.sleep(0.5)
+
+            self.end_activity(SpecActivities.ExposingHighspec)
+            if autofocus_settings.lamp_on and self.spec is not None:
+                self.spec.thar_lamp.power_off()
+
+            #
+            # Call Yahel's code to make known_as_good_focus_position
+            # Update known_as_good_focus_position in config DB
+            #
+            self.end_activity(HighspecActivities.AutoFocusing)
+        except Exception:
+            logger.exception(f"{function_name()}: highspec autofocus failed")
+        finally:
+            # Reaped only once every protected frame has reached the shared area, and
+            # never before -- a frame that failed to move keeps its folder rather than
+            # being deleted with it.
+            MoveGuardian().release_folder(folder, logger=logger)
 
     # class HighspecAutofocusSettings(NewtonSettingsConfig):
     #     camera: Literal["newton", "qhy600", "as-configured"] = "qhy600"
@@ -446,32 +465,61 @@ class Highspec(Component):
             AssignmentNotification(
                 assignment_id=str(work.ulid),
                 state="in-progress",
-                shared_top=str(acquisition_folder),
+                # Relative to the shared root, not the absolute ram path this folder is
+                # written to: the controller symlinks it, and a `D:` path means nothing
+                # there. `move_ram_to_shared` only swaps ram.root for shared.root, so the
+                # ram-relative path is exactly where these products land. MAST_spec#39.
+                shared_top=os.path.relpath(acquisition_folder, Filer().ram.root),
                 shared_subpath="highspec",
             )
         )
 
-        spec_exposure_settings = SpecExposureSettings(
-            exposure_duration=999,
-            image_full_name=str(acquisition_folder / "highspec" / "dummy.fits"),
-        )  # dummy exposure_duration, temporary
-        logger.info(f"taking {highspec_assignment.camera.number_of_exposures} exposures")
-        assert isinstance(highspec_assignment.camera.number_of_exposures, int)
-        spec.start_activity(SpecActivities.ExposingHighspec, data={"instrument": "highspec"})
-        for seq in range(1, highspec_assignment.camera.number_of_exposures + 1):
-            spec_exposure_settings.image_full_name = os.path.join(acquisition_folder, f"exposure-{seq:03}.fits")
-            self.camera.start_acquisition(spec_exposure_settings)
-            logger.info(f"waiting for end of exposure-{seq:03} ...")
-            while self.camera.is_active(NewtonActivities.Acquiring):
-                time.sleep(0.5)
+        # From here on the ram-disk folder exists and exposures will be written into it, so
+        # every exit path must reach release_folder() -- see the finally. The except is not
+        # decoration either: this runs on the "newton-acquisition" thread, where an escaping
+        # exception would go to threading's excepthook, i.e. to a stderr nobody reads.
+        try:
+            spec_exposure_settings = SpecExposureSettings(
+                exposure_duration=999,
+                image_full_name=str(acquisition_folder / "highspec" / "dummy.fits"),
+            )  # dummy exposure_duration, temporary
+            logger.info(f"taking {highspec_assignment.camera.number_of_exposures} exposures")
+            assert isinstance(highspec_assignment.camera.number_of_exposures, int)
+            spec.start_activity(SpecActivities.ExposingHighspec, data={"instrument": "highspec"})
+            for seq in range(1, highspec_assignment.camera.number_of_exposures + 1):
+                spec_exposure_settings.image_full_name = os.path.join(acquisition_folder, f"exposure-{seq:03}.fits")
+                self.camera.start_acquisition(spec_exposure_settings)
+                logger.info(f"waiting for end of exposure-{seq:03} ...")
+                while self.camera.is_active(NewtonActivities.Acquiring):
+                    time.sleep(0.5)
 
-            with fits.open(spec_exposure_settings.image_full_name, mode="update") as hdul:
-                hdr = hdul[0].header  # type: ignore
-                hdr["PROGRAM"] = "MAST"
-                hdr["INSTRUME"] = "Highspec"
-                hdul.flush()
-        self.end_activity(HighspecActivities.Acquiring)
-        spec.end_activity(SpecActivities.ExposingHighspec)
+                # The camera protected the file while writing it; this header update is a
+                # second write to the same path, so it is protected too -- otherwise the
+                # move below could catch the file mid-flush.
+                with (
+                    MoveGuardian().protect(spec_exposure_settings.image_full_name),
+                    fits.open(spec_exposure_settings.image_full_name, mode="update") as hdul,
+                ):
+                    hdr = hdul[0].header  # type: ignore
+                    hdr["PROGRAM"] = "MAST"
+                    hdr["INSTRUME"] = "Highspec"
+                    hdul.flush()
+
+                # The exposure is complete: hand it to the mover. Moving per exposure rather
+                # than per folder keeps the local disk from holding a whole assignment, and
+                # matches how MAST_unit moves each image once the flow knows it is done
+                # (src/unit.py, src/solving.py) rather than from the camera's save path.
+                Filer().move_ram_to_shared(spec_exposure_settings.image_full_name)
+
+            self.end_activity(HighspecActivities.Acquiring)
+            spec.end_activity(SpecActivities.ExposingHighspec)
+        except Exception:
+            logger.exception(f"{function_name()}: highspec assignment failed")
+        finally:
+            # Reaped only once every protected product has reached the shared area, and
+            # never before -- an exposure that failed to move keeps its folder rather than
+            # being deleted with it.
+            MoveGuardian().release_folder(str(acquisition_folder), logger=logger)
 
     def can_execute(self, assignment: SpectrographAssignment) -> tuple[bool, List[str] | None]:
         if self.camera and self.camera.detected:
