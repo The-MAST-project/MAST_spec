@@ -9,14 +9,14 @@ from typing import Annotated, Literal, cast
 import win32event
 from astropy.io import fits
 from fastapi import Query
-from sdk.pyAndorSDK2.pyAndorSDK2 import (
+from pyAndorSDK2 import (
     CameraCapabilities,
     atmcd,
     atmcd_capabilities,
     atmcd_errors,
 )
+from pyAndorSDK2.atmcd import AndorCapabilities
 
-from cameras.andor.sdk.pyAndorSDK2.pyAndorSDK2.atmcd import AndorCapabilities
 from common.activities import NewtonActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet

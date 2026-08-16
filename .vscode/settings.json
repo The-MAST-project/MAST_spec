@@ -27,6 +27,21 @@
   // it just stops reporting problems located inside it. The equivalent ruff
   // exclusion lives in ruff.toml.
   "python.analysis.ignore": ["**/cameras/greateyes/sdk/greateyesSDK.py"],
+  // Both entries mirror sys.path at runtime, so Pylance resolves what Python
+  // resolves:
+  //   ".."      — <top>, where the MAST_common sibling clone lives (the venv's
+  //               mast.pth puts it on sys.path). Also set workspace-wide in
+  //               mast-spec.code-workspace; repeated here because folder
+  //               settings replace workspace settings rather than merging.
+  //   the SDK   — the vendored Andor wrapper must be imported by its own
+  //               top-level name `pyAndorSDK2`, because its __init__.py
+  //               self-imports absolutely. cameras/andor/__init__.py puts this
+  //               directory on sys.path for exactly that reason; without the
+  //               same entry here, Pylance reports `import pyAndorSDK2` as
+  //               unresolved and the obvious "fix" (spelling it as a repo path)
+  //               silences Pylance while breaking the program at runtime. That
+  //               is not hypothetical — it is what happened.
+  "python.analysis.extraPaths": ["..", "cameras/andor/sdk/pyAndorSDK2"],
   "python-envs.pythonProjects": [
     {
       "path": ".",
