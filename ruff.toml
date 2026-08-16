@@ -17,11 +17,20 @@ target-version = "py312"
 # to exclude. Keep this file scoped to this repo's own sources. First-party
 # classification of `common` comes from [lint.isort] below, not from `src`.
 #
-# The greateyes SDK wrapper, which this branch vendors, is upstream code (see
-# cameras/greateyes/sdk/VENDOR.md). Formatting it rewrites the vendor's comment
-# separators and blank lines, which buries the ~80 real lines of an SDK bump in
-# hundreds of lines of cosmetic churn. Keep it byte-identical to the archive.
-extend-exclude = ["cameras/greateyes/sdk/greateyesSDK.py"]
+# The greateyes SDK wrapper is upstream code (see cameras/greateyes/sdk/VENDOR.md).
+# Formatting it rewrites the vendor's comment separators and blank lines, which
+# buries the ~80 real lines of an SDK bump in hundreds of lines of cosmetic churn.
+# Keep it byte-identical to the archive.
+#
+# The other three trees are here for the same reason: upstream code we do not own.
+# Andor's pyAndorSDK2 alone accounted for 891 of this repo's 938 pep8-naming
+# findings -- vendor Hungarian notation, none of it ours to rename.
+extend-exclude = [
+    "cameras/greateyes/sdk/greateyesSDK.py",
+    "cameras/andor/sdk",
+    "cameras/qhy/another_demo",
+    "filter_wheel/sdk",
+]
 
 # Honour the exclude above even when a path is passed explicitly. Without this,
 # editor format-on-save (.vscode/settings.json turns it on, and the ruff
@@ -45,6 +54,19 @@ extend-select = [
 ]
 # Optionally ignore some rules:
 # ignore = ["E501"]  # example: disable line-length enforcement
+
+[lint.pep8-naming]
+# Andor's SDK names its capability struct fields in Hungarian notation --
+# ulAcqModes, ulEMGainCapability, ulTriggerModes, ... -- and `class Capabilities`
+# in cameras/andor/newton.py mirrors that struct field for field. The names are the
+# vendor's ABI, not our style choice: renaming them to snake_case would break the
+# one property that makes the mapping checkable against Andor's own header, so all
+# 13 fields raised N815 with no fix available.
+#
+# A name pattern rather than a per-file ignore, because it states *why* these are
+# exempt. `ul*` is the vendor's prefix and appears nowhere else in this repo.
+# `extend-` keeps ruff's built-in ignore list (setUp, tearDown, ...).
+extend-ignore-names = ["ul*"]
 
 [lint.isort]
 # `common` is MAST_common, our own shared library -- first-party, grouped with
