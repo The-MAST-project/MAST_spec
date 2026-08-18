@@ -4,7 +4,7 @@ import os.path
 import time
 from pathlib import Path
 from threading import Thread
-from typing import List, Literal
+from typing import Literal
 
 import zaber_motion
 from astropy.io import fits
@@ -70,7 +70,7 @@ class Highspec(Component):
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(Highspec, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self, spec=None):
@@ -120,7 +120,7 @@ class Highspec(Component):
         return self.camera.was_shut_down
 
     @property
-    def why_not_operational(self) -> List[str]:
+    def why_not_operational(self) -> list[str]:
         return self.camera.why_not_operational
 
     @property
@@ -175,7 +175,7 @@ class Highspec(Component):
     #     y_binning: BinningLiteral,
     #     number_of_exposures: Optional[int] = 1,
     # ):
-    #     settings: SpecExposureSettings = SpecExposureSettings(  # noqa: F841
+    #     settings: SpecExposureSettings = SpecExposureSettings(
     #         exposure_duration=seconds,
     #         number_of_exposures=number_of_exposures,
     #         x_binning=x_binning,
@@ -274,7 +274,26 @@ class Highspec(Component):
                     k for k, v in LITERALS_TO_UNITS.items() if v == reverse_units_dict[autofocus_settings.unit.name]
                 )
                 focus_position = self.focusing_stage.position(unit=reverse_units_dict[autofocus_settings.unit.name])
-                image_path = Path(folder) / f"FOCUS_{focus_position:.5f}_{unit_mnemonic}.fits"
+                if focus_position is None:
+                    # position() returns None when it cannot read the axis. Nothing below can
+                    # proceed without it -- the filename formats it, and the step check adds
+                    # to it -- and the old code would have died formatting `{None:.5f}`.
+                    logger.error(
+                        f"{function_name()}: cannot read the focusing stage position; "
+                        f"stopping the sweep after {exposure_number} of "
+                        f"{autofocus_settings.number_of_exposures} exposures"
+                    )
+                    break
+
+                # The exposure number is in the name because the position alone is not
+                # unique. Whenever a step fails to move the axis, the next frame is taken at
+                # the same position and used to be given the same name -- so it silently
+                # overwrote its predecessor. A 3-exposure sweep on 2026-08-18 produced two
+                # files: the +5 mm step from 24.99998 raised MotionLibException (past the
+                # axis limit), stage.move_relative logged it and returned, and exposure #2
+                # landed on exposure #1's path. Distinct names turn that into two frames at
+                # one position -- visibly wrong, rather than invisibly missing.
+                image_path = Path(folder) / f"FOCUS_{exposure_number:02}_{focus_position:.5f}_{unit_mnemonic}.fits"
 
                 logger.debug(
                     f"{function_name()}: Exposure #{exposure_number} out of "
@@ -339,12 +358,35 @@ class Highspec(Component):
                 Filer().move_ram_to_shared(str(image_path))
 
                 if exposure_number < autofocus_settings.number_of_exposures - 1:
+                    step = autofocus_settings.positions_per_step
                     self.focusing_stage.move_relative(
-                        autofocus_settings.positions_per_step,
+                        step,
                         unit=reverse_units_dict[autofocus_settings.unit.name],
                     )
                     while self.focusing_stage.is_moving:
                         time.sleep(0.5)
+
+                    # Stop if the axis is not where the next exposure needs it. move_relative
+                    # reports a refused move by logging and returning -- an out-of-range
+                    # target raises MotionLibException inside it (stage.py), and both of
+                    # _out_of_range()'s call sites are commented out, so nothing rejects the
+                    # target up front either. Without this check the sweep carried on
+                    # exposing at a position it had already used.
+                    #
+                    # Exposures already taken are kept: they are real frames at known
+                    # positions, and the finally still hands the folder over so they reach
+                    # the shared area.
+                    target = focus_position + step
+                    reached = self.focusing_stage.position(unit=reverse_units_dict[autofocus_settings.unit.name])
+                    tolerance = max(abs(step) * 0.01, 1e-4)
+                    if reached is None or abs(reached - target) > tolerance:
+                        logger.error(
+                            f"{function_name()}: focusing stage did not reach {target:.5f} {unit_mnemonic} "
+                            f"(at {reached if reached is None else f'{reached:.5f}'}); "
+                            f"stopping the sweep after {exposure_number + 1} of "
+                            f"{autofocus_settings.number_of_exposures} exposures"
+                        )
+                        break
 
             self.end_activity(SpecActivities.ExposingHighspec)
             if autofocus_settings.lamp_on and self.spec is not None:
@@ -375,13 +417,13 @@ class Highspec(Component):
 
     def manual_autofocus(
         self,
-        camera: Literal["newton", "qhy600"] = "qhy600",
+        camera: Literal["newton", "qhy600"] = "newton",
         gain: int | None = None,
         exposure_duration: float = Query(1.0, description="exposure duration in seconds"),
         guessed_focus_position: float | None = None,
         step_size: float = 5,
         unit: UnitNames = UnitNames("MILLIMETRES"),
-        number_of_exposures: int = 1,
+        number_of_exposures: int = 3,
         horizontal_shift_speed: NewtonHSSpeed = NewtonHSSpeed.MHz_0_05,
         amplifier_mode: NewtonAmplifierMode = "em",
         em_gain: int = Query(default=240, ge=1, le=255),
@@ -526,7 +568,7 @@ class Highspec(Component):
             # being deleted with it.
             MoveGuardian().release_folder(str(acquisition_folder), logger=logger)
 
-    def can_execute(self, assignment: SpectrographAssignment) -> tuple[bool, List[str] | None]:
+    def can_execute(self, assignment: SpectrographAssignment) -> tuple[bool, list[str] | None]:
         if self.camera and self.camera.detected:
             if self.camera.temperature_is_stabilized:
                 return True, None
