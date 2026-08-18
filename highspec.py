@@ -313,8 +313,21 @@ class Highspec(Component):
                         )
                     )
 
+                # Wait for the activity that ends AFTER the file has been written, which is
+                # a different one per camera:
+                #
+                #   Newton  -- `Acquiring`, ended by readout() once the FITS is saved.
+                #              `Exposing` is no good here: the driver event handler ends it
+                #              the instant the sensor goes idle and only THEN starts the
+                #              readout thread, so this loop used to fall through and hand
+                #              the mover a path that did not exist yet. The frame was
+                #              written a moment later, protect() recorded it as a product,
+                #              and release_folder() then waited 600 s for a product nothing
+                #              would ever move. It is the signal _start_exposure_mover
+                #              already waits on for the manual endpoint.
+                #   QHY600  -- `ExposingSingleFrame`, ended after hdu.writeto().
                 while (
-                    self.camera.is_active(NewtonActivities.Exposing)
+                    self.camera.is_active(NewtonActivities.Acquiring)
                     if isinstance(self.camera, NewtonEMCCD)
                     else self.camera.is_active(QHYActivities.ExposingSingleFrame)
                 ):
