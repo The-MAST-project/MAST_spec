@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import logging
 from enum import Enum, IntFlag
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 
 import zaber_motion
 import zaber_motion.ascii
@@ -19,7 +18,7 @@ from common.mast_logging import get_logger
 from common.models.statuses import SpecStageStatus
 from common.networking import NetworkedDevice
 from common.spec import GratingNames, SpecInstruments, SpecStageNames
-from common.utils import caller_name, function_name
+from common.utils import function_name
 
 logger = get_logger(__name__)
 if TYPE_CHECKING:
@@ -179,15 +178,13 @@ class Stage(Component):
                 self.target_units = None
 
             if self.is_active(StageActivities.ShuttingDown):
-                if self.shutdown_preset is not None:
-                    if self.close_enough(self.presets[self.shutdown_preset]):
-                        self.end_activity(StageActivities.ShuttingDown, label=f"{self.full_name}: ")
+                if self.shutdown_preset is not None and self.close_enough(self.presets[self.shutdown_preset]):
+                    self.end_activity(StageActivities.ShuttingDown, label=f"{self.full_name}: ")
                 self.end_activity(StageActivities.ShuttingDown, label=f"{self.full_name}: ")
 
             if self.is_active(StageActivities.StartingUp):
-                if self.startup_preset is not None:
-                    if self.close_enough(self.presets[self.startup_preset]):
-                        self.end_activity(StageActivities.StartingUp, label=f"{self.full_name}: ")
+                if self.startup_preset is not None and self.close_enough(self.presets[self.startup_preset]):
+                    self.end_activity(StageActivities.StartingUp, label=f"{self.full_name}: ")
                 self.end_activity(StageActivities.StartingUp)
 
             if self.is_active(StageActivities.Aborting):
@@ -207,9 +204,16 @@ class Stage(Component):
             return CanonicalResponse(errors=[f"stage '{self._name}' not detected"])
         current_position = self.position(unit=unit)
         if current_position is None:
-            self.logger.error(f"{function_name()}: cannot get current position for relative move")
-            return
+            return CanonicalResponse(errors=[f"{function_name()}: cannot read the current position"])
         target_position = current_position + amount
+
+        # Refused before the activity starts, so a rejected move leaves no trace of one
+        # having begun.
+        reason = self._out_of_range(target_position, unit)
+        if reason is not None:
+            self.logger.error(f"{function_name()}: {reason}")
+            return CanonicalResponse(errors=[f"{self._name}: {reason}"])
+
         self.start_activity(
             StageActivities.Moving,
             label=f"{self.full_name}: ",
@@ -223,30 +227,54 @@ class Stage(Component):
             },
         )
 
-        current_position = self.position(unit=unit)
-        if current_position is None:
-            self.logger.error(f"{function_name()}: cannot get current position for relative move")
-            return
-
-        # if self._out_of_range(current_position + amount, unit):
-        #     raise ValueError(
-        #         f"{function_name()}: relative move from {current_position=} by {amount=} {unit=} out of range [0..{self.max_position}]"
-        #     )
-
         assert self.axis is not None
         try:
             self.axis.move_relative(amount, unit=unit)
         except zaber_motion.MotionLibException as ex:
             self.end_activity(StageActivities.Moving, label=f"{self.full_name}: ")
             self.logger.error(f"{function_name()}: Exception {ex}")
+            # Reported, not just logged. A caller that cannot tell a refused move from an
+            # accepted one carries on as though the axis had moved -- which is how a
+            # 3-exposure autofocus sweep came to write its third frame over its second.
+            return CanonicalResponse(errors=[f"{self._name}: relative move by {amount} {unit.name} failed: {ex}"])
 
-    def _out_of_range(self, position: float, unit: zaber_motion.Units) -> bool:
-        if unit != zaber_motion.Units.NATIVE:
-            raise ValueError(f"{caller_name()}: only NATIVE units are supported (got {unit})")
+        return CanonicalResponse_Ok
 
-        if self.max_position is None:
-            return False
-        return position < 0 or position > self.max_position
+    def _out_of_range(self, position: float, unit: zaber_motion.Units) -> str | None:
+        """Why `position` is outside the axis's travel, or None if it is not.
+
+        A reason rather than a bool, so callers can hand it straight to a
+        CanonicalResponse.
+
+        The limits come from the device, in the caller's own unit --
+        `settings.get("limit.min"/"limit.max", unit=unit)` -- rather than from
+        `conf.max_position`. That comparison only worked in NATIVE units, which is why
+        this used to raise `only NATIVE units are supported` for anything else; every
+        move from the autofocus sweep and both HTTP endpoints passes millimetres, so
+        the old guard could not be enabled without breaking them.
+
+        A position the axis will not accept must be refused BEFORE the move: the
+        alternative is what happened on 2026-08-18, where `axis.move_relative` raised
+        MotionLibException past the limit, this method logged it, and the autofocus
+        sweep carried on exposing at a position it had already used.
+
+        If the limits cannot be read, nothing is blocked -- the same behaviour as
+        before this check existed. Better to attempt a move than to refuse every move
+        because a settings read failed.
+        """
+        if self.axis is None:
+            return None
+
+        try:
+            low = self.axis.settings.get("limit.min", unit=unit)
+            high = self.axis.settings.get("limit.max", unit=unit)
+        except zaber_motion.MotionLibException as ex:
+            self.logger.error(f"{function_name()}: cannot read the axis travel limits ({ex}); not checking the target")
+            return None
+
+        if position < low or position > high:
+            return f"target {position:.5f} {unit.name} is outside the axis travel [{low:.5f}..{high:.5f}]"
+        return None
 
     def move_absolute(
         self,
@@ -256,10 +284,10 @@ class Stage(Component):
         if not self.detected:
             return CanonicalResponse(errors=[f"stage '{self._name}' not detected"])
 
-        # if self._out_of_range(position, unit):
-        #     raise ValueError(
-        #         f"{function_name()}: position {position} out of range (0-{self.max_position})"
-        #     )
+        reason = self._out_of_range(position, unit)
+        if reason is not None:
+            self.logger.error(f"{function_name()}: {reason}")
+            return CanonicalResponse(errors=[f"{self._name}: {reason}"])
 
         target_position = position
         self.start_activity(
@@ -281,6 +309,9 @@ class Stage(Component):
         except zaber_motion.MotionLibException as ex:
             self.end_activity(StageActivities.Moving, label=f"{self.full_name}: ")
             self.logger.error(f"{function_name()}: Exception {ex}")
+            return CanonicalResponse(errors=[f"{self._name}: move to {position} {unit.name} failed: {ex}"])
+
+        return CanonicalResponse_Ok
 
     def move_to_preset(self, preset: str):
         if not self.detected:
@@ -406,7 +437,7 @@ class Stage(Component):
         return self.detected
 
     @property
-    def why_not_operational(self) -> List[str]:
+    def why_not_operational(self) -> list[str]:
         ret = []
         label = f"stage '{self._name}':"
         if not self.detected:
@@ -420,7 +451,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(StageController, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self, spec: Spec | None = None):
@@ -478,7 +509,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
                 except:  # noqa: E722
                     self.disperser_stage = None
 
-                self.stages: List[Stage | None] = [
+                self.stages: list[Stage | None] = [
                     self.fiber_stage,
                     self.focusing_stage,
                     self.disperser_stage,
@@ -589,9 +620,9 @@ class StageController(SwitchedOutlet, NetworkedDevice):
             return ret
 
         stage = ret
-        stage.move_absolute(position, reverse_units_dict[units.value])
-
-        return CanonicalResponse_Ok
+        # Returned, not discarded: an out-of-range target or a MotionLibException used to
+        # be answered with `ok`.
+        return stage.move_absolute(position, reverse_units_dict[units.value])
 
     def endpoint_stage_move_relative(self, stage_name: SpecStageNames, amount: float, units: UnitNames):
         ret = self.find_stage(stage_name)
@@ -599,9 +630,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
             return ret
 
         stage = ret
-        stage.move_relative(amount, reverse_units_dict[units.value])
-
-        return CanonicalResponse_Ok
+        return stage.move_relative(amount, reverse_units_dict[units.value])
 
     def endpoint_move_fiber_to_preset(self, preset_name: SpecInstruments) -> CanonicalResponse:
         if self.fiber_stage is None:

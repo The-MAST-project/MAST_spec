@@ -235,10 +235,21 @@ class Highspec(Component):
             autofocus_settings.positions_per_step
             * (autofocus_settings.number_of_exposures - 1)  # number of steps to move back
         ) / 2  # type: ignore
-        self.focusing_stage.move_absolute(
+        # Refuse the sweep here rather than exposing at the wrong place. The stage now
+        # rejects a target outside the axis travel instead of logging and returning, so a
+        # sweep whose LOW end does not fit stops before its first frame. The high end is
+        # caught by the same check on the step that reaches it, further down.
+        response = self.focusing_stage.move_absolute(
             starting_focus_position,
             unit=reverse_units_dict[autofocus_settings.unit.name],
         )
+        if response is not None and response.failed:
+            logger.error(
+                f"{function_name()}: cannot start the sweep at {starting_focus_position:.5f} "
+                f"{autofocus_settings.unit.name}: {response.errors}"
+            )
+            self.end_activity(HighspecActivities.AutoFocusing)
+            return
         while self.focusing_stage.is_moving:
             time.sleep(0.5)
 
@@ -359,10 +370,16 @@ class Highspec(Component):
 
                 if exposure_number < autofocus_settings.number_of_exposures - 1:
                     step = autofocus_settings.positions_per_step
-                    self.focusing_stage.move_relative(
+                    response = self.focusing_stage.move_relative(
                         step,
                         unit=reverse_units_dict[autofocus_settings.unit.name],
                     )
+                    if response is not None and response.failed:
+                        logger.error(
+                            f"{function_name()}: {response.errors}; stopping the sweep after "
+                            f"{exposure_number + 1} of {autofocus_settings.number_of_exposures} exposures"
+                        )
+                        break
                     while self.focusing_stage.is_moving:
                         time.sleep(0.5)
 
