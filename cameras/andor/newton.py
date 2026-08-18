@@ -84,7 +84,7 @@ class Capabilities:
     ulTriggerModes: atmcd_capabilities.triggermodes
 
 
-class NewtoEMGainRange:
+class NewtonEMGainRange:
     low: int
     high: int
 
@@ -172,7 +172,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.read_mode: ReadMode | None = None
         self.cooler_mode: CoolerMode | int | None = None
         self.em_gain: int | None = None
-        self.em_gain_range: NewtoEMGainRange | None = None
+        self.em_gain_range: NewtonEMGainRange | None = None
         self.horizontal_binning: int | None = None
         self.vertical_binning: int | None = None
         self.activate_cooler: bool | None = None
@@ -1074,7 +1074,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
     def debug(self, msg: str):
         self.logger.debug(f"{self.log_label}: {msg}")
 
-    def expose(
+    def expose_single_image(
         self,
         exposure_duration: float = Query(description="Exposure length (seconds)", default=5, ge=0.001, le=3600),
         delay_before_exposure: Annotated[
@@ -1197,7 +1197,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
     def _start_exposure_mover(self, saved_path: str) -> None:
         """Move a single exposure to the shared area, and release its folder, once it lands.
 
-        `expose` returns as soon as the exposure is started, so this waits on a watcher
+        `expose_single_image` returns as soon as the exposure is started, so this waits on a watcher
         thread. Polling `Acquiring` is safe here because `acquire()` set it on the *caller's*
         thread before returning -- unlike a flag a worker sets later, it cannot be read
         before it is set. (Deepspec's band threads are the counter-example: see #37.)
