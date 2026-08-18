@@ -301,7 +301,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.info(
             f"greateyes: ipaddr='{self.network.ipaddr}', size={self.x_size}x{self.y_size}, "
             + f"model_id='{self.model_id}', model='{self.model}', fw_version='{self.firmware_version}', "
-            + f"sensor temp range={self.min_temp}°C to {self.max_temp}°C"
+            + f"sensor temp range={self.min_temp}ֲ°C to {self.max_temp}ֲ°C"
         )
 
         n_output_modes = ge.GetNumberOfSensorOutputModes(addr=self.ge_device)
@@ -310,8 +310,11 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.info(f"supported output mode[{n}]: '{mode}'")
             self.output_modes.append(mode)
 
-        self.apply_settings(default_settings)
-
+        # Nothing is applied here any more. Probing used to end by pushing the config
+        # defaults onto the camera, which meant the hardware carried settings nobody had
+        # asked for and every later exposure inherited whatever the last one left. Each
+        # exposure now applies its own, in start_exposure. The image geometry this class
+        # reports was read straight from the camera above, so it is already current.
         self.set_led(False)
         self.end_activity(GreatEyesActivities.Probing, label=self.name)
 
@@ -405,11 +408,11 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.start_activity(
                 GreatEyesActivities.AdjustingTemperature,
                 label=self._name,
-                details=[f"to {target_temperature}°C"],
+                details=[f"to {target_temperature}ֲ°C"],
             )
         else:
             self.append_error(
-                f"FAILED to set temperature to {target_temperature}°C with ge.TemperatureControl_SetTemperature (status: {ge.StatusMSG} ({ge.Status}))"
+                f"FAILED to set temperature to {target_temperature}ֲ°C with ge.TemperatureControl_SetTemperature (status: {ge.StatusMSG} ({ge.Status}))"
             )
 
     def cool_down(self):
@@ -425,7 +428,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.start_activity(
                 GreatEyesActivities.CoolingDown,
                 label=self._name,
-                details=[f"to {target_temp}°C"],
+                details=[f"to {target_temp}ֲ°C"],
             )
 
     def warm_up(self):
@@ -438,7 +441,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.start_activity(
                 GreatEyesActivities.WarmingUp,
                 label=self._name,
-                details=[f"to {target_temp}°C"],
+                details=[f"to {target_temp}ֲ°C"],
             )
 
     def startup(self):
@@ -476,96 +479,6 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         else:
             self.append_error(f"FAILED - {op} (status: {ge.StatusMSG} ({ge.Status}))")
         return ret
-
-    def apply_settings(self, greateyes_settings: GreateyesSettingsModel):
-        """
-        Enforces settings from an assignment onto this specific camera.
-        :param greateyes_settings: e.g. from an assignment
-        :return:
-        """
-
-        self.errors = []
-        if not self.detected:
-            self.errors.append("not detected")
-            return
-
-        # print("apply_settings:\n" + greateyes_settings.model_dump_json(indent=2))
-        self.start_activity(GreatEyesActivities.SettingParameters, label=self.name)
-        self._apply_setting(
-            ge.SetBitDepth,
-            greateyes_settings.bytes_per_pixel or self.conf.bytes_per_pixel,
-        )
-
-        # Note: SetupSensorOutputMode always returns False (even their example ignores the return value)
-        assert greateyes_settings.readout
-        assert self.ge_device is not None
-        readout_mode = (
-            greateyes_settings.readout.mode.value
-            if greateyes_settings.readout.mode is not None
-            else self.conf.readout.mode.value
-        )
-        ge.SetupSensorOutputMode(readout_mode, addr=self.ge_device)
-        self.info(f"OK - SetupSensorOutputMode({readout_mode}, addr={self.ge_device}) (ret value ignored)")
-        info = ge.GetImageSize(addr=self.ge_device)
-        if info[0] != self.x_size or info[1] != self.y_size or info[2] != self.bytes_per_pixel:
-            self.warning(
-                f"image size changed after setting output mode: was {self.x_size} x {self.y_size} x {self.bytes_per_pixel}, now {info[0]} x {info[1]} x {info[2]}"
-            )
-            self.x_size = info[0]
-            self.y_size = info[1]
-            self.bytes_per_pixel = info[2]
-
-        self._apply_setting(
-            ge.SetReadOutSpeed,
-            greateyes_settings.readout.speed.value
-            if greateyes_settings.readout.speed is not None
-            else self.conf.readout.speed.value,
-        )
-
-        binning_x = greateyes_settings.binning.x if greateyes_settings.binning is not None else self.conf.binning.x
-        binning_y = greateyes_settings.binning.y if greateyes_settings.binning is not None else self.conf.binning.y
-        self._apply_setting(ge.SetBinningMode, (binning_x, binning_y))
-
-        if greateyes_settings.crop is not None:
-            if greateyes_settings.crop.enabled:
-                self._apply_setting(
-                    ge.SetupCropMode2D,
-                    (greateyes_settings.crop.col, greateyes_settings.crop.line),
-                )
-                self._apply_setting(ge.ActivateCropMode, True)
-        elif self.conf.crop is not None:
-            if self.conf.crop.enabled:
-                self._apply_setting(ge.SetupCropMode2D, (self.conf.crop.col, self.conf.crop.line))
-                self._apply_setting(ge.ActivateCropMode, True)
-        else:
-            self._apply_setting(ge.ActivateCropMode, False)
-
-        if greateyes_settings.shutter is not None and greateyes_settings.shutter.automatic:
-            self._apply_setting(
-                ge.SetShutterTimings,
-                (
-                    greateyes_settings.shutter.open_time,
-                    greateyes_settings.shutter.close_time,
-                ),
-            )
-        elif self.conf.shutter is not None and self.conf.shutter.automatic:
-            self._apply_setting(
-                ge.SetShutterTimings,
-                (self.conf.shutter.open_time, self.conf.shutter.close_time),
-            )
-
-        self.latest_spec_exposure_settings = SpecExposureSettings(
-            **greateyes_settings.model_dump(
-                include={
-                    "exposure_duration",
-                    "number_of_exposures",
-                    "x_binning",
-                    "y_binning",
-                    "frame_type",
-                }
-            )
-        )
-        self.end_activity(GreatEyesActivities.SettingParameters, label=self.name)
 
     def start_exposure(
         self,
@@ -610,10 +523,38 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         self.start_activity(GreatEyesActivities.Acquiring, label=self.name)
         assert self.latest_spec_exposure_settings and greateyes_exposure_settings.readout
+        assert self.ge_device is not None
+
+        # SettingParameters still bracket the settings, as they did in apply_settings, so
+        # the status surface keeps reporting the phase. It now sits inside Acquiring, which
+        # is where the work actually happens.
+        self.start_activity(GreatEyesActivities.SettingParameters, label=self.name)
+
+        # Every setting this exposure depends on is applied here, from the settings this
+        # exposure was given. It used to be split: apply_settings() carried bit depth,
+        # binning, crop and shutter timings, and was called only from the probe (with
+        # config defaults) and from do_execute_assignment. The manual `deepspec/expose`
+        # endpoint went straight here, so its x_binning/y_binning were accepted, packed
+        # into the model and silently never applied -- frames came out at whatever the
+        # last caller had left on the camera.
+        self._apply_setting(
+            ge.SetBitDepth,
+            greateyes_exposure_settings.bytes_per_pixel or self.conf.bytes_per_pixel,
+        )
+
         if 0 < greateyes_exposure_settings.readout.mode >= len(self.output_modes):
             self.append_error(f"{greateyes_exposure_settings.readout.mode=} is not in range({len(self.output_modes)}")
         else:
-            self._apply_setting(ge.SetupSensorOutputMode, greateyes_exposure_settings.readout.mode.value)
+            # Called bare, and NOT through _apply_setting: SetupSensorOutputMode always
+            # returns False (the vendor's own example ignores the return value), so
+            # _apply_setting read every call as a failure and appended an error. That error
+            # was harmless to the exposure and fatal to the products -- expose_one_camera
+            # bails on `camera.errors`, and its `finally` then reaped the folder while the
+            # camera was still exposing. The frames landed in a folder nobody owned and
+            # were never moved to the shared area.
+            readout_mode = greateyes_exposure_settings.readout.mode.value
+            ge.SetupSensorOutputMode(readout_mode, addr=self.ge_device)
+            self.info(f"OK - SetupSensorOutputMode({readout_mode}, addr={self.ge_device}) (ret value ignored)")
 
             info = ge.GetImageSize(addr=self.ge_device)
             if info[0] != self.x_size or info[1] != self.y_size or info[2] != self.bytes_per_pixel:
@@ -630,6 +571,34 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             else self.conf.readout.speed.value
         )
         self._apply_setting(ge.SetReadOutSpeed, readout_speed)
+
+        binning = greateyes_exposure_settings.binning
+        self._apply_setting(
+            ge.SetBinningMode,
+            (
+                binning.x if binning is not None else self.conf.binning.x,
+                binning.y if binning is not None else self.conf.binning.y,
+            ),
+        )
+
+        # Deliberately stricter than the code this replaces, which left crop mode untouched
+        # when a settings model carried `crop.enabled = False` -- so an exposure that asked
+        # for no cropping inherited whatever the previous one had switched on. Every branch
+        # now states what it wants.
+        crop = greateyes_exposure_settings.crop if greateyes_exposure_settings.crop is not None else self.conf.crop
+        if crop is not None and crop.enabled:
+            self._apply_setting(ge.SetupCropMode2D, (crop.col, crop.line))
+            self._apply_setting(ge.ActivateCropMode, True)
+        else:
+            self._apply_setting(ge.ActivateCropMode, False)
+
+        shutter = (
+            greateyes_exposure_settings.shutter if greateyes_exposure_settings.shutter is not None else self.conf.shutter
+        )
+        if shutter is not None and shutter.automatic:
+            self._apply_setting(ge.SetShutterTimings, (shutter.open_time, shutter.close_time))
+
+        self.end_activity(GreatEyesActivities.SettingParameters, label=self.name)
 
         assert self.latest_exposure.settings.exposure_duration
         if not self._apply_setting(ge.SetExposure, int(self.latest_exposure.settings.exposure_duration * 1000)):
@@ -650,6 +619,12 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.latest_greateyes_exposure_settings = greateyes_exposure_settings
         else:
             self.append_error(f"FAILED - {op} (status: {ge.StatusMSG} ({ge.Status}))")
+            # Acquiring was set on the way in and no readout thread is coming to clear it,
+            # since the measurement never started. Left set, it wedges the camera: is_idle()
+            # refuses the next exposure, and anything polling `while is_active(Acquiring)`
+            # -- Deepspec.expose_one_camera does -- waits for ever. The SetExposure failure
+            # above already ends it for the same reason.
+            self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
 
     def _close_shutter_if_manual(self):
         """Close the shutter, unless the camera is driving it automatically."""
@@ -1142,8 +1117,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             assert deepspec_settings.camera is not None
             greateyes_settings: GreateyesSettingsModel = deepspec_settings.camera[self.band]
 
-            self.apply_settings(greateyes_settings=greateyes_settings)
-
+            # No apply_settings() pass first: start_exposure applies this assignment's
+            # settings itself, per exposure, from the same model.
             assert greateyes_settings.number_of_exposures is not None
             for exposure_number in range(1, greateyes_settings.number_of_exposures + 1):
                 greateyes_settings.image_file = os.path.join(folder, f"exposure-{exposure_number:03}.fits")
@@ -1170,7 +1145,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         The caller (Deepspec.execute_assignment) joins it. It used to be discarded, leaving
         the coordinator to poll `is_working`, i.e. `is_active(Acquiring)` -- a flag this
-        thread does not set until it reaches start_exposure(), after apply_settings(). The
+        thread does not set until it reaches start_exposure(), several SDK calls in. The
         coordinator could therefore see every band idle and conclude the assignment was over
         before a single exposure had begun. A thread cannot be observed finished too early.
         """
