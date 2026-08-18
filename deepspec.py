@@ -67,7 +67,7 @@ class Deepspec(Component):
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(Deepspec, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self, spec=None):
@@ -219,6 +219,27 @@ class Deepspec(Component):
         base_folder: Annotated[str | None, Query(include_in_schema=False)] = None,
     ) -> CanonicalResponse:
 
+        # Fail before touching the ram disk when no camera can possibly expose. Each band
+        # refuses on its own account in expose_one_camera, but those verdicts are per band
+        # and this method used to return CanonicalResponse_Ok regardless -- so a caller who
+        # asked during a cooldown got `ok` and no products, indistinguishable from a broken
+        # product pipeline. It cost two debugging sessions on 2026-08-18 before the log
+        # showed the cameras had been 2 minutes into a 2m35s cooldown.
+        #
+        # Only when EVERY detected-and-enabled camera is cooling: with one band still able
+        # to expose there is work to do, and expose_one_camera declines for the others.
+        if not bypass_temperature_stabilization_check:
+            active = self.active_cameras
+            cooling = [cam for cam in active if cam.is_active(GreatEyesActivities.CoolingDown)]
+            if cooling and len(cooling) == len(active):
+                bands = ", ".join(str(cam.band) for cam in cooling)
+                return CanonicalResponse(
+                    errors=[
+                        f"all detected and enabled cameras ({bands}) are still cooling down; "
+                        + "wait for stabilization or set bypass_temperature_stabilization_check"
+                    ]
+                )
+
         # Only a folder this call invented is this call's to release; when the caller
         # supplied one it belongs to that flow, exactly as in NewtonEMCCD.expose_single_image.
         owns_base_folder = base_folder is None
@@ -288,9 +309,8 @@ class Deepspec(Component):
             folder=folder,
         )
         time.sleep(0.5)  # give the thread a moment to start and potentially return an
-        if future.done():
-            if future.result() is not None:
-                return future.result()
+        if future.done() and future.result() is not None:
+            return future.result()
         return CanonicalResponse_Ok
 
     def do_expose_one_camera(
