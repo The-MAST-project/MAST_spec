@@ -293,7 +293,7 @@ class Highspec(Component):
                 if isinstance(self.camera, NewtonEMCCD):
                     self.start_activity(HighspecActivities.Exposing)
 
-                    self.camera.expose(
+                    self.camera.expose_single_image(
                         exposure_duration=autofocus_settings.exposure_duration,
                         horizontal_shift_speed=autofocus_settings.horizontal_shift_speed,
                         amplifier_mode=autofocus_settings.amplifier_mode,
@@ -549,11 +549,32 @@ class Highspec(Component):
         router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
         router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
         router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort)
+        # Both cameras implement this, under this name, so it registers unconditionally.
+        # Their parameters differ -- the Newton takes Andor hardware settings (amplifier
+        # mode, EM gain, horizontal shift speed) that mean nothing to a QHY600 -- and that
+        # is fine: FastAPI builds the schema from the bound method, so /docs on a given
+        # machine describes the camera that machine actually has.
+        #
+        # It used to be `/expose` for the Newton and `/expose_single_image` for the QHY600,
+        # registered behind an isinstance() check. A client therefore had to know which
+        # camera was configured, and got a 404 when it guessed wrong -- or, hitting
+        # `/expose` on a QHY600, a silent no-op, because QHY600.expose() was `pass`.
+        # The router is built per instance, after the camera has been chosen, so it can say
+        # which one this machine has. Without that, a reader of /docs sees a parameter list
+        # (exposure_duration + Andor settings, or duration + gain) and has to infer the
+        # camera from its shape.
         router.add_api_route(
-            base_path + "/expose",
+            base_path + "/expose_single_image",
             tags=[tag],
-            endpoint=self.camera.expose,
+            endpoint=self.camera.expose_single_image,
             methods=["PUT"],
+            summary=f"Expose a single image ({self.conf.camera})",
+            description=(
+                f"Configured camera: **{self.conf.camera}** (`{type(self.camera).__name__}`).\n\n"
+                "The parameters below are that camera's own. The two cameras do not share an "
+                "exposure signature, so this schema describes the machine you are talking to, "
+                "not the endpoint in general."
+            ),
         )
         router.add_api_route(
             base_path + "/manual_autofocus",
@@ -567,13 +588,6 @@ class Highspec(Component):
             methods=["PUT"],
             endpoint=self.autofocus,
         )
-        if self.camera and isinstance(self.camera, QHY600):
-            router.add_api_route(
-                base_path + "/expose_single_image",
-                tags=[tag],
-                methods=["PUT"],
-                endpoint=self.camera.expose_single_image,
-            )
         router.add_api_route(
             base_path + "/start_cooldown",
             tags=[tag],
