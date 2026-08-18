@@ -367,12 +367,25 @@ class Deepspec(Component):
                     greateyes_exposure_settings=settings,
                     bypass_temperature_stabilization_check=bypass_temperature_stabilization_check,
                 )
-                if camera.errors:
-                    errors = [
-                        f"exposure #{exposure_number} of {number_of_exposures}, failed to start: '{e}'"
-                        for e in camera.errors
-                    ]
-                    return CanonicalResponse(errors=errors)
+
+                # Whether to keep going is decided by what the camera is DOING, not by
+                # whether it complained. An error that did not stop the exposure used to
+                # return from here anyway -- and the `finally` below then reaped the folder
+                # while the camera was still exposing. The frames landed ~25 s later in a
+                # directory that no longer belonged to anyone, and nothing moved them to the
+                # shared area. `Exposing` is the honest signal: start_exposure sets it only
+                # once StartMeasurement has succeeded.
+                errors = [f"exposure #{exposure_number} of {number_of_exposures}: '{e}'" for e in camera.errors]
+                if not camera.is_active(GreatEyesActivities.Exposing):
+                    if errors:
+                        return CanonicalResponse(errors=errors)
+                    logger.error(f"{function_name()}: exposure #{exposure_number} never started; nothing to wait for")
+                    return CanonicalResponse(errors=[f"exposure #{exposure_number} of {number_of_exposures} never started"])
+
+                # It IS exposing. Errors from here on are worth reporting, but this exposure
+                # is going to produce a file, so see it through: wait, then hand it over.
+                for e in errors:
+                    logger.error(f"{function_name()}: {e}, continuing -- the exposure has started")
 
                 while camera.is_active(GreatEyesActivities.Acquiring):
                     time.sleep(0.5)
@@ -471,7 +484,7 @@ class Deepspec(Component):
 
             # Join the band threads rather than polling `cam.is_working`. That poll read
             # `is_active(Acquiring)`, a flag each band only sets once it reaches
-            # start_exposure() -- after apply_settings(). Starting four bands and immediately
+            # start_exposure(), several SDK calls in. Starting four bands and immediately
             # polling could therefore find them all idle and fall through before any exposure
             # had begun, ending the activities early. Harmless-ish until now; with the
             # release below it would have reaped the folder from under the bands.
