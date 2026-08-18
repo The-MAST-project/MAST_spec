@@ -3,12 +3,12 @@ import os
 import sys
 import threading
 import time
-from datetime import timezone
+from collections.abc import Callable
 from enum import IntEnum
-from typing import Callable, get_args
+from typing import get_args
 
-import astropy.io.fits as fits
 import numpy as np
+from astropy.io import fits
 from astropy.io.fits import Card
 from pydantic import BaseModel
 
@@ -87,7 +87,7 @@ class Exposure:
     def __init__(self):
         self.timing = ExposureTiming()
         self.timing.start = datetime.datetime.now()
-        self.timing.start_utc = self.timing.start.astimezone(timezone.utc)
+        self.timing.start_utc = self.timing.start.astimezone(datetime.UTC)
 
     def to_dict(self):
         return {
@@ -267,7 +267,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 time.sleep(boot_delay)
             else:
                 self.warning(
-                    f"power switch {self.power_switch} not detected, skipping power cycle, will try to connect to the camera anyway"
+                    f"power switch {self.power_switch} not detected, skipping power cycle, will try to connect "
+                    + "to the camera anyway"
                 )
 
             self.try_connect_camera()
@@ -606,6 +607,15 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if shutter is not None and shutter.automatic:
             self._apply_setting(ge.SetShutterTimings, (shutter.open_time, shutter.close_time))
 
+        # Gain: 0 -> Low (max. dynamic range), 1 -> Std (high sensitivity), per the SDK
+        # header for SetupGain. Applied only when someone actually asked for one -- the
+        # exposure, or failing that the site config. No config carries a gain today, so
+        # while that holds this leaves the sensor exactly as it was before the setting
+        # existed, rather than quietly imposing a default on every deployment.
+        gain = greateyes_exposure_settings.gain if greateyes_exposure_settings.gain is not None else conf.gain
+        if gain is not None:
+            self._apply_setting(ge.SetupGain, int(gain.gain))
+
         self.end_activity(GreatEyesActivities.SettingParameters, label=self.name)
 
         assert self.latest_exposure.settings.exposure_duration
@@ -830,14 +840,16 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             )
         )
         hdr.append(Card("PIXSIZE", self.pixel_size_microns, "PIXEL SIZE IN MICRONS"))
-        if self.latest_greateyes_exposure_settings:
-            hdr.append(
-                Card(
-                    "BITPIX",
-                    self.latest_greateyes_exposure_settings.bytes_per_pixel,
-                    "# of bits storing pix values",
-                )
-            )
+        # NOT "BITPIX": that is a reserved FITS keyword, computed by astropy from the data
+        # array, and a card of our own was silently discarded on the way out -- so this
+        # never recorded anything. It was also the requested bytes-per-pixel rather than the
+        # applied one, which since the model's default became None would have been a card
+        # with no value at all.
+        #
+        # `self.bytes_per_pixel` is read back from the camera by GetImageSize() after the
+        # output mode is set, so it is what the sensor is actually delivering.
+        if self.bytes_per_pixel is not None:
+            hdr.append(Card("BYTESPP", self.bytes_per_pixel, "bytes per pixel as reported by the camera"))
         hdu = fits.PrimaryHDU(image_array, header=hdr)
         hdul = fits.HDUList([hdu])
 
@@ -940,8 +952,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                     + (self.latest_exposure.timing.end - self.latest_exposure.timing.start) / 2
                 )
 
-                self.latest_exposure.timing.end_utc = self.latest_exposure.timing.end.astimezone(timezone.utc)
-                self.latest_exposure.timing.mid_utc = self.latest_exposure.timing.mid.astimezone(timezone.utc)
+                self.latest_exposure.timing.end_utc = self.latest_exposure.timing.end.astimezone(datetime.UTC)
+                self.latest_exposure.timing.mid_utc = self.latest_exposure.timing.mid.astimezone(datetime.UTC)
                 self.readout_thread = threading.Thread(
                     name=f"deepspec-camera-{self.band}-readout-thread",
                     target=self.readout,
