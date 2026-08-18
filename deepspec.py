@@ -219,25 +219,42 @@ class Deepspec(Component):
         base_folder: Annotated[str | None, Query(include_in_schema=False)] = None,
     ) -> CanonicalResponse:
 
+        # Only a folder this call invented is this call's to release; when the caller
+        # supplied one it belongs to that flow, exactly as in NewtonEMCCD.expose_single_image.
+        owns_base_folder = base_folder is None
         if base_folder is None:
             base_folder = PathMaker().make_spec_exposures_folder(spec_name="deepspec")
+            # make_spec_exposures_folder() ends in os.makedirs, so this directory is real
+            # from here on. Claim it for the same reason its per-band children are claimed:
+            # until it is reaped, another process's relocation sweep must see it as in use.
+            MoveGuardian().claim_folder(base_folder)
 
-        for cam in self.active_cameras:
-            folder = str(Path(base_folder) / cam.band)  # type: ignore
+        try:
+            for cam in self.active_cameras:
+                folder = str(Path(base_folder) / cam.band)  # type: ignore
 
-            self.expose_one_camera(
-                band=cam.band,  # type: ignore
-                seconds=seconds,
-                x_binning=x_binning,
-                y_binning=y_binning,
-                number_of_exposures=number_of_exposures,
-                frame_type=frame_type,
-                readout_amplifiers=readout_amplifiers,
-                readout_speed=readout_speed,
-                bypass_temperature_stabilization_check=bypass_temperature_stabilization_check,
-                folder=folder,
-            )
-        return CanonicalResponse_Ok
+                self.expose_one_camera(
+                    band=cam.band,  # type: ignore
+                    seconds=seconds,
+                    x_binning=x_binning,
+                    y_binning=y_binning,
+                    number_of_exposures=number_of_exposures,
+                    frame_type=frame_type,
+                    readout_amplifiers=readout_amplifiers,
+                    readout_speed=readout_speed,
+                    bypass_temperature_stabilization_check=bypass_temperature_stabilization_check,
+                    folder=folder,
+                )
+            return CanonicalResponse_Ok
+        finally:
+            # expose_one_camera released each band subfolder; nobody released their parent,
+            # so every manual deepspec exposure left a `seq=NNN` directory behind on the ram
+            # disk until the next startup sweep. The parent's reaper waits on the same
+            # products the children do -- _folder_drained() looks at everything under the
+            # folder -- so it cannot remove the tree while a band is still draining, and
+            # _reap_folder tolerates children that were reaped first.
+            if owns_base_folder:
+                MoveGuardian().release_folder(base_folder, logger=logger)
 
     def expose_one_camera(
         self,

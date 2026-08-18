@@ -47,16 +47,6 @@ from stage.stage import UnitNames
 logger = get_logger(__name__)
 
 
-class HighspecAcquisitionSettings:
-    """
-    A series of images from the Newton camera
-    """
-
-    def __init__(self):
-        self.folder: Path = Path(PathMaker().make_spec_acquisitions_folder(spec_name="highspec"))
-        self.image_file = self.folder / PathMaker.make_seq(str(self.folder))
-
-
 class HighspecAutofocusSettings(NewtonSettingsConfig):
     camera: Literal["newton", "qhy600", "as-configured"] = "qhy600"
     guessed_focus_position: float | None = None  # None - start at current stage position
