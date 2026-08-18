@@ -537,9 +537,19 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # endpoint went straight here, so its x_binning/y_binning were accepted, packed
         # into the model and silently never applied -- frames came out at whatever the
         # last caller had left on the camera.
+        # `conf` is the GreateyesConfig -- network, power, enabled, device, settings. The
+        # settings themselves live one level down, so every fallback below reads
+        # `conf.settings.X`. The code this replaces said `conf.X`, which would have raised
+        # AttributeError, but only on a branch nothing had ever taken: those fallbacks are
+        # reached only when the exposure's own model leaves a field None, and the two
+        # callers apply_settings had always filled them in. `deepspec/expose` builds its
+        # model with `crop=None`, so consolidating here is what finally evaluated them.
+        conf = self.conf.settings
+        assert conf is not None
+
         self._apply_setting(
             ge.SetBitDepth,
-            greateyes_exposure_settings.bytes_per_pixel or self.conf.bytes_per_pixel,
+            greateyes_exposure_settings.bytes_per_pixel or conf.bytes_per_pixel,
         )
 
         if 0 < greateyes_exposure_settings.readout.mode >= len(self.output_modes):
@@ -568,7 +578,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         readout_speed = (
             greateyes_exposure_settings.readout.speed.value
             if greateyes_exposure_settings.readout and greateyes_exposure_settings.readout.speed is not None
-            else self.conf.readout.speed.value
+            else conf.readout.speed.value
         )
         self._apply_setting(ge.SetReadOutSpeed, readout_speed)
 
@@ -576,8 +586,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self._apply_setting(
             ge.SetBinningMode,
             (
-                binning.x if binning is not None else self.conf.binning.x,
-                binning.y if binning is not None else self.conf.binning.y,
+                binning.x if binning is not None else conf.binning.x,
+                binning.y if binning is not None else conf.binning.y,
             ),
         )
 
@@ -585,16 +595,14 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # when a settings model carried `crop.enabled = False` -- so an exposure that asked
         # for no cropping inherited whatever the previous one had switched on. Every branch
         # now states what it wants.
-        crop = greateyes_exposure_settings.crop if greateyes_exposure_settings.crop is not None else self.conf.crop
+        crop = greateyes_exposure_settings.crop if greateyes_exposure_settings.crop is not None else conf.crop
         if crop is not None and crop.enabled:
             self._apply_setting(ge.SetupCropMode2D, (crop.col, crop.line))
             self._apply_setting(ge.ActivateCropMode, True)
         else:
             self._apply_setting(ge.ActivateCropMode, False)
 
-        shutter = (
-            greateyes_exposure_settings.shutter if greateyes_exposure_settings.shutter is not None else self.conf.shutter
-        )
+        shutter = greateyes_exposure_settings.shutter if greateyes_exposure_settings.shutter is not None else conf.shutter
         if shutter is not None and shutter.automatic:
             self._apply_setting(ge.SetShutterTimings, (shutter.open_time, shutter.close_time))
 
