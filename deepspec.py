@@ -350,7 +350,14 @@ class Deepspec(Component):
                 image_file = os.path.join(folder, "seq=" + PathMaker.make_seq(folder) + ".fits")
 
                 settings: GreateyesSettingsModel = GreateyesSettingsModel(
-                    bytes_per_pixel=1,
+                    # None, so start_exposure falls back to the configured value. This said
+                    # 1, which the camera rejects -- `SetBitDepth(1)` returns "one or more
+                    # parameters are out of range (8)", and greateyes' own BytesPerPixel
+                    # enum only knows 2, 3 and 4. It survived because nothing in this path
+                    # ever applied it: SetBitDepth lived in apply_settings, which the manual
+                    # endpoint never called. This endpoint has no business inventing a
+                    # sensor bit depth anyway.
+                    bytes_per_pixel=None,
                     crop=None,
                     shutter=shutter,
                     exposure_duration=seconds,
