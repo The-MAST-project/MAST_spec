@@ -13,6 +13,7 @@ from pyAndorSDK2 import (
     CameraCapabilities,
     atmcd,
     atmcd_capabilities,
+    atmcd_codes,
     atmcd_errors,
 )
 from pyAndorSDK2.atmcd import AndorCapabilities
@@ -118,6 +119,10 @@ _pre_amp_gains = {
     NewtonPreAmpGain.x2: 1,
     NewtonPreAmpGain.x4: 2,
 }
+
+# The config stores the SDK's index, the endpoint takes the name. Derived, so the two
+# spellings cannot drift apart.
+_pre_amp_gain_by_index = {index: gain for gain, index in _pre_amp_gains.items()}
 
 
 class NewtonHSSpeed(StrEnum):
@@ -314,14 +319,16 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
         # TODO: check if our camera can generate ESD events
 
-        default_camera_settings: NewtonSettingsConfig = NewtonSettingsConfig(
-            **Config().get_specs().highspec.settings.model_dump()
-        )
-        if default_camera_settings.temperature is not None:
-            self.set_point = default_camera_settings.temperature.regular_set_point
-
-        self.latest_camera_settings: NewtonSettingsConfig | None = None
-        self.apply_settings(default_camera_settings)
+        # Cooling is the only camera setting still applied here, because it is not a
+        # per-exposure choice: it is a physical process with its own activities
+        # (CoolingDown / WarmingUp) and its own endpoints, and re-issuing it before each
+        # exposure would fight them. Everything else -- read mode, acquisition mode,
+        # geometry, amplifier, gains, shutter, exposure time -- is applied per exposure by
+        # _apply_exposure_settings, so no exposure depends on what a previous one left.
+        if self.conf.temperature is not None:
+            self.set_point = self.conf.temperature.regular_set_point
+            self._apply_setting(self.sdk.SetTemperature, self.conf.temperature.regular_set_point)
+            self._apply_setting(self.sdk.SetCoolerMode, self.conf.temperature.cooler_mode)
 
         driver_event_handle = win32event.CreateEvent(None, 0, 0, None)
         ret = self.sdk.SetDriverEvent(int(driver_event_handle))
@@ -534,7 +541,6 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             binning=NewtonBinning(x=1, y=1),
             shutter=ShutterConfig(open_time=20, close_time=12, automatic=True),
             temperature=NewtonTemperatureConfig(regular_set_point=-10, science_set_point=-85),
-            read_mode=ReadMode.IMAGE.value,
         )
 
     # def set_modes(
@@ -787,46 +793,6 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.append_error(f"{self.log_label}: FAILED - {op} (error code: {code.name} ({code.value}))")
         return ret
 
-    def apply_settings(self, settings: NewtonSettingsConfig):
-        self.start_activity(NewtonActivities.SettingParameters)
-        self._apply_setting(self.sdk.SetExposureTime, settings.exposure_duration)
-
-        if settings.roi is not None:
-            if settings.roi.hend == -1:
-                settings.roi.hend = self.x_pixels
-            if settings.roi.vend == -1:
-                settings.roi.vend = self.y_pixels
-            binning = settings.binning if settings.binning is not None else NewtonBinning(x=1, y=1)
-            self._apply_setting(
-                self.sdk.SetImage,
-                (
-                    binning.x,
-                    binning.y,
-                    settings.roi.hstart,
-                    settings.roi.hend,
-                    settings.roi.vstart,
-                    settings.roi.vend,
-                ),
-            )
-
-        # self.set_gain(settings)
-
-        self._apply_setting(self.sdk.SetAcquisitionMode, settings.acquisition_mode)
-
-        if settings.shutter is not None:
-            self._apply_setting(
-                self.sdk.SetShutter,
-                (0, 0, settings.shutter.close_time, settings.shutter.open_time),
-            )
-
-        if settings.temperature is not None:
-            self._apply_setting(self.sdk.SetTemperature, settings.temperature.regular_set_point)
-            self._apply_setting(self.sdk.SetCoolerMode, settings.temperature.cooler_mode)
-
-        self.latest_camera_settings = settings
-
-        self.end_activity(NewtonActivities.SettingParameters)
-
     # def set_gain(self, settings: NewtonSettingsConfig):
     #     if settings.em_gain is not None:
     #         if 0 <= settings.em_gain <= 255:
@@ -851,6 +817,121 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.latest_exposure_settings = settings
         self.acquire(settings=settings)
 
+    def _apply_exposure_settings(
+        self,
+        exposure_duration: float,
+        amplifier_mode: NewtonAmplifierMode,
+        em_gain: int,
+        pre_amp_gain: NewtonPreAmpGain,
+        horizontal_shift_speed: NewtonHSSpeed,
+        binning: NewtonBinning,
+    ) -> CanonicalResponse:
+        """Put the camera into the state this exposure needs. Every setting, every time.
+
+        There used to be a settings blob -- apply_settings() -- pushed onto the camera once
+        at startup from the config, with exposures relying on that context still holding.
+        It did not: expose_single_image reconfigured the amplifier, shift speed, gains and
+        shutter for itself, while the plan path (start_acquisition -> acquire) set only the
+        exposure time and inherited the rest. A plan exposure taken after an autofocus run
+        therefore used the autofocus's amplifier and gains, and nothing said so.
+
+        Read mode is hardcoded to IMAGE. A spectrograph could legitimately want full
+        vertical binning or a single track, but that is a science decision nobody has made,
+        and the camera has been in IMAGE mode all along -- every frame on the share reports
+        READMODE='Image'. Stating it beats inheriting it, and makes the assumption greppable
+        the day someone wants FVB. Deliberately not configurable.
+        """
+        self.start_activity(NewtonActivities.SettingParameters)
+        try:
+            self._apply_setting(self.sdk.SetReadMode, atmcd_codes.Read_Mode.IMAGE)
+            self._apply_setting(self.sdk.SetAcquisitionMode, self.conf.acquisition_mode)
+
+            # No configured ROI means the full sensor, and it is applied rather than assumed.
+            # The old code skipped SetImage entirely when the ROI was absent, which left the
+            # geometry AND the binning at whatever the previous exposure had set -- so the
+            # binning an assignment asked for never reached the camera unless a region
+            # happened to be configured too.
+            #
+            # There is no -1 sentinel any more: a configured ROI states its own bounds, and
+            # "the whole sensor" is what leaving it out means. The sentinel also used to be
+            # resolved by writing back into the shared config object, so the first exposure
+            # fixed the ROI for every later one.
+            roi = self.conf.roi
+            self._apply_setting(
+                self.sdk.SetImage,
+                (
+                    binning.x,
+                    binning.y,
+                    roi.hstart if roi is not None else 1,
+                    roi.hend if roi is not None else self.x_pixels,
+                    roi.vstart if roi is not None else 1,
+                    roi.vend if roi is not None else self.y_pixels,
+                ),
+            )
+
+            response = self._apply_amplifier_settings(
+                amplifier_mode=amplifier_mode,
+                em_gain=em_gain,
+                pre_amp_gain=pre_amp_gain,
+                horizontal_shift_speed=horizontal_shift_speed,
+            )
+            if response.failed:
+                return response
+
+            if self.conf.shutter is not None:
+                self._apply_setting(
+                    self.sdk.SetShutter,
+                    (0, 0, self.conf.shutter.close_time, self.conf.shutter.open_time),
+                )
+
+            self._apply_setting(self.sdk.SetExposureTime, exposure_duration)
+            return CanonicalResponse_Ok
+        finally:
+            self.end_activity(NewtonActivities.SettingParameters)
+
+    def _apply_amplifier_settings(
+        self,
+        amplifier_mode: NewtonAmplifierMode,
+        em_gain: int,
+        pre_amp_gain: NewtonPreAmpGain,
+        horizontal_shift_speed: NewtonHSSpeed,
+    ) -> CanonicalResponse:
+        """The amplifier, its shift speed and its gains -- one combination, checked first.
+
+        IsPreAmpGainAvailable() is asked before anything is applied, because which pre-amp
+        gains are valid depends on both the amplifier and the shift speed. A combination the
+        camera rejects is better refused whole than applied in part.
+        """
+        horizontal_shift_index = _horizontal_shift_speed_index[horizontal_shift_speed]
+        pre_amp_gain_index = _pre_amp_gains[pre_amp_gain]
+        amplifier_mode_numeric = 0 if amplifier_mode == "em" else 1
+
+        ret, available = self.sdk.IsPreAmpGainAvailable(
+            channel=0,
+            amplifier=amplifier_mode_numeric,
+            index=horizontal_shift_index,
+            pa=pre_amp_gain_index,
+        )
+        if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
+            err = (
+                f"failed to check whether pre-amp gain {pre_amp_gain} is available for "
+                f"{horizontal_shift_speed} in '{amplifier_mode}' mode (code={error_code(ret)})"
+            )
+            self.error(err)
+            return CanonicalResponse(errors=[err])
+        if not available:
+            err = f"pre-amp gain {pre_amp_gain} is not available for {horizontal_shift_speed} in '{amplifier_mode}' mode"
+            self.error(err)
+            return CanonicalResponse(errors=[err])
+
+        self._apply_setting(self.sdk.SetOutputAmplifier, amplifier_mode_numeric)
+        self._apply_setting(self.sdk.SetHSSpeed, (amplifier_mode_numeric, horizontal_shift_index))
+        if amplifier_mode == "em":
+            self._apply_setting(self.sdk.SetEMGainMode, 0)
+            self._apply_setting(self.sdk.SetEMCCDGain, em_gain)
+        self._apply_setting(self.sdk.SetPreAmpGain, pre_amp_gain_index)
+        return CanonicalResponse_Ok
+
     def acquire(self, settings: SpecExposureSettings):
         """
         Starts an exposure.
@@ -870,8 +951,24 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.latest_exposure_settings = settings
         self.debug(f"{function_name()}: latest_exposure_settings: {self.latest_exposure_settings}")
 
+        # The camera-side settings come from the config here. This is the plan path, and a
+        # plan deliberately carries no EMCCD detail: a scientist writing one should not have
+        # to name an amplifier or a pre-amp gain. Binning is the exception -- the assignment
+        # does carry it. Before this, `acquire` applied the exposure time and nothing else,
+        # so a plan ran on whatever the last manual exposure or autofocus sweep had left.
+        response = self._apply_exposure_settings(
+            exposure_duration=settings.exposure_duration,
+            amplifier_mode=self.conf.amplifier_mode,
+            em_gain=self.conf.em_gain,
+            pre_amp_gain=_pre_amp_gain_by_index[self.conf.pre_amp_gain],
+            horizontal_shift_speed=NewtonHSSpeed.MHz_0_05,
+            binning=NewtonBinning(x=settings.x_binning or 1, y=settings.y_binning or 1),
+        )
+        if response.failed:
+            self.errors = response.errors or []
+            return
+
         self.start_activity(NewtonActivities.Acquiring)
-        self._apply_setting(self.sdk.SetExposureTime, settings.exposure_duration)
         ret = self.sdk.StartAcquisition()
         if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.error(f"could not StartAcquisition() (code={error_code(ret)})")
@@ -1084,9 +1181,12 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                 ge=0,
             ),
         ] = 0,
-        amplifier_mode: NewtonAmplifierMode = "em",
-        em_gain: int = Query(default=240, ge=1, le=255),
-        pre_amp_gain: NewtonPreAmpGain = NewtonPreAmpGain.x1,
+        # None means "use the configured value". These used to carry concrete defaults,
+        # which are indistinguishable from a caller's choice -- so the endpoint silently
+        # overrode the config on every call, and editing the config had no effect here.
+        amplifier_mode: NewtonAmplifierMode | None = None,
+        em_gain: int | None = Query(default=None, ge=1, le=255),
+        pre_amp_gain: NewtonPreAmpGain | None = None,
         frame_mode: NewtonFrameType = NewtonFrameType.Light,
         horizontal_shift_speed: NewtonHSSpeed = NewtonHSSpeed.MHz_0_05,
         bypass_temperature_stabilization_check: bool = False,
@@ -1096,78 +1196,27 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         if not bypass_temperature_stabilization_check and not self.temperature_is_stabilized:
             return CanonicalResponse(errors=["Cannot start exposure while temperature is not stable"])
 
-        horizontal_shift_index = _horizontal_shift_speed_index[horizontal_shift_speed]
-        pre_amp_gain_index = _pre_amp_gains[pre_amp_gain]
+        # Each of these falls back to the configured value. The endpoint is where a human
+        # overrides the site's choice for one exposure; the config is what everything else
+        # runs on, including plans.
+        amplifier_mode = amplifier_mode if amplifier_mode is not None else self.conf.amplifier_mode
+        em_gain = em_gain if em_gain is not None else self.conf.em_gain
+        pre_amp_gain = pre_amp_gain if pre_amp_gain is not None else _pre_amp_gain_by_index[self.conf.pre_amp_gain]
 
         if delay_before_exposure > 0:
             self.debug(f"Delaying {delay_before_exposure} seconds before starting the exposure")
             time.sleep(delay_before_exposure)
 
-        self.start_activity(NewtonActivities.SettingParameters)
-        match amplifier_mode:
-            case "em":
-                amplifier_mode_numeric = 0
-                pa_gain = _pre_amp_gains[pre_amp_gain]
-                ret, available = self.sdk.IsPreAmpGainAvailable(
-                    channel=0,
-                    amplifier=amplifier_mode_numeric,
-                    index=horizontal_shift_index,
-                    pa=pre_amp_gain_index,
-                )
-                if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
-                    self.error(
-                        f"failed to check if pre-amp gain {pa_gain} is available for horizontal shift speed {horizontal_shift_speed} (code={error_code(ret)})"
-                    )
-                    return CanonicalResponse(errors=["Failed to check if pre-amp gain is available"])
-                elif not available:
-                    err = f"pre-amp gain {pa_gain} is not available for horizontal shift speed {horizontal_shift_speed} in 'em' mode"
-                    self.error(err)
-                    return CanonicalResponse(errors=[err])
-
-                self._apply_setting(
-                    self.sdk.SetOutputAmplifier,
-                    amplifier_mode_numeric,
-                )
-                self._apply_setting(
-                    self.sdk.SetHSSpeed,
-                    (amplifier_mode_numeric, horizontal_shift_index),
-                )
-                self._apply_setting(self.sdk.SetEMGainMode, 0)
-                self._apply_setting(self.sdk.SetEMCCDGain, em_gain)
-                self._apply_setting(self.sdk.SetPreAmpGain, pre_amp_gain_index)
-
-            case "conventional":
-                amplifier_mode_numeric = 1
-                hs_speed = self.hs_speeds["conventional"][horizontal_shift_index]
-                pa_gain = _pre_amp_gains[pre_amp_gain]
-                ret, available = self.sdk.IsPreAmpGainAvailable(
-                    channel=0,
-                    amplifier=amplifier_mode_numeric,
-                    index=horizontal_shift_index,
-                    pa=pre_amp_gain_index,
-                )
-                if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
-                    err = f"failed to check if pre-amp gain {pa_gain} is available for horizontal shift speed {hs_speed} in 'conventional' mode"
-                    self.error(err)
-                    return CanonicalResponse(errors=[err])
-                elif not available:
-                    err = f"pre-amp gain {pa_gain} is not available for horizontal shift speed {hs_speed} in 'conventional' mode"
-                    self.error(err)
-                    return CanonicalResponse(errors=[err])
-                self._apply_setting(self.sdk.SetOutputAmplifier, amplifier_mode_numeric)
-                self._apply_setting(
-                    self.sdk.SetHSSpeed,
-                    (amplifier_mode_numeric, horizontal_shift_index),
-                )
-                self._apply_setting(self.sdk.SetPreAmpGain, pre_amp_gain_index)
-
-        if self.conf.shutter is not None:
-            self._apply_setting(
-                self.sdk.SetShutter,
-                (0, 0, self.conf.shutter.close_time, self.conf.shutter.open_time),
-            )
-
-        self.end_activity(NewtonActivities.SettingParameters)
+        response = self._apply_exposure_settings(
+            exposure_duration=exposure_duration,
+            amplifier_mode=amplifier_mode,
+            em_gain=em_gain,
+            pre_amp_gain=pre_amp_gain,
+            horizontal_shift_speed=horizontal_shift_speed,
+            binning=self.conf.binning if self.conf.binning is not None else NewtonBinning(x=1, y=1),
+        )
+        if response.failed:
+            return response
 
         # image Path
         # Only a path this call invented is this call's to move and release. When the caller
