@@ -27,6 +27,7 @@ from common.mast_logging import get_logger
 from common.models.newton import (
     NewtonAmplifierMode,
     NewtonBinning,
+    NewtonHSSpeed,
     NewtonSettingsConfig,
     NewtonTemperatureConfig,
 )
@@ -125,12 +126,10 @@ _pre_amp_gains = {
 _pre_amp_gain_by_index = {index: gain for gain, index in _pre_amp_gains.items()}
 
 
-class NewtonHSSpeed(StrEnum):
-    MHz_3_0 = "3.0 MHz"
-    MHz_1_0 = "1.0 MHz"
-    MHz_0_05 = "0.05 MHz"
-
-
+# NewtonHSSpeed comes from MAST_common, like NewtonAmplifierMode: the config model, the
+# database and this endpoint have to agree on the spelling, and a second definition here
+# would be a copy to keep in step. This map is the part that is ours -- the SDK's speed
+# indices, in the order the camera reports them.
 _horizontal_shift_speed_index = {
     NewtonHSSpeed.MHz_3_0: 0,
     NewtonHSSpeed.MHz_1_0: 1,
@@ -961,7 +960,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             amplifier_mode=self.conf.amplifier_mode,
             em_gain=self.conf.em_gain,
             pre_amp_gain=_pre_amp_gain_by_index[self.conf.pre_amp_gain],
-            horizontal_shift_speed=NewtonHSSpeed.MHz_0_05,
+            horizontal_shift_speed=self.conf.horizontal_shift_speed,
             binning=NewtonBinning(x=settings.x_binning or 1, y=settings.y_binning or 1),
         )
         if response.failed:
@@ -1188,7 +1187,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         em_gain: int | None = Query(default=None, ge=1, le=255),
         pre_amp_gain: NewtonPreAmpGain | None = None,
         frame_mode: NewtonFrameType = NewtonFrameType.Light,
-        horizontal_shift_speed: NewtonHSSpeed = NewtonHSSpeed.MHz_0_05,
+        horizontal_shift_speed: NewtonHSSpeed | None = None,
         bypass_temperature_stabilization_check: bool = False,
         image_full_path: Path | None = Query(default=None, include_in_schema=False),
     ) -> CanonicalResponse:
@@ -1202,6 +1201,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         amplifier_mode = amplifier_mode if amplifier_mode is not None else self.conf.amplifier_mode
         em_gain = em_gain if em_gain is not None else self.conf.em_gain
         pre_amp_gain = pre_amp_gain if pre_amp_gain is not None else _pre_amp_gain_by_index[self.conf.pre_amp_gain]
+        horizontal_shift_speed = (
+            horizontal_shift_speed if horizontal_shift_speed is not None else self.conf.horizontal_shift_speed
+        )
 
         if delay_before_exposure > 0:
             self.debug(f"Delaying {delay_before_exposure} seconds before starting the exposure")

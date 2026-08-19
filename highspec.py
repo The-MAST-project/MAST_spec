@@ -57,7 +57,8 @@ class HighspecAutofocusSettings(NewtonSettingsConfig):
     lamp_on: bool = False  # ThAr lamp
     filters: list[str] | None = None  # optional list of filters
     gain: int | None = None  # for QHY600, em_gain for Newton
-    horizontal_shift_speed: NewtonHSSpeed = NewtonHSSpeed.MHz_0_05
+    # horizontal_shift_speed is inherited from NewtonSettingsConfig now that it is a
+    # configured setting; redeclaring it here would only pin a second default.
     amplifier_mode: NewtonAmplifierMode = "em"
     em_gain: int = Query(default=240, ge=1, le=255)
     pre_amp_gain: NewtonPreAmpGain = NewtonPreAmpGain.x1
@@ -441,7 +442,10 @@ class Highspec(Component):
         step_size: float = 5,
         unit: UnitNames = UnitNames("MILLIMETRES"),
         number_of_exposures: int = 3,
-        horizontal_shift_speed: NewtonHSSpeed = NewtonHSSpeed.MHz_0_05,
+        # None means "use the configured value", as on expose_single_image. A concrete
+        # default is indistinguishable from a caller's choice, so it would override the
+        # config on every call.
+        horizontal_shift_speed: NewtonHSSpeed | None = None,
         amplifier_mode: NewtonAmplifierMode = "em",
         em_gain: int = Query(default=240, ge=1, le=255),
         pre_amp_gain: NewtonPreAmpGain = NewtonPreAmpGain.x1,
@@ -450,6 +454,9 @@ class Highspec(Component):
             default=False,
         ),
     ):
+        shift_speed = (
+            horizontal_shift_speed if horizontal_shift_speed is not None else self.conf.settings.horizontal_shift_speed
+        )
         settings = HighspecAutofocusSettings(
             camera=camera,
             guessed_focus_position=guessed_focus_position,
@@ -463,7 +470,7 @@ class Highspec(Component):
             amplifier_mode=amplifier_mode,
             em_gain=em_gain,
             pre_amp_gain=pre_amp_gain,
-            horizontal_shift_speed=horizontal_shift_speed,
+            horizontal_shift_speed=shift_speed,
             bypass_temperature_stabilization_check=bypass_temperature_stabilization_check,
         )
         return self.autofocus(settings)
