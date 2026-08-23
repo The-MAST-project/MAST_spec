@@ -5,7 +5,7 @@ import threading
 import time
 from collections.abc import Callable
 from enum import IntEnum
-from typing import get_args
+from typing import ClassVar, get_args
 
 import numpy as np
 from astropy.io import fits
@@ -86,8 +86,13 @@ class Exposure:
 
     def __init__(self):
         self.timing = ExposureTiming()
-        self.timing.start = datetime.datetime.now()
-        self.timing.start_utc = self.timing.start.astimezone(datetime.UTC)
+        # UTC is captured, local is derived from it. The other way round -- now() then
+        # .astimezone(UTC) -- asks a NAIVE datetime to convert itself, which silently means
+        # "assume this machine's timezone": right here today, wrong and unrecoverable if a
+        # machine's TZ is off, because the record never said which zone it meant. That is
+        # the mistake MAST_common#28 records for the observing-night folders.
+        self.timing.start_utc = datetime.datetime.now(datetime.UTC)
+        self.timing.start = self.timing.start_utc.astimezone()
 
     def to_dict(self):
         return {
@@ -111,6 +116,9 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.latest_greateyes_exposure_settings: GreateyesSettingsModel | None = None
         # Path save_image() actually wrote, which may differ from the requested image_file.
         self.latest_saved_image_path: str | None = None
+        # Whether the last exposure left the shutter to the camera. False until one runs, so
+        # a stray close is a no-op rather than an attribute error.
+        self.latest_shutter_automatic: bool = False
 
         self.ge_device = self.conf.device
         self._name = f"Deepspec-{self.band}"
@@ -131,7 +139,9 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         self.acquisition: str | None = None
 
-        self.last_backside_temp_check: datetime.datetime | None = None
+        # time.monotonic() readings, not wall-clock: both are only ever used as "how long
+        # since", and the wall clock moves (DST, NTP).
+        self.last_backside_temp_check: float | None = None
         self.backside_temp_safe = True
 
         self.readout_thread: threading.Thread | None = None
@@ -160,7 +170,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         self.shutdown_event: threading.Event = threading.Event()
 
-        self.last_probe_time = None
+        self.last_probe_time: float | None = None  # time.monotonic(), see on_timer
         self.timer_frequency: float = 1  # [seconds] how often to check the camera status, e.g. backside temperature
         self.timer = RepeatTimer(self.timer_frequency, function=self.on_timer)
         self.timer.name = f"deepspec-camera-{self.band}-timer-thread"
@@ -623,17 +633,35 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
             return
 
-        assert greateyes_exposure_settings.shutter
-        mode = 2 if greateyes_exposure_settings.shutter.automatic else 1
-        self._apply_setting(ge.OpenShutter, mode)
-        ret = ge.StartMeasurement_DynBitDepth(addr=self.ge_device)
-        op = f"StartMeasurement_DynBitDepth(addr={self.ge_device})"
+        # Both of these decide the same thing and have to agree, or the shutter stays shut.
+        # OpenShutter(2) puts the camera in automatic mode -- "TTL High while image
+        # acquisition", per the SDK header -- but the acquisition is what drives it, and
+        # StartMeasurement_DynBitDepth's `showShutter` parameter ("use auto shutter")
+        # defaults to False. It was called with the defaults, so every automatic-shutter
+        # exposure told the camera to open the shutter and then started a measurement that
+        # would not: both calls returned OK and the shutter never moved.
+        #
+        # `shutter` is the resolved value, from the exposure's settings or the config. The
+        # mode used to be read straight off greateyes_exposure_settings, which is not the
+        # same thing -- the timings above already fall back to the config, so an assignment
+        # arriving without a shutter got configured timings and then an AssertionError.
+        automatic = shutter is not None and shutter.automatic
+        # Remembered for _close_shutter_if_manual, which has to close whatever this opened.
+        # It used to re-derive the answer from the settings model alone, so an exposure that
+        # ran in manual mode because the CONFIG said so was never closed: the model had no
+        # shutter, the check read that as "nothing to do", and the shutter stayed open.
+        self.latest_shutter_automatic = automatic
+        self._apply_setting(ge.OpenShutter, 2 if automatic else 1)
+        ret = ge.StartMeasurement_DynBitDepth(showShutter=automatic, addr=self.ge_device)
+        op = f"StartMeasurement_DynBitDepth(showShutter={automatic}, addr={self.ge_device})"
         if ret:
             self.info(f"OK - {op}")
             self.start_activity(GreatEyesActivities.Exposing, label=self.name)
             assert self.latest_exposure.timing
+            # One clock reading, two spellings of it. These used to be two separate now()
+            # calls, so start and start_utc differed by however long the second one took.
             self.latest_exposure.timing.start_utc = datetime.datetime.now(datetime.UTC)
-            self.latest_exposure.timing.start = datetime.datetime.now()
+            self.latest_exposure.timing.start = self.latest_exposure.timing.start_utc.astimezone()
             self.latest_greateyes_exposure_settings = greateyes_exposure_settings
         else:
             self.append_error(f"FAILED - {op} (status: {ge.StatusMSG} ({ge.Status}))")
@@ -647,8 +675,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
     def _close_shutter_if_manual(self):
         """Close the shutter, unless the camera is driving it automatically."""
         assert self.ge_device is not None
-        settings = self.latest_greateyes_exposure_settings
-        if not settings or not settings.shutter or settings.shutter.automatic:
+        if self.latest_shutter_automatic:
             return
         if not ge.OpenShutter(0, addr=self.ge_device):
             self.append_error(f"could not close shutter with ge.OpenShutter(0, addr={self.ge_device})")
@@ -661,7 +688,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         assert self.latest_exposure.settings
         if not self.latest_exposure.settings.image_file:
             self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
-            raise Exception("empty self.latest_exposure.settings.image_file")
+            raise RuntimeError("empty self.latest_exposure.settings.image_file")
 
         assert self.ge_device is not None
         self.start_activity(GreatEyesActivities.ReadingOut, label=self.name)
@@ -913,21 +940,26 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             and not self.detected
             and (
                 self.last_probe_time is None
-                or datetime.datetime.now() - self.last_probe_time
-                > datetime.timedelta(seconds=self.greateyes_settings.probing.interval)
+                or time.monotonic() - self.last_probe_time > self.greateyes_settings.probing.interval
             )
         ):
-            self.last_probe_time = datetime.datetime.now()
+            self.last_probe_time = time.monotonic()
             self.probe()
             return
 
         if not self.detected:
             return
 
-        now = datetime.datetime.now()
+        # monotonic, not wall-clock: these two are "how long since", and the wall clock is
+        # not monotonic. Israel observes DST, so with datetime.now() the autumn fallback
+        # makes `now - last` negative for an hour -- the probe and the temperature check
+        # simply stop firing -- and the spring jump fires them an hour early. An NTP step or
+        # a hand-set clock does the same on any day of the year.
+        now = time.monotonic()
         assert self.greateyes_settings.temp is not None
-        if self.last_backside_temp_check is None or (now - self.last_backside_temp_check) > datetime.timedelta(
-            seconds=self.greateyes_settings.temp.check_interval
+        if (
+            self.last_backside_temp_check is None
+            or (now - self.last_backside_temp_check) > self.greateyes_settings.temp.check_interval
         ):
             ret = self.get_back_temperature()
             if ret is None:
@@ -941,24 +973,23 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
             self.last_backside_temp_check = now
 
-        if self.is_active(GreatEyesActivities.Exposing):
-            if not ge.DllIsBusy(addr=self.ge_device):
-                self.end_activity(GreatEyesActivities.Exposing, label=self.name)
+        if self.is_active(GreatEyesActivities.Exposing) and not ge.DllIsBusy(addr=self.ge_device):
+            self.end_activity(GreatEyesActivities.Exposing, label=self.name)
 
-                assert self.latest_exposure.timing is not None
-                self.latest_exposure.timing.end = datetime.datetime.now()
-                self.latest_exposure.timing.mid = (
-                    self.latest_exposure.timing.start
-                    + (self.latest_exposure.timing.end - self.latest_exposure.timing.start) / 2
-                )
-
-                self.latest_exposure.timing.end_utc = self.latest_exposure.timing.end.astimezone(datetime.UTC)
-                self.latest_exposure.timing.mid_utc = self.latest_exposure.timing.mid.astimezone(datetime.UTC)
-                self.readout_thread = threading.Thread(
-                    name=f"deepspec-camera-{self.band}-readout-thread",
-                    target=self.readout,
-                )
-                self.readout_thread.start()
+            # Computed in UTC and converted for the local twins, so the pair cannot disagree
+            # about which instant it means. mid is the midpoint of the exposure, which is
+            # the timestamp that matters scientifically.
+            timing = self.latest_exposure.timing
+            assert timing is not None
+            timing.end_utc = datetime.datetime.now(datetime.UTC)
+            timing.mid_utc = timing.start_utc + (timing.end_utc - timing.start_utc) / 2
+            timing.end = timing.end_utc.astimezone()
+            timing.mid = timing.mid_utc.astimezone()
+            self.readout_thread = threading.Thread(
+                name=f"deepspec-camera-{self.band}-readout-thread",
+                target=self.readout,
+            )
+            self.readout_thread.start()
 
         if self.is_active(GreatEyesActivities.StoppingMeasurement):
             if not ge.DllIsBusy(addr=self.ge_device):
@@ -1174,7 +1205,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             if camera and camera.enabled and camera.is_active(GreatEyesActivities.CoolingDown):
                 cooling_down.append(camera)
         if cooling_down:
-            raise Exception(
+            raise RuntimeError(
                 f"cannot execute assignment because the following cameras are currently cooling down: {', '.join(camera.name for camera in cooling_down)}"
             )
 
@@ -1188,7 +1219,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
 
 class GreateyesFactory:
-    _instances: dict[DeepspecBands, GreatEyes | None] = {
+    _instances: ClassVar[dict[DeepspecBands, GreatEyes | None]] = {
         "I": None,
         "G": None,
         "R": None,
@@ -1218,5 +1249,5 @@ for _band in list(get_args(DeepspecBands)):
 
 
 if __name__ == "__main__":
-    for c in cameras:
-        print(cameras[c])
+    for c, value in cameras.items():
+        print(f"{c}: {value}")
