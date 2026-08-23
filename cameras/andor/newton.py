@@ -1,4 +1,3 @@
-import datetime
 import threading
 import time
 from collections.abc import Callable
@@ -20,6 +19,7 @@ from pyAndorSDK2.atmcd import AndorCapabilities
 
 from common.activities import NewtonActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.config.shutter import ShutterConfig
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
@@ -28,6 +28,7 @@ from common.models.newton import (
     NewtonAmplifierMode,
     NewtonBinning,
     NewtonHSSpeed,
+    NewtonRoi,
     NewtonSettingsConfig,
     NewtonTemperatureConfig,
 )
@@ -142,7 +143,6 @@ def error_code(code) -> str:
 
 
 class NewtonEMCCD(Component, SwitchedOutlet):
-    SECONDS_BETWEEN_TEMP_LOGS = 30
     _instance = None
 
     def __new__(cls, *args, **kwargs):
@@ -169,7 +169,6 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.TargetTemp = float("nan")
         self.AmbientTemp = float("nan")
         self.CoolerVolts = float("nan")
-        self.last_temp_log: datetime.datetime = datetime.datetime.min
 
         self._set_point: int | None = None
         self.acquisition_mode: AcquisitionMode | None = None
@@ -183,6 +182,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.exposure_duration: float | None = None
         self.errors: list[str] = []
         self.latest_exposure_settings: SpecExposureSettings | None = None
+        # What the camera said it would actually expose for, from GetAcquisitionTimings.
+        # None until an exposure has been configured, or if that call failed.
+        self.actual_exposure_duration: float | None = None
 
         assert self.power_switch is not None
         if self.power_switch.detected and not self.is_on():
@@ -223,7 +225,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.error(f"Could not GetCapabilities() (code={error_code(ret)})")
 
         if not self.caps.ulCameraType & atmcd_capabilities.cameratype.AC_CAMERATYPE_NEWTON:
-            raise Exception("the camera is not a NEWTON")
+            raise RuntimeError("the camera is not a NEWTON")
 
         self.info(f"found a NEWTON camera, SN: {self.serial_number}")
         self.supports_em_advanced = bool(
@@ -824,38 +826,43 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         pre_amp_gain: NewtonPreAmpGain,
         horizontal_shift_speed: NewtonHSSpeed,
         binning: NewtonBinning,
+        roi: NewtonRoi | None,
+        shutter: ShutterConfig | None,
+        acquisition_mode: int,
     ) -> CanonicalResponse:
-        """Put the camera into the state this exposure needs. Every setting, every time.
+        """Apply exactly these settings to the camera. Reads no configuration of its own.
 
-        There used to be a settings blob -- apply_settings() -- pushed onto the camera once
-        at startup from the config, with exposures relying on that context still holding.
-        It did not: expose_single_image reconfigured the amplifier, shift speed, gains and
-        shutter for itself, while the plan path (start_acquisition -> acquire) set only the
-        exposure time and inherited the rest. A plan exposure taken after an autofocus run
-        therefore used the autofocus's amplifier and gains, and nothing said so.
+        Every setting, every exposure. There used to be a settings blob -- apply_settings()
+        -- pushed onto the camera once at startup, with exposures relying on that context
+        still holding. It did not: expose_single_image reconfigured the amplifier, shift
+        speed, gains and shutter for itself, while the plan path set only the exposure time
+        and inherited the rest. A plan exposure taken after an autofocus run therefore used
+        the autofocus's amplifier and gains, and nothing said so.
 
-        Read mode is hardcoded to IMAGE. A spectrograph could legitimately want full
-        vertical binning or a single track, but that is a science decision nobody has made,
-        and the camera has been in IMAGE mode all along -- every frame on the share reports
-        READMODE='Image'. Stating it beats inheriting it, and makes the assumption greppable
-        the day someone wants FVB. Deliberately not configurable.
+        The first version of this method still read acquisition_mode, roi and shutter from
+        `self.conf` while taking the other six as arguments -- a split with no principle
+        behind it beyond "the ones the endpoint already exposed". It made the docstring
+        above false for three settings, put the resolution rule in two places, and meant no
+        caller could express those three even in principle. They are arguments now, and
+        deciding where a value comes from belongs to the caller: the endpoint resolves
+        parameter-or-config, the plan path resolves config.
+
+        Read mode is the one exception, hardcoded to IMAGE. A spectrograph could legitimately
+        want full vertical binning or a single track, but that is a science decision nobody
+        has made, and the camera has been in IMAGE mode all along -- every frame on the share
+        reports READMODE='Image'. Stating it beats inheriting it, and makes the assumption
+        greppable the day someone wants FVB.
         """
         self.start_activity(NewtonActivities.SettingParameters)
         try:
             self._apply_setting(self.sdk.SetReadMode, atmcd_codes.Read_Mode.IMAGE)
-            self._apply_setting(self.sdk.SetAcquisitionMode, self.conf.acquisition_mode)
+            self._apply_setting(self.sdk.SetAcquisitionMode, acquisition_mode)
 
-            # No configured ROI means the full sensor, and it is applied rather than assumed.
-            # The old code skipped SetImage entirely when the ROI was absent, which left the
-            # geometry AND the binning at whatever the previous exposure had set -- so the
-            # binning an assignment asked for never reached the camera unless a region
-            # happened to be configured too.
-            #
-            # There is no -1 sentinel any more: a configured ROI states its own bounds, and
-            # "the whole sensor" is what leaving it out means. The sentinel also used to be
-            # resolved by writing back into the shared config object, so the first exposure
-            # fixed the ROI for every later one.
-            roi = self.conf.roi
+            # No ROI means the full sensor, and it is applied rather than assumed. The old
+            # code skipped SetImage entirely when the ROI was absent, which left the geometry
+            # AND the binning at whatever the previous exposure had set -- so the binning an
+            # assignment asked for never reached the camera unless a region happened to be
+            # configured too.
             self._apply_setting(
                 self.sdk.SetImage,
                 (
@@ -877,16 +884,60 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             if response.failed:
                 return response
 
-            if self.conf.shutter is not None:
-                self._apply_setting(
-                    self.sdk.SetShutter,
-                    (0, 0, self.conf.shutter.close_time, self.conf.shutter.open_time),
-                )
+            if shutter is not None:
+                self._apply_setting(self.sdk.SetShutter, (0, 0, shutter.close_time, shutter.open_time))
 
+            # Last, deliberately: the SDK quantises the requested time against the readout
+            # configuration above, so it has to be set once that configuration is in place.
             self._apply_setting(self.sdk.SetExposureTime, exposure_duration)
-            return CanonicalResponse_Ok
+            return self._record_actual_exposure_duration(exposure_duration)
         finally:
             self.end_activity(NewtonActivities.SettingParameters)
+
+    # A difference below this is the camera rounding to its internal clock, not a problem.
+    # Above it, something was asked for that the configuration cannot deliver -- a 1 ms
+    # exposure with a 20 ms shutter transfer, say.
+    EXPOSURE_TOLERANCE_FRACTION = 0.01
+    EXPOSURE_TOLERANCE_SECONDS = 0.001
+
+    def _record_actual_exposure_duration(self, requested: float) -> CanonicalResponse:
+        """Ask the camera what exposure it will actually use, and remember it.
+
+        GetAcquisitionTimings is the SDK's own answer to this question, and the vendor's
+        documentation says to call it once every acquisition setting is in place -- which is
+        why it lives at the end of _apply_exposure_settings. Its example is precisely our
+        case: "it is possible to set the exposure time to 20ms ... and then set the readout
+        mode to full image. As it can take 250ms to read out an image it is not possible to
+        have a cycle time of 30ms."
+
+        A difference is normal: the camera quantises the request to its clock, so asking for
+        1.0 and being given 0.999983 is the SDK working. The exposure therefore goes ahead
+        whatever comes back -- refusing would turn a usable frame into no frame, when the
+        camera has just said exactly what it will do. What must not happen is silence: past
+        the tolerance this warns, and readout() writes the real value into the FITS header
+        rather than the request, which is what the header used to claim.
+
+        The one failure worth refusing is the call itself. DRV_INVALID_MODE means the
+        acquisition and readout modes are not a combination the camera has, so the frame
+        would be meaningless.
+        """
+        ret, actual, _accumulate, _kinetic = self.sdk.GetAcquisitionTimings()
+        if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
+            err = f"could not GetAcquisitionTimings() (code={error_code(ret)})"
+            self.error(err)
+            self.actual_exposure_duration = None
+            return CanonicalResponse(errors=[err])
+
+        self.actual_exposure_duration = actual
+        tolerance = max(requested * self.EXPOSURE_TOLERANCE_FRACTION, self.EXPOSURE_TOLERANCE_SECONDS)
+        if abs(actual - requested) > tolerance:
+            self.warning(
+                f"the camera will expose for {actual} seconds, not the {requested} requested "
+                f"(over the {tolerance:g}s tolerance); the readout configuration cannot deliver it"
+            )
+        else:
+            self.info(f"exposure time: requested {requested}s, camera will use {actual}s")
+        return CanonicalResponse_Ok
 
     def _apply_amplifier_settings(
         self,
@@ -932,10 +983,45 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         return CanonicalResponse_Ok
 
     def acquire(self, settings: SpecExposureSettings):
+        """Configure the camera from the config, then start the exposure.
+
+        The plan path. A plan deliberately carries no EMCCD detail -- a scientist writing
+        one should not have to name an amplifier or a pre-amp gain -- so everything except
+        exposure time and binning comes from the config. Callers that resolve their own
+        settings (expose_single_image does, from its parameters) apply them first and call
+        `start_exposure` instead, or this would overwrite their choices with the config's:
+        it did, for a while.
         """
-        Starts an exposure.
-        :param settings: exposure settings
-        :return:
+        if not self.detected:
+            self.error("camera not detected")
+            return
+
+        if not self._initialized:
+            self.error("not initialized")
+            return
+
+        response = self._apply_exposure_settings(
+            exposure_duration=settings.exposure_duration,
+            amplifier_mode=self.conf.amplifier_mode,
+            em_gain=self.conf.em_gain,
+            pre_amp_gain=_pre_amp_gain_by_index[self.conf.pre_amp_gain],
+            horizontal_shift_speed=self.conf.horizontal_shift_speed,
+            binning=NewtonBinning(x=settings.x_binning or 1, y=settings.y_binning or 1),
+            roi=self.conf.roi,
+            shutter=self.conf.shutter,
+            acquisition_mode=self.conf.acquisition_mode,
+        )
+        if response.failed:
+            self.errors = response.errors or []
+            return
+
+        self.start_exposure(settings)
+
+    def start_exposure(self, settings: SpecExposureSettings):
+        """Start an exposure with the camera already configured.
+
+        Split out of acquire() so a caller that has applied its own settings does not have
+        them re-applied from the config on the way in.
         """
         if not self.detected:
             self.error("camera not detected")
@@ -949,23 +1035,6 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
         self.latest_exposure_settings = settings
         self.debug(f"{function_name()}: latest_exposure_settings: {self.latest_exposure_settings}")
-
-        # The camera-side settings come from the config here. This is the plan path, and a
-        # plan deliberately carries no EMCCD detail: a scientist writing one should not have
-        # to name an amplifier or a pre-amp gain. Binning is the exception -- the assignment
-        # does carry it. Before this, `acquire` applied the exposure time and nothing else,
-        # so a plan ran on whatever the last manual exposure or autofocus sweep had left.
-        response = self._apply_exposure_settings(
-            exposure_duration=settings.exposure_duration,
-            amplifier_mode=self.conf.amplifier_mode,
-            em_gain=self.conf.em_gain,
-            pre_amp_gain=_pre_amp_gain_by_index[self.conf.pre_amp_gain],
-            horizontal_shift_speed=self.conf.horizontal_shift_speed,
-            binning=NewtonBinning(x=settings.x_binning or 1, y=settings.y_binning or 1),
-        )
-        if response.failed:
-            self.errors = response.errors or []
-            return
 
         self.start_activity(NewtonActivities.Acquiring)
         ret = self.sdk.StartAcquisition()
@@ -996,10 +1065,23 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             ret = self.sdk.SaveAsFITS(self.latest_exposure_settings.image_full_name, typ=0)
             if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
                 self.info(f"saved {self.latest_exposure_settings.image_full_name}")
+                # Two cards, so a frame says both what was asked for and what happened.
+                # EXPOSURE used to be overwritten with the REQUEST, which destroyed the only
+                # record of the actual: the header could never disagree with the caller,
+                # however the camera had quantised or clamped the request.
+                requested = self.latest_exposure_settings.exposure_duration
+                actual = self.actual_exposure_duration if self.actual_exposure_duration is not None else requested
                 fits.setval(
                     self.latest_exposure_settings.image_full_name,
                     "EXPOSURE",
-                    value=self.latest_exposure_settings.exposure_duration,
+                    value=actual,
+                    comment="[s] exposure the camera used (GetAcquisitionTimings)",
+                )
+                fits.setval(
+                    self.latest_exposure_settings.image_full_name,
+                    "EXPREQ",
+                    value=requested,
+                    comment="[s] exposure requested",
                 )
             else:
                 self.error(f"failed sdk.SaveAsFITS({self.latest_exposure_settings.image_full_name}, typ=0) (ret={ret})")
@@ -1058,7 +1140,8 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.error("camera not detected")
             return
         if not self._initialized:
-            raise Exception("SDK not initialized")
+            self.error("SDK not initialized")
+            return
 
         (ret, temp) = self.sdk.GetTemperatureF()
         if ret == atmcd_errors.Error_Codes.DRV_TEMP_STABILIZED:
@@ -1075,9 +1158,10 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.error("camera not detected")
             return False
         if not self._initialized:
-            raise Exception("SDK not initialized")
+            self.error("SDK not initialized")
+            return False
 
-        (ret, temp) = self.sdk.GetTemperatureF()
+        (ret, _temp) = self.sdk.GetTemperatureF()
         if ret == atmcd_errors.Error_Codes.DRV_TEMP_STABILIZED:
             return True
         elif ret == atmcd_errors.Error_Codes.DRV_SUCCESS or ret == atmcd_errors.Error_Codes.DRV_TEMPERATURE_NOT_STABILIZED:
@@ -1172,7 +1256,12 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
     def expose_single_image(
         self,
-        exposure_duration: float = Query(description="Exposure length (seconds)", default=5, ge=0.001, le=3600),
+        exposure_duration: float | None = Query(
+            description="Exposure length (seconds). Omit to use the configured duration.",
+            default=None,
+            ge=0.001,
+            le=3600,
+        ),
         delay_before_exposure: Annotated[
             float,
             Query(
@@ -1198,6 +1287,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         # Each of these falls back to the configured value. The endpoint is where a human
         # overrides the site's choice for one exposure; the config is what everything else
         # runs on, including plans.
+        exposure_duration = exposure_duration if exposure_duration is not None else self.conf.exposure_duration
         amplifier_mode = amplifier_mode if amplifier_mode is not None else self.conf.amplifier_mode
         em_gain = em_gain if em_gain is not None else self.conf.em_gain
         pre_amp_gain = pre_amp_gain if pre_amp_gain is not None else _pre_amp_gain_by_index[self.conf.pre_amp_gain]
@@ -1216,6 +1306,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             pre_amp_gain=pre_amp_gain,
             horizontal_shift_speed=horizontal_shift_speed,
             binning=self.conf.binning if self.conf.binning is not None else NewtonBinning(x=1, y=1),
+            roi=self.conf.roi,
+            shutter=self.conf.shutter,
+            acquisition_mode=self.conf.acquisition_mode,
         )
         if response.failed:
             return response
@@ -1233,7 +1326,10 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             )
         # self.info(f"image will be saved to '{image_full_path}'")
 
-        self.acquire(
+        # start_exposure, not acquire: the settings above are this call's, resolved from its
+        # parameters, and acquire would re-apply the configured ones over the top -- which is
+        # exactly what made every parameter here except exposure_duration a no-op.
+        self.start_exposure(
             SpecExposureSettings(
                 image_full_name=str(image_full_path),
                 exposure_duration=exposure_duration,
@@ -1243,7 +1339,18 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         if owns_folder:
             self._start_exposure_mover(str(image_full_path))
 
-        return CanonicalResponse_Ok
+        # The actual duration is returned, not just written to the header, so a caller
+        # driving this endpoint learns the camera quantised or clamped its request without
+        # having to open the file.
+        return CanonicalResponse(
+            value={
+                "image": str(image_full_path),
+                "exposure_duration": {
+                    "requested": exposure_duration,
+                    "actual": self.actual_exposure_duration,
+                },
+            }
+        )
 
     def _start_exposure_mover(self, saved_path: str) -> None:
         """Move a single exposure to the shared area, and release its folder, once it lands.
