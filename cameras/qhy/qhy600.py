@@ -4,9 +4,10 @@ import threading
 import time
 from enum import IntFlag, auto
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Annotated, Callable, Literal
 
 import zaber_motion
+from fastapi import Query
 from pydantic import BaseModel
 
 from cameras.greateyes.greateyes import Exposure
@@ -682,7 +683,27 @@ class QHY600(Component, SwitchedOutlet):
     def was_shut_down(self) -> bool:
         return False
 
-    def expose_single_image(self, duration: float, gain: int | None = None):
+    # Grouped and described the same way as NewtonEMCCD.expose_single_image, because
+    # whichever camera this machine has is the one whose signature /docs shows.
+    def expose_single_image(
+        self,
+        duration: Annotated[
+            float,
+            Query(description="**--- Exposure ---**\n\nExposure length (seconds)."),
+        ],
+        gain: Annotated[
+            int | None,
+            Query(
+                description=(
+                    "**--- Sensor ---**\n\n"
+                    "QHY600 sensor gain. Unlike the Newton's gains this has no configured "
+                    "fallback: omitted, the gain is simply not set and the camera keeps "
+                    "whatever it had from the previous exposure. The legal range is the "
+                    "camera's own CONTROL_GAIN range, checked when the exposure starts."
+                )
+            ),
+        ] = None,
+    ):
         folder = PathMaker().make_spec_exposures_folder(spec_name="highspec")
         seq = PathMaker().make_seq(folder=folder)
         settings = QHYCameraSettingsModel(
