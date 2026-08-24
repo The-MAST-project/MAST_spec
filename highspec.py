@@ -621,7 +621,7 @@ class Highspec(Component):
                 # written to: the controller symlinks it, and a `D:` path means nothing
                 # there. `move_ram_to_shared` only swaps ram.root for shared.root, so the
                 # ram-relative path is exactly where these products land. MAST_spec#39.
-                shared_top=os.path.relpath(acquisition_folder, ram.root),
+                shared_top=Path(os.path.relpath(acquisition_folder, ram.root)).as_posix(),
                 shared_subpath="highspec",
             )
         )
