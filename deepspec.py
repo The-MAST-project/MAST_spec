@@ -209,6 +209,12 @@ class Deepspec(Component):
         seconds: float,
         x_binning: int = 1,
         y_binning: int = 1,
+        # One gain for every band, as the other per-exposure settings here are: this
+        # endpoint drives all the cameras with one set of parameters, and a caller wanting
+        # them to differ has expose_one_camera. Omitted, each camera falls back to its own
+        # configured gain -- which is what the bands' configs are for -- so the default is
+        # not "the same gain everywhere", it is "whatever each band was set up with".
+        gain: Gain | None = None,
         number_of_exposures: int | None = 1,
         frame_type: FrameType = FrameType.LIGHT,
         readout_amplifiers: ReadoutAmplifiersNames = "OSR_AND_OSL",
@@ -260,6 +266,7 @@ class Deepspec(Component):
                     seconds=seconds,
                     x_binning=x_binning,
                     y_binning=y_binning,
+                    gain=gain,
                     number_of_exposures=number_of_exposures,
                     frame_type=frame_type,
                     readout_amplifiers=readout_amplifiers,
