@@ -24,6 +24,7 @@ from common.models.assignments import (
     SpectrographAssignment,
 )
 from common.models.greateyes import (
+    Gain,
     GreateyesSettingsModel,
     ReadoutAmplifiersMapping,
     ReadoutAmplifiersNames,
@@ -283,6 +284,7 @@ class Deepspec(Component):
         seconds: float,
         x_binning: int = 1,
         y_binning: int = 1,
+        gain: Gain | None = None,
         delay_before_exposure: float = 0,
         number_of_exposures: int | None = 1,
         frame_type: FrameType = FrameType.LIGHT,
@@ -300,6 +302,7 @@ class Deepspec(Component):
             seconds,
             x_binning,
             y_binning,
+            gain,
             delay_before_exposure,
             number_of_exposures,
             frame_type,
@@ -319,6 +322,7 @@ class Deepspec(Component):
         seconds: float,
         x_binning: int = 1,
         y_binning: int = 1,
+        gain: Gain | None = None,
         delay_before_exposure: float = 0,
         number_of_exposures: int | None = 1,
         frame_type: FrameType = FrameType.LIGHT,
@@ -381,6 +385,10 @@ class Deepspec(Component):
                     crop=None,
                     shutter=shutter,
                     exposure_duration=seconds,
+                    # camera.settings, not camera.conf.settings: the camera narrowed that
+                    # once at construction, so this does not need the None check the
+                    # optional config field would otherwise demand here.
+                    gain=gain or camera.settings.gain,
                     number_of_exposures=number_of_exposures,
                     binning={"x": x_binning, "y": y_binning},  # type: ignore
                     image_file=image_file,

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from common.activities import GreatEyesActivities
 from common.config import Config
+from common.config.greateyes import GreateyesSettingConfig
 from common.dlipowerswitch import SwitchedOutlet
 from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
@@ -21,6 +22,7 @@ from common.mast_logging import get_logger
 from common.models.assignments import SpectrographAssignment
 from common.models.deepspec import DeepspecSettings
 from common.models.greateyes import (
+    Gain,
     GreateyesSettingsModel,
     ReadoutSpeed,
 )
@@ -55,6 +57,16 @@ class BytesPerPixel(IntEnum):
     Two = 2
     Three = 3
     Four = 4
+
+
+# The database and the API say "low"/"high"; ge.SetupGain takes an int. The pairing is the
+# vendor's, from the SDK header for SetupGain:
+#   0 -> Low ( Max. Dyn. Range )
+#   1 -> Std ( High Sensitivity )
+_gain_index = {
+    Gain.low: 0,
+    Gain.high: 1,
+}
 
 
 readout_speed_names = {
@@ -111,7 +123,16 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.band = band
         self.conf = Config().get_specs().deepspec[self.band]  # specific to this camera instance
         assert self.conf.settings is not None
-        self.greateyes_settings: GreateyesSettingsModel = GreateyesSettingsModel(**self.conf.settings.model_dump())
+        # Narrowed once, here, so nothing downstream repeats the assert. `conf` keeps what is
+        # not a setting -- network, device, enabled -- which is why this class needs both and
+        # cannot bind conf straight to the settings the way NewtonEMCCD does.
+        #
+        # This was a GreateyesSettingsModel converted from the config at startup (twice,
+        # identically), so the class carried two objects holding the same values and read
+        # from both: the model for temp and probing, the config for the per-exposure
+        # fallbacks. The config is the one that is authoritative -- the model is the API
+        # shape, where every field is optional because a caller may omit it.
+        self.settings: GreateyesSettingConfig = self.conf.settings
         self.latest_spec_exposure_settings: SpecExposureSettings | None = None
         self.latest_greateyes_exposure_settings: GreateyesSettingsModel | None = None
         # Path save_image() actually wrote, which may differ from the requested image_file.
@@ -132,8 +153,6 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         assert self.conf.network is not None
         NetworkedDevice.__init__(self, self.conf.model_dump())
         SwitchedOutlet.__init__(self, outlet_name=f"{self.outlet_name}", domain=OutletDomain.SpecOutlets)
-
-        self.greateyes_settings: GreateyesSettingsModel = GreateyesSettingsModel(**self.conf.settings.model_dump())
 
         self.enabled = self.conf.enabled
 
@@ -260,8 +279,6 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         )
         self.try_connect_camera()
 
-        assert self.conf.settings is not None
-        default_settings = GreateyesSettingsModel(**self.conf.settings.model_dump())
         if not self.detected:
             if self.power_switch is not None and self.power_switch.detected:
                 if self.is_off():
@@ -270,8 +287,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 else:
                     self.info("cycling power")
                     self.cycle()
-                assert default_settings.probing
-                boot_delay = default_settings.probing.boot_delay
+                boot_delay = self.settings.probing.boot_delay
                 self.info(f"waiting for the camera to boot ({boot_delay} seconds) ...")
                 assert boot_delay
                 time.sleep(boot_delay)
@@ -431,9 +447,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             return
 
         assert self.ge_device is not None
-        assert self.greateyes_settings.temp and self.greateyes_settings.temp.target_cool
 
-        target_temp = self.greateyes_settings.temp.target_cool
+        target_temp = self.settings.temp.target_cool
         self.sensor_temperature_target = target_temp
         if self._apply_setting(ge.TemperatureControl_SetTemperature, target_temp):
             self.start_activity(
@@ -555,8 +570,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # reached only when the exposure's own model leaves a field None, and the two
         # callers apply_settings had always filled them in. `deepspec/expose` builds its
         # model with `crop=None`, so consolidating here is what finally evaluated them.
-        conf = self.conf.settings
-        assert conf is not None
+        conf = self.settings
 
         self._apply_setting(
             ge.SetBitDepth,
@@ -586,20 +600,22 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 self.y_size = info[1]
                 self.bytes_per_pixel = info[2]
 
+        # The two sides spell the speed differently: the exposure model holds a ReadoutSpeed
+        # enum, the config a plain int (both are kHz). `.value` on the config side would
+        # have been an AttributeError on a fallback nothing had taken yet.
         readout_speed = (
             greateyes_exposure_settings.readout.speed.value
             if greateyes_exposure_settings.readout and greateyes_exposure_settings.readout.speed is not None
-            else conf.readout.speed.value
+            else conf.readout.speed
         )
         self._apply_setting(ge.SetReadOutSpeed, readout_speed)
 
-        binning = greateyes_exposure_settings.binning
+        # conf.binning is Optional on the model, though its validator fills it in; state the
+        # fallback rather than relying on that.
+        binning = greateyes_exposure_settings.binning or conf.binning
         self._apply_setting(
             ge.SetBinningMode,
-            (
-                binning.x if binning is not None else conf.binning.x,
-                binning.y if binning is not None else conf.binning.y,
-            ),
+            (binning.x if binning is not None else 1, binning.y if binning is not None else 1),
         )
 
         # Deliberately stricter than the code this replaces, which left crop mode untouched
@@ -617,14 +633,14 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if shutter is not None and shutter.automatic:
             self._apply_setting(ge.SetShutterTimings, (shutter.open_time, shutter.close_time))
 
-        # Gain: 0 -> Low (max. dynamic range), 1 -> Std (high sensitivity), per the SDK
-        # header for SetupGain. Applied only when someone actually asked for one -- the
-        # exposure, or failing that the site config. No config carries a gain today, so
-        # while that holds this leaves the sensor exactly as it was before the setting
-        # existed, rather than quietly imposing a default on every deployment.
+        # "low"/"high" everywhere the humans are -- database, endpoint, /docs -- and the
+        # SDK's integer only here, via _gain_index. Applied only when someone actually asked
+        # for one: the exposure, or failing that the site config. No config carries a gain
+        # today, so while that holds this leaves the sensor exactly as it was before the
+        # setting existed, rather than quietly imposing a default on every deployment.
         gain = greateyes_exposure_settings.gain if greateyes_exposure_settings.gain is not None else conf.gain
         if gain is not None:
-            self._apply_setting(ge.SetupGain, int(gain.gain))
+            self._apply_setting(ge.SetupGain, _gain_index[gain])
 
         self.end_activity(GreatEyesActivities.SettingParameters, label=self.name)
 
@@ -772,11 +788,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 "TOTAL INTEGRATION TIME",
             )
         )
-        assert self.greateyes_settings.temp is not None
         hdr.append(
             Card(
                 "TEMPGOAL",
-                self.greateyes_settings.temp.target_cool,
+                self.settings.temp.target_cool,
                 "GOAL DETECTOR TEMPERATURE",
             )
         )
@@ -926,7 +941,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         Checks if any in-progress activities can be ended.
         """
 
-        if not self.greateyes_settings.enabled:
+        # self.enabled, from conf.enabled -- the camera's own flag. This used to read
+        # greateyes_settings.enabled, a field the SETTINGS config does not have, so the
+        # model default of True applied and the check never fired.
+        if not self.enabled:
             return
 
         if self.shutdown_event.is_set():
@@ -934,14 +952,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             return
 
         assert self.ge_device is not None
-        assert self.greateyes_settings.probing is not None and self.greateyes_settings.probing.interval is not None
         if (
             not self.is_active(GreatEyesActivities.Probing)
             and not self.detected
-            and (
-                self.last_probe_time is None
-                or time.monotonic() - self.last_probe_time > self.greateyes_settings.probing.interval
-            )
+            and (self.last_probe_time is None or time.monotonic() - self.last_probe_time > self.settings.probing.interval)
         ):
             self.last_probe_time = time.monotonic()
             self.probe()
@@ -956,10 +970,9 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # simply stop firing -- and the spring jump fires them an hour early. An NTP step or
         # a hand-set clock does the same on any day of the year.
         now = time.monotonic()
-        assert self.greateyes_settings.temp is not None
         if (
             self.last_backside_temp_check is None
-            or (now - self.last_backside_temp_check) > self.greateyes_settings.temp.check_interval
+            or (now - self.last_backside_temp_check) > self.settings.temp.check_interval
         ):
             ret = self.get_back_temperature()
             if ret is None:
@@ -1023,17 +1036,14 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 should_power_off = False
                 if (
                     self.is_active(GreatEyesActivities.CoolingDown)
-                    and abs(sensor_temp - self.greateyes_settings.temp.target_cool) <= 1
+                    and abs(sensor_temp - self.settings.temp.target_cool) <= 1
                 ):
                     self.end_activity(GreatEyesActivities.CoolingDown, label=self._name)
                     if self.is_active(GreatEyesActivities.StartingUp):
                         self.end_activity(GreatEyesActivities.StartingUp, label=self._name)
                     switch_temp_control_off = True
 
-                if (
-                    self.is_active(GreatEyesActivities.WarmingUp)
-                    and abs(sensor_temp - self.greateyes_settings.temp.target_warm) <= 1
-                ):
+                if self.is_active(GreatEyesActivities.WarmingUp) and abs(sensor_temp - self.settings.temp.target_warm) <= 1:
                     self.end_activity(GreatEyesActivities.WarmingUp, label=self._name)
                     if self.is_active(GreatEyesActivities.ShuttingDown):
                         self.end_activity(GreatEyesActivities.ShuttingDown, label=self._name)
@@ -1237,8 +1247,8 @@ def make_camera(band: DeepspecBands):
     op = function_name()
     try:
         cameras[band] = GreateyesFactory.get_instance(band=band)
-    except Exception as e:
-        logger.error(f"{op}: caught {e}")
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"{op}: could not build camera for band {band}: {e}")
         cameras[band] = None
 
 
