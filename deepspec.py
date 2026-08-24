@@ -99,11 +99,7 @@ class Deepspec(Component):
 
     @property
     def connected(self) -> bool:
-        for _, cam in self.cameras.items():
-            if cam is None or not cam.connected:  # type: ignore
-                return False
-
-        return True
+        return all(not (cam is None or not cam.connected) for cam in self.cameras.values())
 
     @property
     def active_cameras(self) -> list[GreatEyes]:
@@ -111,7 +107,7 @@ class Deepspec(Component):
 
     @property
     def was_shut_down(self) -> bool:
-        return all([cam.was_shut_down for cam in self.active_cameras])  # type: ignore
+        return all(cam.was_shut_down for cam in self.active_cameras)  # type: ignore
 
     @property
     def why_not_operational(self) -> list[str]:
@@ -122,10 +118,7 @@ class Deepspec(Component):
 
     @property
     def operational(self) -> bool:
-        for cam in self.active_cameras:
-            if not cam.operational:  # type: ignore
-                return False
-        return True
+        return all(cam.operational for cam in self.active_cameras)
 
     @property
     def name(self) -> str:
@@ -146,7 +139,7 @@ class Deepspec(Component):
 
     @property
     def is_shutting_down(self) -> bool:
-        return any([cam.is_shutting_down for cam in self.active_cameras])
+        return any(cam.is_shutting_down for cam in self.active_cameras)
 
     def powerdown(self):
         if not self.was_shut_down:
@@ -165,7 +158,7 @@ class Deepspec(Component):
         self.executor.shutdown(wait=True)
 
     def status(self) -> DeepspecStatus:
-        if not any([cam.is_active(GreatEyesActivities.Acquiring) for cam in self.active_cameras]):  # type: ignore
+        if not any(cam.is_active(GreatEyesActivities.Acquiring) for cam in self.active_cameras):  # type: ignore
             self.end_activity(DeepspecActivities.Acquiring)
             if self.spec is not None:
                 self.spec.end_activity(SpecActivities.ExposingDeepspec)
@@ -467,12 +460,12 @@ class Deepspec(Component):
         :return:
         """
         errors = []
-        for band in self.cameras.keys():
+        for band in self.cameras:
             if self.cameras[band] is None or not self.cameras[band].detected:  # type: ignore
                 continue
             if not self.cameras[band].operational:  # type: ignore
                 for err in self.cameras[band].why_not_operational:  # type: ignore
-                    errors.append(err)
+                    errors.append(err)  # noqa: PERF402
                 continue
         return (False, errors) if errors else (True, None)
 
@@ -484,6 +477,13 @@ class Deepspec(Component):
             time.sleep(0.5)
 
         acquisition_folder = Path(PathMaker().make_spec_acquisitions_folder(spec_name="deepspec"))
+        # `ram` is Optional only for the non-Windows Filer, where it is None; this folder was
+        # just built under it by make_spec_acquisitions_folder, which asserts the same thing.
+        # Narrowed here rather than reaching for `shared.root` to quiet the type checker:
+        # that silences the warning and raises `ValueError: path is on mount 'D:', start on
+        # mount 'Z:'` the first time an assignment runs.
+        ram = Filer().ram
+        assert ram is not None
 
         ulid = None
         if remote_assignment.batch is not None and remote_assignment.batch.ulid is not None:
@@ -501,7 +501,7 @@ class Deepspec(Component):
                 # written to: the controller symlinks it, and a `D:` path means nothing
                 # there. `move_ram_to_shared` only swaps ram.root for shared.root, so the
                 # ram-relative path is exactly where these products land. MAST_spec#39.
-                shared_top=os.path.relpath(acquisition_folder, Filer().ram.root),
+                shared_top=os.path.relpath(acquisition_folder, ram.root),
                 shared_subpath="deepspec",
             )
         )
