@@ -28,7 +28,12 @@ from common.models.greateyes import (
 )
 from common.models.statuses import GreateyesStatus
 from common.networking import NetworkedDevice
-from common.spec import DeepspecBands, FrameType, SpecExposureSettings
+from common.spec import (
+    CLOSED_SHUTTER_FRAMES,
+    DeepspecBands,
+    FrameType,
+    SpecExposureSettings,
+)
 from common.utils import OperatingMode, RepeatTimer, function_name
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "sdk"))
@@ -661,13 +666,24 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # mode used to be read straight off greateyes_exposure_settings, which is not the
         # same thing -- the timings above already fall back to the config, so an assignment
         # arriving without a shutter got configured timings and then an AssertionError.
-        automatic = shutter is not None and shutter.automatic
+        # A bias or a dark is defined by the sensor seeing nothing, so the frame type decides
+        # this before the shutter configuration gets a say. Without it, both of the branches
+        # below leave the shutter OPEN through the integration -- 2 is automatic, 1 is
+        # permanently open -- so a frame requested as `dark` was a light frame that had been
+        # renamed. The type was recorded in the filename and nowhere else.
+        frame_type = self.latest_exposure.settings.frame_type
+        closed = frame_type in CLOSED_SHUTTER_FRAMES
+
+        automatic = not closed and shutter is not None and shutter.automatic
         # Remembered for _close_shutter_if_manual, which has to close whatever this opened.
         # It used to re-derive the answer from the settings model alone, so an exposure that
         # ran in manual mode because the CONFIG said so was never closed: the model had no
         # shutter, the check read that as "nothing to do", and the shutter stayed open.
         self.latest_shutter_automatic = automatic
-        self._apply_setting(ge.OpenShutter, 2 if automatic else 1)
+        # 0 closed, 1 open, 2 automatic. `closed` wins; otherwise this is unchanged.
+        self._apply_setting(ge.OpenShutter, 0 if closed else (2 if automatic else 1))
+        # showShutter has to agree with OpenShutter or the two cancel out -- that is the bug
+        # the comment above records. For a closed frame both say "no shutter movement".
         ret = ge.StartMeasurement_DynBitDepth(showShutter=automatic, addr=self.ge_device)
         op = f"StartMeasurement_DynBitDepth(showShutter={automatic}, addr={self.ge_device})"
         if ret:
@@ -735,6 +751,17 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         hdr.append(Card("BAND", f"DeepSpec-{self.band}", "DEEPSPEC BAND"))
         hdr.append(Card("CAM_IP", self.network.ipaddr, "Camera IP address"))
         hdr.append(Card("TYPE", "RAW", "Exposure type"))
+        # IMAGETYP is the FITS convention, and the frame type was recorded NOWHERE in the
+        # file until now -- only in the filename, which is the first thing lost to a copy or
+        # a rename. TYPE above is a constant "RAW" describing the processing level, not this;
+        # it is left alone because something downstream may read it.
+        hdr.append(
+            Card(
+                "IMAGETYP",
+                self.latest_exposure.settings.frame_type.value,
+                "frame type requested (light/bias/dark/flat)",
+            )
+        )
 
         assert self.latest_exposure.timing
         hdr.append(

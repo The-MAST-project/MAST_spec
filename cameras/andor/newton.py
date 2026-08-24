@@ -34,7 +34,7 @@ from common.models.newton import (
 )
 from common.models.statuses import NewtonStatus
 from common.paths import PathMaker
-from common.spec import SpecExposureSettings
+from common.spec import CLOSED_SHUTTER_FRAMES, FrameType, SpecExposureSettings
 from common.utils import function_name
 
 logger = get_logger(__name__)
@@ -92,22 +92,19 @@ class NewtonEMGainRange:
     high: int
 
 
-class NewtonFrameType(StrEnum):
-    Light = "light"
-    Dark = "dark"
-    Bias = "bias"
-    Flat = "flat"
+# SetShutter mode, per the SDK: 0 automatic, 1 permanently open, 2 permanently closed.
+_SHUTTER_AUTOMATIC = 0
+_SHUTTER_CLOSED = 2
 
 
-class NewtonExposureSettings:
-    delay_before_exposure: float | None = None
-    exposure_duration: float
-    em_gain: int | None = None
-    pre_amp_gain: int | None = None
-    high_sensitivity: bool | None = None
-    horizontal_binning: int
-    vertical_binning: int
-    frame_type: NewtonFrameType = NewtonFrameType.Light
+def _shutter_mode_for(frame_type: FrameType) -> int:
+    """The SetShutter mode a frame of this type needs.
+
+    Automatic for light and flat frames -- the camera opens the shutter for the integration
+    and closes it for the readout. Closed for bias and dark, which are defined by the sensor
+    seeing nothing.
+    """
+    return _SHUTTER_CLOSED if frame_type in CLOSED_SHUTTER_FRAMES else _SHUTTER_AUTOMATIC
 
 
 class NewtonPreAmpGain(StrEnum):
@@ -829,6 +826,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         roi: NewtonRoi | None,
         shutter: ShutterConfig | None,
         acquisition_mode: int,
+        frame_type: FrameType = FrameType.LIGHT,
     ) -> CanonicalResponse:
         """Apply exactly these settings to the camera. Reads no configuration of its own.
 
@@ -884,8 +882,25 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             if response.failed:
                 return response
 
-            if shutter is not None:
-                self._apply_setting(self.sdk.SetShutter, (0, 0, shutter.close_time, shutter.open_time))
+            # The frame type decides the shutter, which is the whole point of asking for one.
+            # SetShutter's second argument is the mode: 0 automatic, 1 permanently open,
+            # 2 permanently closed (SDK, SetShutter). It was hardcoded to 0, so a frame
+            # requested as `dark` or `bias` was exposed with the shutter opening exactly as a
+            # light frame's does -- a light frame with a misleading name, and the name was the
+            # only place the request was recorded at all.
+            #
+            # Applied even when `shutter` is None. The close/open transfer times come from the
+            # config and are only needed for the SDK's timing arithmetic, but the MODE is not
+            # a timing detail: skipping the call left the camera on whatever the previous
+            # exposure set, which is how an unconfigured shutter would silently produce a lit
+            # "dark". 0 ms transfer times are what the SDK documents for cameras without a
+            # shutter, and are harmless where one is configured but absent from this call.
+            closing_time = shutter.close_time if shutter is not None else 0
+            opening_time = shutter.open_time if shutter is not None else 0
+            self._apply_setting(
+                self.sdk.SetShutter,
+                (0, _shutter_mode_for(frame_type), closing_time, opening_time),
+            )
 
             # Last, deliberately: the SDK quantises the requested time against the readout
             # configuration above, so it has to be set once that configuration is in place.
@@ -1010,6 +1025,12 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             roi=self.conf.roi,
             shutter=self.conf.shutter,
             acquisition_mode=self.conf.acquisition_mode,
+            # From the plan, not the config: SpecExposureSettings has carried a frame_type all
+            # along and this path dropped it, so a plan asking for a dark got the shutter of a
+            # light frame. It is the one per-exposure setting a plan legitimately decides --
+            # unlike the amplifier and the gains, "is this a calibration frame" is exactly the
+            # kind of thing the person writing the plan means to say.
+            frame_type=settings.frame_type,
         )
         if response.failed:
             self.errors = response.errors or []
@@ -1082,6 +1103,16 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                     "EXPREQ",
                     value=requested,
                     comment="[s] exposure requested",
+                )
+                # IMAGETYP is the FITS convention for this, and until now the frame type was
+                # recorded NOWHERE in the file -- only in the filename, which is the first
+                # thing lost to a copy or a rename. A calibration library sorted on the header
+                # could not tell a dark from a light.
+                fits.setval(
+                    self.latest_exposure_settings.image_full_name,
+                    "IMAGETYP",
+                    value=self.latest_exposure_settings.frame_type.value,
+                    comment="frame type requested (light/bias/dark/flat)",
                 )
             else:
                 self.error(f"failed sdk.SaveAsFITS({self.latest_exposure_settings.image_full_name}, typ=0) (ret={ret})")
@@ -1275,9 +1306,19 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             Query(description="Delay before starting the exposure (seconds)."),
         ] = 0,
         frame_mode: Annotated[
-            NewtonFrameType,
-            Query(description="Frame type recorded for this exposure."),
-        ] = NewtonFrameType.Light,
+            FrameType,
+            Query(
+                description=(
+                    "What kind of frame this is. `bias` and `dark` hold the shutter **closed** "
+                    "for the whole exposure; `light` and `flat` leave it on the camera's "
+                    "automatic mode. Recorded in the FITS `IMAGETYP` card, and appended to the "
+                    "filename for anything other than `light`.\n\n"
+                    "Note that `bias` here means only 'shutter closed'. A true bias is also a "
+                    "zero-length integration, and this endpoint does not shorten the exposure "
+                    "-- ask for the shortest duration the camera accepts as well."
+                )
+            ),
+        ] = FrameType.LIGHT,
         # --- Amplifier and readout ---
         #
         # None means "use the configured value". These used to carry concrete defaults,
@@ -1365,6 +1406,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             time.sleep(delay_before_exposure)
 
         response = self._apply_exposure_settings(
+            frame_type=frame_mode,
             exposure_duration=exposure_duration,
             amplifier_mode=amplifier_mode,
             em_gain=em_gain,
@@ -1385,7 +1427,11 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         owns_folder = image_full_path is None
         if image_full_path is None:
             image_full_path = Path(PathMaker().make_spec_exposures_folder(spec_name="highspec") + "/image.fits")
-        if frame_mode != NewtonFrameType.Light.value:
+        # `frame_mode != FrameType.LIGHT`, comparing enum to enum. This read
+        # `!= NewtonFrameType.Light.value` -- a member against a plain string. StrEnum makes
+        # that work by accident, which is why it went unnoticed, but it stops working the
+        # moment the enum is not a StrEnum.
+        if frame_mode != FrameType.LIGHT:
             image_full_path = image_full_path.with_name(
                 image_full_path.stem + f"_{frame_mode.value}" + image_full_path.suffix
             )
@@ -1398,6 +1444,10 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             SpecExposureSettings(
                 image_full_name=str(image_full_path),
                 exposure_duration=exposure_duration,
+                # Carried so readout() can write IMAGETYP. Omitted, these settings would
+                # default to LIGHT and every frame this endpoint takes would claim to be one,
+                # including the ones it had just closed the shutter for.
+                frame_type=frame_mode,
             )
         )
 
