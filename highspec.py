@@ -4,7 +4,6 @@ import os.path
 import time
 from pathlib import Path
 from threading import Thread
-from typing import Literal
 
 import zaber_motion
 from astropy.io import fits
@@ -46,8 +45,11 @@ from stage.stage import StageController, UnitNames
 logger = get_logger(__name__)
 
 
+# No `camera` field. Which camera this machine drives is `HighspecConfig.camera`, read
+# once in Highspec.__init__; autofocus uses whatever that built, like every other
+# endpoint. A per-call override is a second source of truth for a question the config
+# already answers, and the cost of the single source is a service restart to change it.
 class HighspecAutofocusSettings(NewtonSettingsConfig):
-    camera: Literal["newton", "qhy600", "as-configured"] = "qhy600"
     guessed_focus_position: float | None = None  # None - start at current stage position
     positions_per_step: float = 50  # stage steps between exposures
     unit: UnitNames = UnitNames("MILLIMETRES")
@@ -189,16 +191,11 @@ class Highspec(Component):
     ) -> None:
         assert self.focusing_stage is not None
 
-        match autofocus_settings.camera:
-            case "as-configured":
-                pass  # use self.camera as is
-            case "newton":
-                self.camera = NewtonEMCCD()
-            case "qhy600":
-                self.camera = QHY600()
-            case _:
-                raise ValueError(f"{function_name()}: unknown camera '{autofocus_settings.camera}'")
-
+        # `self.camera` as __init__ built it. This used to REASSIGN it from the request --
+        # not for the run, permanently, with no restore -- and the endpoints registered in
+        # api_router bind `self.camera.expose_single_image` once, at construction. So one
+        # autofocus naming the other camera left /status reporting one camera while
+        # /expose_single_image still exposed on the other.
         self.start_activity(
             HighspecActivities.AutoFocusing,
             details=[
@@ -421,19 +418,8 @@ class Highspec(Component):
             # being deleted with it.
             MoveGuardian().release_folder(folder, logger=logger)
 
-    # class HighspecAutofocusSettings(NewtonSettingsConfig):
-    #     camera: Literal["newton", "qhy600", "as-configured"] = "qhy600"
-    #     guessed_focus_position: float | None = (
-    #         None  # None - start at current stage position
-    #     )
-    #     positions_per_step: float = 50  # stage steps between exposures
-    #     number_of_exposures: int = 1
-    #     lamp_on: bool = False  # ThAr lamp
-    #     filters: list[str] | None = None  # optional list of filters
-
     def manual_autofocus(
         self,
-        camera: Literal["newton", "qhy600"] = "newton",
         gain: int | None = None,
         exposure_duration: float = Query(1.0, description="exposure duration in seconds"),
         guessed_focus_position: float | None = None,
@@ -456,7 +442,6 @@ class Highspec(Component):
             horizontal_shift_speed if horizontal_shift_speed is not None else self.conf.settings.horizontal_shift_speed
         )
         settings = HighspecAutofocusSettings(
-            camera=camera,
             guessed_focus_position=guessed_focus_position,
             exposure_duration=exposure_duration,
             positions_per_step=step_size,
@@ -682,7 +667,6 @@ def make_current_autofocus_settings() -> HighspecAutofocusSettings:
     spec: Highspec = Highspec()
 
     return HighspecAutofocusSettings(
-        camera=spec.conf.camera,
         guessed_focus_position=spec.focusing_stage.position(unit=zaber_motion.Units.LENGTH_MILLIMETRES)
         if spec.focusing_stage
         else None,
