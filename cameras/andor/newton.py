@@ -1129,7 +1129,12 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                     self.latest_exposure_settings.image_full_name,
                     "EXPOSURE",
                     value=actual,
-                    comment="[s] exposure the camera used (GetAcquisitionTimings)",
+                    # 43 chars. A FITS card is 80 total, and this one spends 33 on
+                    # `EXPOSURE= <20-wide value> / `, so a comment over 47 is truncated --
+                    # astropy says so with a VerifyWarning at readout, which is easy to miss
+                    # in a log. The original ran to 52 and every frame on the share carries
+                    # "(GetAcquisitionTim" with the parenthesis unclosed.
+                    comment="[s] actual exposure (GetAcquisitionTimings)",
                 )
                 fits.setval(
                     self.latest_exposure_settings.image_full_name,
