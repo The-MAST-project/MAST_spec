@@ -1254,31 +1254,96 @@ class NewtonEMCCD(Component, SwitchedOutlet):
     def debug(self, msg: str):
         self.logger.debug(f"{self.log_label}: {msg}")
 
+    # Parameter ORDER is the grouping. OpenAPI has no notion of a parameter group and
+    # Swagger UI renders one flat table, but it emits them in signature order and renders
+    # markdown in each description -- so adjacency plus a bold heading on each group's
+    # first parameter is as close to sections-with-separators as the format allows.
+    # Reordering is safe: the only Python caller is Highspec.do_autofocus, by keyword.
     def expose_single_image(
         self,
-        exposure_duration: float | None = Query(
-            description="Exposure length (seconds). Omit to use the configured duration.",
-            default=None,
-            ge=0.001,
-            le=3600,
-        ),
+        # --- Exposure ---
+        exposure_duration: Annotated[
+            float | None,
+            Query(
+                description=("**--- Exposure ---**\n\nExposure length (seconds). Omit to use the configured duration."),
+                ge=0.001,
+                le=3600,
+            ),
+        ] = None,
         delay_before_exposure: Annotated[
             float,
-            Query(
-                description="Delay before starting the exposure (seconds)",
-                ge=0,
-            ),
+            Query(description="Delay before starting the exposure (seconds)."),
         ] = 0,
+        frame_mode: Annotated[
+            NewtonFrameType,
+            Query(description="Frame type recorded for this exposure."),
+        ] = NewtonFrameType.Light,
+        # --- Amplifier and readout ---
+        #
         # None means "use the configured value". These used to carry concrete defaults,
         # which are indistinguishable from a caller's choice -- so the endpoint silently
         # overrode the config on every call, and editing the config had no effect here.
-        amplifier_mode: NewtonAmplifierMode | None = None,
-        em_gain: int | None = Query(default=None, ge=1, le=255),
-        pre_amp_gain: NewtonPreAmpGain | None = None,
-        frame_mode: NewtonFrameType = NewtonFrameType.Light,
-        horizontal_shift_speed: NewtonHSSpeed | None = None,
-        bypass_temperature_stabilization_check: bool = False,
-        image_full_path: Path | None = Query(default=None, include_in_schema=False),
+        amplifier_mode: Annotated[
+            NewtonAmplifierMode | None,
+            Query(
+                description=(
+                    "**--- Amplifier and readout ---**\n\n"
+                    "`em` reads out through the electron-multiplying register; `conventional` "
+                    "bypasses it. Decides whether `em_gain` below does anything. "
+                    "Omit to use the configured mode."
+                )
+            ),
+        ] = None,
+        horizontal_shift_speed: Annotated[
+            NewtonHSSpeed | None,
+            Query(
+                description=(
+                    "Readout (horizontal shift) speed. Applies in both amplifier modes, and "
+                    "together with `amplifier_mode` decides which `pre_amp_gain` values the "
+                    "camera offers. Omit to use the configured speed."
+                )
+            ),
+        ] = None,
+        pre_amp_gain: Annotated[
+            NewtonPreAmpGain | None,
+            Query(
+                description=(
+                    "Pre-amplifier gain. Applies in **both** amplifier modes. Which values are "
+                    "legal depends on `amplifier_mode` and `horizontal_shift_speed` together: "
+                    "the camera is asked (IsPreAmpGainAvailable) before anything is applied, and "
+                    "an unavailable combination is refused whole rather than applied in part. "
+                    "Omit to use the configured gain."
+                )
+            ),
+        ] = None,
+        # --- EM mode only ---
+        em_gain: Annotated[
+            int | None,
+            Query(
+                description=(
+                    "**--- EM mode only ---**\n\n"
+                    "Gain of the electron-multiplying register. **Applied only when "
+                    "`amplifier_mode` is `em`** -- in `conventional` mode it is accepted and "
+                    "silently ignored. The 1..255 bound is the range of EM gain mode 0, which "
+                    "is the mode this endpoint sets; it is not the camera's own advertised "
+                    "range. Omit to use the configured gain."
+                ),
+                ge=1,
+                le=255,
+            ),
+        ] = None,
+        # --- Safety ---
+        bypass_temperature_stabilization_check: Annotated[
+            bool,
+            Query(
+                description=(
+                    "**--- Safety ---**\n\n"
+                    "Expose even if the sensor has not reached its target temperature. "
+                    "Not recommended: the dark current will not be what the calibrations assume."
+                )
+            ),
+        ] = False,
+        image_full_path: Annotated[Path | None, Query(include_in_schema=False)] = None,
     ) -> CanonicalResponse:
 
         if not bypass_temperature_stabilization_check and not self.temperature_is_stabilized:

@@ -24,6 +24,7 @@ from common.models.assignments import (
     SpectrographAssignment,
 )
 from common.models.greateyes import (
+    Gain,
     GreateyesSettingsModel,
     ReadoutAmplifiersMapping,
     ReadoutAmplifiersNames,
@@ -98,11 +99,7 @@ class Deepspec(Component):
 
     @property
     def connected(self) -> bool:
-        for _, cam in self.cameras.items():
-            if cam is None or not cam.connected:  # type: ignore
-                return False
-
-        return True
+        return all(not (cam is None or not cam.connected) for cam in self.cameras.values())
 
     @property
     def active_cameras(self) -> list[GreatEyes]:
@@ -110,7 +107,7 @@ class Deepspec(Component):
 
     @property
     def was_shut_down(self) -> bool:
-        return all([cam.was_shut_down for cam in self.active_cameras])  # type: ignore
+        return all(cam.was_shut_down for cam in self.active_cameras)  # type: ignore
 
     @property
     def why_not_operational(self) -> list[str]:
@@ -121,10 +118,7 @@ class Deepspec(Component):
 
     @property
     def operational(self) -> bool:
-        for cam in self.active_cameras:
-            if not cam.operational:  # type: ignore
-                return False
-        return True
+        return all(cam.operational for cam in self.active_cameras)
 
     @property
     def name(self) -> str:
@@ -145,7 +139,7 @@ class Deepspec(Component):
 
     @property
     def is_shutting_down(self) -> bool:
-        return any([cam.is_shutting_down for cam in self.active_cameras])
+        return any(cam.is_shutting_down for cam in self.active_cameras)
 
     def powerdown(self):
         if not self.was_shut_down:
@@ -164,7 +158,7 @@ class Deepspec(Component):
         self.executor.shutdown(wait=True)
 
     def status(self) -> DeepspecStatus:
-        if not any([cam.is_active(GreatEyesActivities.Acquiring) for cam in self.active_cameras]):  # type: ignore
+        if not any(cam.is_active(GreatEyesActivities.Acquiring) for cam in self.active_cameras):  # type: ignore
             self.end_activity(DeepspecActivities.Acquiring)
             if self.spec is not None:
                 self.spec.end_activity(SpecActivities.ExposingDeepspec)
@@ -208,6 +202,12 @@ class Deepspec(Component):
         seconds: float,
         x_binning: int = 1,
         y_binning: int = 1,
+        # One gain for every band, as the other per-exposure settings here are: this
+        # endpoint drives all the cameras with one set of parameters, and a caller wanting
+        # them to differ has expose_one_camera. Omitted, each camera falls back to its own
+        # configured gain -- which is what the bands' configs are for -- so the default is
+        # not "the same gain everywhere", it is "whatever each band was set up with".
+        gain: Gain | None = None,
         number_of_exposures: int | None = 1,
         frame_type: FrameType = FrameType.LIGHT,
         readout_amplifiers: ReadoutAmplifiersNames = "OSR_AND_OSL",
@@ -259,6 +259,7 @@ class Deepspec(Component):
                     seconds=seconds,
                     x_binning=x_binning,
                     y_binning=y_binning,
+                    gain=gain,
                     number_of_exposures=number_of_exposures,
                     frame_type=frame_type,
                     readout_amplifiers=readout_amplifiers,
@@ -283,6 +284,7 @@ class Deepspec(Component):
         seconds: float,
         x_binning: int = 1,
         y_binning: int = 1,
+        gain: Gain | None = None,
         delay_before_exposure: float = 0,
         number_of_exposures: int | None = 1,
         frame_type: FrameType = FrameType.LIGHT,
@@ -300,6 +302,7 @@ class Deepspec(Component):
             seconds,
             x_binning,
             y_binning,
+            gain,
             delay_before_exposure,
             number_of_exposures,
             frame_type,
@@ -319,6 +322,7 @@ class Deepspec(Component):
         seconds: float,
         x_binning: int = 1,
         y_binning: int = 1,
+        gain: Gain | None = None,
         delay_before_exposure: float = 0,
         number_of_exposures: int | None = 1,
         frame_type: FrameType = FrameType.LIGHT,
@@ -381,6 +385,10 @@ class Deepspec(Component):
                     crop=None,
                     shutter=shutter,
                     exposure_duration=seconds,
+                    # camera.settings, not camera.conf.settings: the camera narrowed that
+                    # once at construction, so this does not need the None check the
+                    # optional config field would otherwise demand here.
+                    gain=gain or camera.settings.gain,
                     number_of_exposures=number_of_exposures,
                     binning={"x": x_binning, "y": y_binning},  # type: ignore
                     image_file=image_file,
@@ -452,12 +460,12 @@ class Deepspec(Component):
         :return:
         """
         errors = []
-        for band in self.cameras.keys():
+        for band in self.cameras:
             if self.cameras[band] is None or not self.cameras[band].detected:  # type: ignore
                 continue
             if not self.cameras[band].operational:  # type: ignore
                 for err in self.cameras[band].why_not_operational:  # type: ignore
-                    errors.append(err)
+                    errors.append(err)  # noqa: PERF402
                 continue
         return (False, errors) if errors else (True, None)
 
@@ -469,6 +477,13 @@ class Deepspec(Component):
             time.sleep(0.5)
 
         acquisition_folder = Path(PathMaker().make_spec_acquisitions_folder(spec_name="deepspec"))
+        # `ram` is Optional only for the non-Windows Filer, where it is None; this folder was
+        # just built under it by make_spec_acquisitions_folder, which asserts the same thing.
+        # Narrowed here rather than reaching for `shared.root` to quiet the type checker:
+        # that silences the warning and raises `ValueError: path is on mount 'D:', start on
+        # mount 'Z:'` the first time an assignment runs.
+        ram = Filer().ram
+        assert ram is not None
 
         ulid = None
         if remote_assignment.batch is not None and remote_assignment.batch.ulid is not None:
@@ -486,7 +501,7 @@ class Deepspec(Component):
                 # written to: the controller symlinks it, and a `D:` path means nothing
                 # there. `move_ram_to_shared` only swaps ram.root for shared.root, so the
                 # ram-relative path is exactly where these products land. MAST_spec#39.
-                shared_top=os.path.relpath(acquisition_folder, Filer().ram.root),
+                shared_top=os.path.relpath(acquisition_folder, ram.root),
                 shared_subpath="deepspec",
             )
         )

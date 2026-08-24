@@ -4,7 +4,7 @@ import os.path
 import time
 from pathlib import Path
 from threading import Thread
-from typing import Literal
+from typing import Annotated
 
 import zaber_motion
 from astropy.io import fits
@@ -18,6 +18,7 @@ from cameras.andor.newton import (
     NewtonEMCCD,
     NewtonHSSpeed,
     NewtonPreAmpGain,
+    _pre_amp_gain_by_index,
 )
 from cameras.qhy.qhy600 import (
     QHY600,
@@ -41,22 +42,23 @@ from common.notifications import Notifier
 from common.paths import PathMaker
 from common.spec import SpecActivities, SpecExposureSettings
 from common.utils import function_name
-from stage.stage import StageController as StageController
-from stage.stage import UnitNames
+from stage.stage import StageController, UnitNames
 
 logger = get_logger(__name__)
 
 
+# No `camera` field. Which camera this machine drives is `HighspecConfig.camera`, read
+# once in Highspec.__init__; autofocus uses whatever that built, like every other
+# endpoint. A per-call override is a second source of truth for a question the config
+# already answers, and the cost of the single source is a service restart to change it.
 class HighspecAutofocusSettings(NewtonSettingsConfig):
-    camera: Literal["newton", "qhy600", "as-configured"] = "qhy600"
     guessed_focus_position: float | None = None  # None - start at current stage position
     positions_per_step: float = 50  # stage steps between exposures
     unit: UnitNames = UnitNames("MILLIMETRES")
-    gain: int | None = None
     number_of_exposures: int = 1
     lamp_on: bool = False  # ThAr lamp
     filters: list[str] | None = None  # optional list of filters
-    gain: int | None = None  # for QHY600, em_gain for Newton
+    qhy600_gain: int | None = None
     # horizontal_shift_speed is inherited from NewtonSettingsConfig now that it is a
     # configured setting; redeclaring it here would only pin a second default.
     amplifier_mode: NewtonAmplifierMode = "em"
@@ -191,16 +193,11 @@ class Highspec(Component):
     ) -> None:
         assert self.focusing_stage is not None
 
-        match autofocus_settings.camera:
-            case "as-configured":
-                pass  # use self.camera as is
-            case "newton":
-                self.camera = NewtonEMCCD()
-            case "qhy600":
-                self.camera = QHY600()
-            case _:
-                raise ValueError(f"{function_name()}: unknown camera '{autofocus_settings.camera}'")
-
+        # `self.camera` as __init__ built it. This used to REASSIGN it from the request --
+        # not for the run, permanently, with no restore -- and the endpoints registered in
+        # api_router bind `self.camera.expose_single_image` once, at construction. So one
+        # autofocus naming the other camera left /status reporting one camera while
+        # /expose_single_image still exposed on the other.
         self.start_activity(
             HighspecActivities.AutoFocusing,
             details=[
@@ -340,7 +337,7 @@ class Highspec(Component):
                             exposure_duration=autofocus_settings.exposure_duration,
                             binning=binning,
                             image_path=str(image_path),
-                            gain=autofocus_settings.gain,
+                            gain=autofocus_settings.qhy600_gain,
                         )
                     )
 
@@ -423,42 +420,119 @@ class Highspec(Component):
             # being deleted with it.
             MoveGuardian().release_folder(folder, logger=logger)
 
-    # class HighspecAutofocusSettings(NewtonSettingsConfig):
-    #     camera: Literal["newton", "qhy600", "as-configured"] = "qhy600"
-    #     guessed_focus_position: float | None = (
-    #         None  # None - start at current stage position
-    #     )
-    #     positions_per_step: float = 50  # stage steps between exposures
-    #     number_of_exposures: int = 1
-    #     lamp_on: bool = False  # ThAr lamp
-    #     filters: list[str] | None = None  # optional list of filters
-
+    # Parameter ORDER is the grouping, as on expose_single_image: OpenAPI has no parameter
+    # groups and Swagger UI renders one flat table, so adjacency plus a bold heading on
+    # each group's first parameter is what stands in for sections.
+    #
+    # The camera-specific groups are BOTH shown whichever camera is configured, unlike
+    # expose_single_image -- this endpoint is Highspec's own, not the camera's, so its
+    # signature cannot vary with the camera. Hence each says which camera reads it.
     def manual_autofocus(
         self,
-        camera: Literal["newton", "qhy600"] = "newton",
-        gain: int | None = None,
-        exposure_duration: float = Query(1.0, description="exposure duration in seconds"),
-        guessed_focus_position: float | None = None,
-        step_size: float = 5,
-        unit: UnitNames = UnitNames("MILLIMETRES"),
-        number_of_exposures: int = 3,
-        # None means "use the configured value", as on expose_single_image. A concrete
-        # default is indistinguishable from a caller's choice, so it would override the
-        # config on every call.
-        horizontal_shift_speed: NewtonHSSpeed | None = None,
-        amplifier_mode: NewtonAmplifierMode = "em",
-        em_gain: int = Query(default=240, ge=1, le=255),
-        pre_amp_gain: NewtonPreAmpGain = NewtonPreAmpGain.x1,
-        bypass_temperature_stabilization_check: bool = Query(
-            description="Bypass the check for temperature stabilization (not recommended)",
-            default=False,
-        ),
+        # --- Focus sweep ---
+        guessed_focus_position: Annotated[
+            float | None,
+            Query(
+                description=(
+                    "**--- Focus sweep ---**\n\n"
+                    "Position to centre the sweep on. Omit to start from the stage's current "
+                    "position."
+                )
+            ),
+        ] = None,
+        step_size: Annotated[
+            float,
+            Query(description="Distance between exposures, in `unit`."),
+        ] = 5,
+        unit: Annotated[
+            UnitNames,
+            Query(description="Unit that `guessed_focus_position` and `step_size` are given in."),
+        ] = UnitNames("MILLIMETRES"),
+        number_of_exposures: Annotated[
+            int,
+            Query(description="Exposures in the sweep, one per step."),
+        ] = 3,
+        # --- Exposure ---
+        exposure_duration: Annotated[
+            float,
+            Query(description="**--- Exposure ---**\n\nExposure length (seconds), the same at every step."),
+        ] = 1.0,
+        bypass_temperature_stabilization_check: Annotated[
+            bool,
+            Query(description=("Sweep even if the sensor has not reached its target temperature. Not recommended.")),
+        ] = False,
+        # --- Newton: amplifier and readout ---
+        #
+        # horizontal_shift_speed is None-defaulted and falls back to the config; the three
+        # below it are NOT, and so override the config on every call. They happen to carry
+        # the configured values today, which is coincidence rather than coupling. Said
+        # plainly in each description rather than papered over.
+        horizontal_shift_speed: Annotated[
+            NewtonHSSpeed | None,
+            Query(
+                description=(
+                    "**--- Newton: amplifier and readout ---** *(ignored unless the configured "
+                    "camera is a Newton)*\n\n"
+                    "Readout (horizontal shift) speed. Together with `amplifier_mode` it decides "
+                    "which `pre_amp_gain` values the camera offers. Omit to use the configured "
+                    "speed -- the only parameter in this group that falls back to the config."
+                )
+            ),
+        ] = None,
+        amplifier_mode: Annotated[
+            NewtonAmplifierMode,
+            Query(
+                description=(
+                    "`em` reads out through the electron-multiplying register; `conventional` "
+                    "bypasses it. Decides whether `em_gain` does anything. **Always sent**: "
+                    "there is no 'use the configured mode' value, so this overrides the config "
+                    "on every call."
+                )
+            ),
+        ] = "em",
+        pre_amp_gain: Annotated[
+            NewtonPreAmpGain,
+            Query(
+                description=(
+                    "Pre-amplifier gain, applied in **both** amplifier modes. Which values are "
+                    "legal depends on `amplifier_mode` and `horizontal_shift_speed` together, "
+                    "and an unavailable combination is refused before anything is applied. "
+                    "**Always sent**, so it overrides the config on every call."
+                )
+            ),
+        ] = NewtonPreAmpGain.x1,
+        # --- Newton: EM mode only ---
+        em_gain: Annotated[
+            int,
+            Query(
+                description=(
+                    "**--- Newton: EM mode only ---**\n\n"
+                    "Gain of the electron-multiplying register. **Applied only when "
+                    "`amplifier_mode` is `em`** -- in `conventional` mode it is accepted and "
+                    "silently ignored. The 1..255 bound is the range of EM gain mode 0, not the "
+                    "camera's advertised range. **Always sent**, so it overrides the config."
+                ),
+                ge=1,
+                le=255,
+            ),
+        ] = 240,
+        # --- QHY600 only ---
+        qhy600_gain: Annotated[
+            int | None,
+            Query(
+                description=(
+                    "**--- QHY600 only ---** *(ignored unless the configured camera is a "
+                    "QHY600)*\n\n"
+                    "QHY600 sensor gain. No configured fallback: omitted, the gain is not set "
+                    "and the camera keeps whatever it had."
+                )
+            ),
+        ] = None,
     ):
         shift_speed = (
             horizontal_shift_speed if horizontal_shift_speed is not None else self.conf.settings.horizontal_shift_speed
         )
         settings = HighspecAutofocusSettings(
-            camera=camera,
             guessed_focus_position=guessed_focus_position,
             exposure_duration=exposure_duration,
             positions_per_step=step_size,
@@ -466,7 +540,7 @@ class Highspec(Component):
             number_of_exposures=number_of_exposures,
             lamp_on=False,
             filters=None,
-            gain=gain,
+            qhy600_gain=qhy600_gain,
             amplifier_mode=amplifier_mode,
             em_gain=em_gain,
             pre_amp_gain=pre_amp_gain,
@@ -528,6 +602,13 @@ class Highspec(Component):
 
         acquisition_folder: Path = Path(PathMaker().make_spec_acquisitions_folder(spec_name="highspec"))
         acquisition_folder = acquisition_folder / PathMaker.make_seq(str(acquisition_folder))
+        # `ram` is Optional only for the non-Windows Filer, where it is None; this folder was
+        # just built under it by make_spec_acquisitions_folder, which asserts the same thing.
+        # Narrowed here rather than reaching for `shared.root` to quiet the type checker:
+        # that silences the warning and raises `ValueError: path is on mount 'D:', start on
+        # mount 'Z:'` the first time an assignment runs.
+        ram = Filer().ram
+        assert ram is not None
 
         work = assignment.batch if assignment.batch is not None else assignment.plan if assignment.plan is not None else None
         assert work is not None and work.ulid is not None
@@ -540,7 +621,7 @@ class Highspec(Component):
                 # written to: the controller symlinks it, and a `D:` path means nothing
                 # there. `move_ram_to_shared` only swaps ram.root for shared.root, so the
                 # ram-relative path is exactly where these products land. MAST_spec#39.
-                shared_top=os.path.relpath(acquisition_folder, Filer().ram.root),
+                shared_top=os.path.relpath(acquisition_folder, ram.root),
                 shared_subpath="highspec",
             )
         )
@@ -608,6 +689,34 @@ class Highspec(Component):
         ).start()
         return CanonicalResponse_Ok
 
+    def _configured_settings_markdown(self) -> str:
+        """The values an omitted parameter falls back to, as a markdown table.
+
+        Only the router can say this: parameter descriptions are built once at import, before
+        any config is loaded, so a description cannot name a configured value. This runs at
+        router construction, after Highspec.__init__ has read the config, which is the same
+        reason the description can name the configured camera at all.
+
+        Newton-only. A QHY600 has no configured exposure settings to fall back to -- its gain
+        is either given or not applied -- so there would be nothing to tabulate.
+        """
+        if not isinstance(self.camera, NewtonEMCCD):
+            return ""
+
+        s = self.conf.settings
+        rows = [
+            ("exposure_duration", f"{s.exposure_duration} s"),
+            ("amplifier_mode", f"`{s.amplifier_mode}`"),
+            ("em_gain", str(s.em_gain)),
+            ("pre_amp_gain", f"`{_pre_amp_gain_by_index[s.pre_amp_gain]}` (index {s.pre_amp_gain})"),
+            ("horizontal_shift_speed", f"`{s.horizontal_shift_speed}`"),
+        ]
+        return (
+            "**Configured values** -- what a parameter omitted below falls back to, "
+            "where the parameter says it does:\n\n"
+            "| setting | configured |\n|---|---|\n" + "".join(f"| `{name}` | {value} |\n" for name, value in rows)
+        )
+
     @property
     def api_router(self) -> APIRouter:
         base_path = Const().BASE_SPEC_PATH + "/highspec"
@@ -642,7 +751,7 @@ class Highspec(Component):
                 f"Configured camera: **{self.conf.camera}** (`{type(self.camera).__name__}`).\n\n"
                 "The parameters below are that camera's own. The two cameras do not share an "
                 "exposure signature, so this schema describes the machine you are talking to, "
-                "not the endpoint in general."
+                "not the endpoint in general.\n\n" + self._configured_settings_markdown()
             ),
         )
         router.add_api_route(
@@ -650,6 +759,18 @@ class Highspec(Component):
             tags=[tag],
             methods=["PUT"],
             endpoint=self.manual_autofocus,
+            summary=f"Sweep the focusing stage, exposing at each step ({self.conf.camera})",
+            description=(
+                f"Configured camera: **{self.conf.camera}** (`{type(self.camera).__name__}`).\n\n"
+                "Unlike `/expose_single_image`, this endpoint is Highspec's own rather than the "
+                "camera's, so its signature cannot vary with the camera: **both** camera-specific "
+                "parameter groups appear below whichever camera is configured, and the ones "
+                "belonging to the other camera are ignored.\n\n"
+                "On this endpoint only `horizontal_shift_speed` falls back to the configured "
+                "value. The other Newton settings carry concrete defaults and are sent on every "
+                "call, overriding the config whether or not you chose them -- each says so "
+                "below.\n\n" + self._configured_settings_markdown()
+            ),
         )
         router.add_api_route(
             base_path + "/autofocus",
@@ -677,7 +798,6 @@ def make_current_autofocus_settings() -> HighspecAutofocusSettings:
     spec: Highspec = Highspec()
 
     return HighspecAutofocusSettings(
-        camera=spec.conf.camera,
         guessed_focus_position=spec.focusing_stage.position(unit=zaber_motion.Units.LENGTH_MILLIMETRES)
         if spec.focusing_stage
         else None,
