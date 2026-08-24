@@ -33,6 +33,7 @@ from common.spec import (
     DeepspecBands,
     FrameType,
     SpecExposureSettings,
+    integration_duration_for,
 )
 from common.utils import OperatingMode, RepeatTimer, function_name
 
@@ -544,8 +545,21 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         assert isinstance(greateyes_exposure_settings.exposure_duration, (int, float))
         assert greateyes_exposure_settings.binning is not None
 
+        # A bias integrates for nothing, so the duration stops being the caller's once the
+        # frame type says bias. Resolved once, here, and used for both the SDK call and the
+        # settings the status surface and the header report -- computing it twice is how the
+        # two come to disagree.
+        requested_duration = greateyes_exposure_settings.exposure_duration
+        exposure_duration = integration_duration_for(greateyes_exposure_settings.frame_type, requested_duration)
+        if exposure_duration != requested_duration:
+            self.info(
+                f"frame type is {greateyes_exposure_settings.frame_type.value}: "
+                f"integrating for {exposure_duration} s, not the {requested_duration} s requested"
+            )
+            greateyes_exposure_settings.exposure_duration = exposure_duration
+
         self.latest_spec_exposure_settings = SpecExposureSettings(
-            exposure_duration=greateyes_exposure_settings.exposure_duration,
+            exposure_duration=exposure_duration,
             x_binning=greateyes_exposure_settings.binning.x,
             y_binning=greateyes_exposure_settings.binning.y,
             number_of_exposures=greateyes_exposure_settings.number_of_exposures,
@@ -649,7 +663,16 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         self.end_activity(GreatEyesActivities.SettingParameters, label=self.name)
 
-        assert self.latest_exposure.settings.exposure_duration
+        # `is not None`, not truthiness. A zero duration -- which is exactly what a bias asks
+        # for -- is falsy, so the bare assert refused the one case this camera now has to
+        # support, raising before SetExposure was ever reached. Same shape as the gain
+        # fallback that treated low-gain-0 as "unset".
+        #
+        # SetExposure takes whole milliseconds, documented range [0..2^31], so 0 is a legal
+        # request meaning "your floor". What the camera then integrates for is not reported
+        # by this SDK: there is no GetAcquisitionTimings equivalent, and GetLastMeasTimeNeeded
+        # returns exposure PLUS readout, so it cannot answer the question either.
+        assert self.latest_exposure.settings.exposure_duration is not None
         if not self._apply_setting(ge.SetExposure, int(self.latest_exposure.settings.exposure_duration * 1000)):
             self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
             return

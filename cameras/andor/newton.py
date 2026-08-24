@@ -34,7 +34,12 @@ from common.models.newton import (
 )
 from common.models.statuses import NewtonStatus
 from common.paths import PathMaker
-from common.spec import CLOSED_SHUTTER_FRAMES, FrameType, SpecExposureSettings
+from common.spec import (
+    CLOSED_SHUTTER_FRAMES,
+    FrameType,
+    SpecExposureSettings,
+    integration_duration_for,
+)
 from common.utils import function_name
 
 logger = get_logger(__name__)
@@ -944,6 +949,19 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             return CanonicalResponse(errors=[err])
 
         self.actual_exposure_duration = actual
+
+        # A zero request is not a duration, it is "give me your floor" -- the SDK takes "the
+        # nearest valid value not less than the given value", so being handed something
+        # larger is the request being GRANTED. Warning about it would fire on every bias
+        # frame, and a warning that always fires is one nobody reads.
+        #
+        # Reported at info instead, because the number is worth having: the floor depends on
+        # the shift speed, ROI and binning in force, so there is no single value to look up
+        # and this line is where it can be observed.
+        if requested == 0:
+            self.info(f"shortest exposure this readout configuration allows: {actual} seconds")
+            return CanonicalResponse_Ok
+
         tolerance = max(requested * self.EXPOSURE_TOLERANCE_FRACTION, self.EXPOSURE_TOLERANCE_SECONDS)
         if abs(actual - requested) > tolerance:
             self.warning(
@@ -1014,6 +1032,21 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         if not self._initialized:
             self.error("not initialized")
             return
+
+        # The plan path's clamp. A plan carries a frame_type and a duration independently, so
+        # it is the one place a "bias" can arrive with five seconds attached to it.
+        #
+        # A copy rather than an in-place edit: `settings` belongs to the caller, and the same
+        # object reaches start_exposure -> latest_exposure_settings -> the FITS header. The
+        # copy keeps the clamp in one direction and leaves the plan's own record alone.
+        requested_duration = settings.exposure_duration
+        clamped_duration = integration_duration_for(settings.frame_type, requested_duration)
+        if clamped_duration != requested_duration:
+            self.info(
+                f"frame type is {settings.frame_type.value}: asking the camera for its shortest "
+                f"exposure, not the {requested_duration} seconds the plan asked for"
+            )
+            settings = settings.model_copy(update={"exposure_duration": clamped_duration})
 
         response = self._apply_exposure_settings(
             exposure_duration=settings.exposure_duration,
@@ -1296,8 +1329,17 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         exposure_duration: Annotated[
             float | None,
             Query(
-                description=("**--- Exposure ---**\n\nExposure length (seconds). Omit to use the configured duration."),
-                ge=0.001,
+                description=(
+                    "**--- Exposure ---**\n\n"
+                    "Exposure length (seconds). Omit to use the configured duration.\n\n"
+                    "`0` asks the camera for the shortest exposure its current readout "
+                    "configuration allows -- the SDK takes 'the nearest valid value not less than "
+                    "the given value' -- and the `EXPOSURE` header card reports what that turned "
+                    "out to be. `frame_mode=bias` does this for you."
+                ),
+                # Was 0.001, which made a zero-length integration unrequestable: the endpoint
+                # rejected the one duration a bias frame wants before the camera ever saw it.
+                ge=0,
                 le=3600,
             ),
         ] = None,
@@ -1394,6 +1436,16 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         # overrides the site's choice for one exposure; the config is what everything else
         # runs on, including plans.
         exposure_duration = exposure_duration if exposure_duration is not None else self.conf.exposure_duration
+        # After the config fallback, deliberately: a bias asks for the floor whether the
+        # duration came from this call or from the site's configuration, and the configured
+        # duration is the one a caller who names only `frame_mode=bias` would otherwise get.
+        requested_duration = exposure_duration
+        exposure_duration = integration_duration_for(frame_mode, exposure_duration)
+        if exposure_duration != requested_duration:
+            self.info(
+                f"frame type is {frame_mode.value}: asking the camera for its shortest exposure, "
+                f"not the {requested_duration} seconds resolved from the request and config"
+            )
         amplifier_mode = amplifier_mode if amplifier_mode is not None else self.conf.amplifier_mode
         em_gain = em_gain if em_gain is not None else self.conf.em_gain
         pre_amp_gain = pre_amp_gain if pre_amp_gain is not None else _pre_amp_gain_by_index[self.conf.pre_amp_gain]
