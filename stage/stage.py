@@ -77,14 +77,21 @@ class Stage(Component):
             try:
                 axis.activate()
                 self.controller.identify()  # MUST be called after axis.activate() to forget previous stage and identify current
-            except Exception as ex:
-                if "The command failed to execute because the axis is inactive" in f"{ex}":
+            except zaber_motion.MotionLibException as ex:
+                # Tested against the device's own reply text rather than f"{ex}", which is
+                # the library's RENDERING of it. Zaber is free to reword that -- prefixing
+                # the device address, say -- and the old test would then miss, sending a
+                # routine inactive axis down the error branch instead of marking it
+                # undetected. Only a firmware reword breaks this version.
+                inactive = (
+                    isinstance(ex, zaber_motion.CommandFailedException) and "axis is inactive" in ex.details.response_data
+                )
+                if inactive:
                     self._detected = False
                     continue
 
-                else:
-                    logger.error(f"Stage.__init__: {ex=}")
-                    continue
+                logger.error(f"Stage.__init__: {ex=}")
+                continue
 
             if axis.axis_type == zaber_motion.ascii.AxisType.UNKNOWN:
                 continue
@@ -559,13 +566,13 @@ class StageController(SwitchedOutlet, NetworkedDevice):
 
         try:
             devices = conn.detect_devices(identify_devices=True)
-        except Exception as ex:
+        except zaber_motion.MotionLibException as ex:
             logger.error(f"cannot detect Zaber devices: {ex}")
             self.detected = False
             return None
 
         if len(devices) < 1:
-            raise Exception("no Zaber controllers")
+            raise zaber_motion.NoDeviceFoundException("no Zaber controllers")
 
         conn.enable_alerts()
         conn.alert.subscribe(
