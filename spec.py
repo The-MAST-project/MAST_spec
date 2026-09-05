@@ -312,7 +312,7 @@ class Spec(Component):
             #
             # A Deepspec acquisition
             #
-            if self.fiber_stage is not None and self.fiber_stage.at_preset == "deepspec":
+            if self.fiber_stage is not None and self.fiber_stage.at_preset != "deepspec":
                 self.start_activity(SpecActivities.Positioning)
                 self.fiber_stage.move_to_preset("deepspec")
                 while self.fiber_stage.is_moving:
