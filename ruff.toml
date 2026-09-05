@@ -25,10 +25,22 @@ target-version = "py312"
 # The other three trees are here for the same reason: upstream code we do not own.
 # Andor's pyAndorSDK2 alone accounted for 891 of this repo's 938 pep8-naming
 # findings -- vendor Hungarian notation, none of it ours to rename.
+#
+# The two QHY scratch files below are a different category: our own code, not a
+# vendor's. Neither is reachable. `qhy600-bug.py` is a bug-repro script that
+# cannot be imported at all -- the hyphen makes it an invalid module name, which
+# is what N999 was reporting -- and `demo.py` is demo code nothing imports,
+# the same thing as `another_demo/` above and excluded for the same reason.
+# Together they carried 39 of the repo's 119 findings, including every UP031
+# and every F841, none of it in code that runs.
+#
+# `qhy600.py` is deliberately NOT here: highspec.py imports QHY600 from it.
 extend-exclude = [
     "cameras/greateyes/sdk/greateyesSDK.py",
     "cameras/andor/sdk",
     "cameras/qhy/another_demo",
+    "cameras/qhy/demo.py",
+    "cameras/qhy/qhy600-bug.py",
     "filter_wheel/sdk",
 ]
 
