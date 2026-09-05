@@ -212,7 +212,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         try:
             ret = ge.DisconnectCameraServer(addr=self.ge_device)
             self.debug(f"ge.DisconnectCameraServer(addr={self.ge_device}) -> {ret}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 -- the vendor's SDK sometimes throws an exception here, even when the camera is disconnected
             self.error(f"ge.DisconnectCameraServer(addr={self.ge_device}) caught error {e}, ignoring.")
             # return
 
@@ -969,7 +969,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.latest_saved_image_path = filename
             self.end_activity(GreatEyesActivities.Saving, label=self.name)
             self.info(f"saved exposure to '{filename}'")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 -- catch-all for logging, not recovery
             self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
             self.debug(f"failed to save exposure (error: {e})")
         self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
@@ -989,7 +989,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if not ret:
             self.append_error(f"could not ge.StopMeasurement(addr={self.ge_device})")
 
-    def on_timer(self):
+    def on_timer(self):  # noqa: C901
         """
         Called periodically by a timer.
         Checks if any in-progress activities can be ended.
@@ -1303,7 +1303,7 @@ def make_camera(band: DeepspecBands):
     op = function_name()
     try:
         cameras[band] = GreateyesFactory.get_instance(band=band)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 -- catch-all for logging, not recovery
         logger.error(f"{op}: could not build camera for band {band}: {e}")
         cameras[band] = None
 

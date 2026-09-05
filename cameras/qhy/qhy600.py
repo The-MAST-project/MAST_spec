@@ -384,7 +384,7 @@ class QHY600(Component, SwitchedOutlet):
             if not silent:
                 self.debug(f"SDK function {signature} returned {ret}")
             return ret
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 -- catch-all for logging, not recovery
             self.error(f"SDK function {signature}: {e=}")
             return None
 
@@ -397,7 +397,7 @@ class QHY600(Component, SwitchedOutlet):
             value = qhy.GetQHYCCDParam(self.handle, control_id)
             self.debug(f"SDK get control {control_id} returned {value}")
             return value
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 -- catch-all for logging, not recovery
             self.error(f"Error getting control {control_id}: {e}")
             return None
 
@@ -423,11 +423,11 @@ class QHY600(Component, SwitchedOutlet):
                 return False
             self.debug(f"SDK set control {control.name} to {value}")
             return True
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 -- catch-all for logging, not recovery
             self.error(f"Error setting control {control.name} to {value}: {e=}")
             return False
 
-    def start_single_exposure(self, settings: QHYCameraSettingsModel):
+    def start_single_exposure(self, settings: QHYCameraSettingsModel):  # noqa: C901
         if qhy is None or self.handle is None:
             self.error("Camera not connected.")
             return
@@ -648,7 +648,7 @@ class QHY600(Component, SwitchedOutlet):
                 latest_spec_exposure_settings=self.latest_spec_exposure_settings,
             )
             return stat
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 -- catch-all for logging, not recovery
             self.error(f"Error getting status: {e=}")
             return None
 
