@@ -226,7 +226,8 @@ class Highspec(Component):
         else:
             starting_focus_position = self.focusing_stage.position(unit=reverse_units_dict[autofocus_settings.unit.name])
             logger.debug(
-                f"{function_name()}: no guessed focus position provided, using current stage position {starting_focus_position} {autofocus_settings.unit}"
+                f"{function_name()}: no guessed focus position provided, using current stage position"
+                f" {starting_focus_position} {autofocus_settings.unit}"
             )
 
         starting_focus_position -= (

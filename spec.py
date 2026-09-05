@@ -48,9 +48,8 @@ from stage.stage import StageController
 # The Newton HighSpec camera must be switched on before the Newton.startup() is called
 highspec_outlet = SwitchedOutlet(domain=OutletDomain.SpecOutlets, outlet_name="Highspec")
 assert highspec_outlet.power_switch is not None
-if highspec_outlet.power_switch.detected:
-    if highspec_outlet.is_off():
-        highspec_outlet.power_on()
+if highspec_outlet.power_switch.detected and highspec_outlet.is_off():
+    highspec_outlet.power_on()
 
 
 logger = get_logger(__name__)
@@ -90,14 +89,14 @@ class Spec(Component):
         self.focusing_stage = stage_controller.focusing_stage
 
         self.wheels: list[Wheel] = FilterWheels(spec=self).wheels
-        self.thar_wheel = [w for w in self.wheels if w.name == "ThAr"][0]
+        self.thar_wheel = next(w for w in self.wheels if w.name == "ThAr")
 
         self.chiller = cooling.chiller.Chiller()
         self.lamps: list[CalibrationLamp] = [
             CalibrationLamp(name="ThAr", spec=self),
             CalibrationLamp(name="qTh", spec=self),
         ]
-        self.thar_lamp = [lamp for lamp in self.lamps if lamp.name == "ThAr"][0]
+        self.thar_lamp = next(lamp for lamp in self.lamps if lamp.name == "ThAr")
 
         self.highspec_shutter = UniblitzController(spec=self, outlet_name="HighShutter")
         self.deepspec_shutter = UniblitzController(spec=self, outlet_name="DeepShutter")
@@ -114,7 +113,7 @@ class Spec(Component):
         }
 
         self.components = []
-        for k, v in self.components_dict.items():
+        for v in self.components_dict.values():
             if isinstance(v, list):
                 for item in v:
                     self.components.append(item)
@@ -131,15 +130,15 @@ class Spec(Component):
 
     @property
     def detected(self) -> bool:
-        return all([comp.detected for comp in self.components])
+        return all(comp.detected for comp in self.components)
 
     @property
     def connected(self):
-        return all([comp.connected for comp in self.components])
+        return all(comp.connected for comp in self.components)
 
     @property
     def was_shut_down(self):
-        return all([comp.was_shut_down for comp in self.components])
+        return all(comp.was_shut_down for comp in self.components)
 
     @property
     def name(self) -> str:
@@ -174,7 +173,7 @@ class Spec(Component):
 
     @property
     def is_shutting_down(self) -> bool:
-        return any([comp.is_shutting_down for comp in self.components])
+        return any(comp.is_shutting_down for comp in self.components)
 
     def powerdown(self):
         if not self._was_shut_down:
@@ -182,9 +181,9 @@ class Spec(Component):
             self.shutdown()
             time.sleep(3)
 
-        if any([comp for comp in self.components if comp is not None and comp.is_active(SpecActivities.ShuttingDown)]):
+        if any(comp for comp in self.components if comp is not None and comp.is_active(SpecActivities.ShuttingDown)):
             logger.info("waiting for components to finish shutting down before powering down...")
-            while any([comp for comp in self.components if comp is not None and comp.is_shutting_down]):
+            while any(comp for comp in self.components if comp is not None and comp.is_shutting_down):
                 time.sleep(0.5)
             logger.info("components finished shutting down, proceeding with powerdown")
 
@@ -236,7 +235,7 @@ class Spec(Component):
                     try:
                         result = getattr(comp, method_name)
                         ret[key][name] = result() if callable(result) else result
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001
                         self.logger.error(f"exception: {e} ({comp=}, {method_name=}")
             elif component is not None:
                 ret[key] = getattr(component, method_name)()
@@ -246,7 +245,7 @@ class Spec(Component):
 
     @property
     def operational(self) -> bool:
-        return all(map(lambda component: component.operational, self.components))
+        return all(component.operational for component in self.components)
 
     @property
     def why_not_operational(self) -> list[str]:
@@ -254,8 +253,7 @@ class Spec(Component):
         for comp in self.components:
             if comp is None:
                 continue
-            for reason in comp.why_not_operational:
-                ret.append(reason)
+            ret.extend(comp.why_not_operational)
         return ret
 
     def do_acquire(self, acquisition_settings: SpecAcquisitionSettings):
@@ -294,21 +292,18 @@ class Spec(Component):
                 self.focusing_stage.move_to_preset(acquisition_settings.grating)
 
             assert acquisition_settings.filter_name is not None
-            if acquisition_settings.lamp_on:
-                if not self.thar_wheel.at_filter(acquisition_settings.filter_name):
-                    self.start_activity(SpecActivities.Positioning, existing_ok=True)
-                    self.thar_wheel.move_to_filter(acquisition_settings.filter_name)
+            if acquisition_settings.lamp_on and not self.thar_wheel.at_filter(acquisition_settings.filter_name):
+                self.start_activity(SpecActivities.Positioning, existing_ok=True)
+                self.thar_wheel.move_to_filter(acquisition_settings.filter_name)
 
             if self.is_active(SpecActivities.Positioning):
                 while any(
-                    [
-                        comp.is_moving
-                        for comp in [
-                            self.fiber_stage,
-                            self.focusing_stage,
-                            self.disperser_stage,
-                            self.thar_wheel,
-                        ]
+                    comp.is_moving
+                    for comp in [
+                        self.fiber_stage,
+                        self.focusing_stage,
+                        self.disperser_stage,
+                        self.thar_wheel,
                     ]
                 ):
                     time.sleep(0.5)
@@ -317,7 +312,7 @@ class Spec(Component):
             #
             # A Deepspec acquisition
             #
-            if self.fiber_stage is not None and not self.fiber_stage.at_preset != "deepspec":
+            if self.fiber_stage is not None and self.fiber_stage.at_preset == "deepspec":
                 self.start_activity(SpecActivities.Positioning)
                 self.fiber_stage.move_to_preset("deepspec")
                 while self.fiber_stage.is_moving:
@@ -472,8 +467,8 @@ class Spec(Component):
         assert self.fiber_stage is not None
 
         calibration: CalibrationSettings = spec_assignment.calibration
-        thar_lamp = [lamp for lamp in self.lamps if lamp.name == "ThAr"][0]
-        thar_wheel = [wheel for wheel in self.wheels if wheel.name == "ThAr"][0]
+        thar_lamp = next(lamp for lamp in self.lamps if lamp.name == "ThAr")
+        thar_wheel = next(wheel for wheel in self.wheels if wheel.name == "ThAr")
 
         if calibration.lamp_on:
             if not thar_lamp.is_on():
