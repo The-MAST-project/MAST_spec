@@ -983,16 +983,13 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             return
 
         assert self.ge_device is not None
-        if not ge.DllIsBusy(addr=self.ge_device):
-            return
-        ret = ge.StopMeasurement(addr=self.ge_device)
-        if not ret:
-            self.append_error(f"could not ge.StopMeasurement(addr={self.ge_device})")
+        if ge.DllIsBusy(addr=self.ge_device):
+            ret = ge.StopMeasurement(addr=self.ge_device)
+            if not ret:
+                self.append_error(f"could not ge.StopMeasurement(addr={self.ge_device})")
 
-        if self.is_active(GreatEyesActivities.Exposing):
-            self.end_activity(GreatEyesActivities.Exposing, label=self.name)
-        if self.is_active(GreatEyesActivities.Acquiring):
-            self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
+        self.end_activity(GreatEyesActivities.Exposing, label=self.name)
+        self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
 
     def on_timer(self):  # noqa: C901 -- too complex for flake8, but this is a state machine and the complexity is inherent
         """
