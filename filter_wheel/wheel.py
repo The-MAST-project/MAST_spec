@@ -3,7 +3,7 @@ from __future__ import annotations
 import os.path
 import sys
 import time
-from enum import Enum, IntFlag, auto
+from enum import Enum, IntFlag, StrEnum, auto
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter
@@ -38,9 +38,9 @@ from sdk.FWxC_COMMAND_LIB import (
 )
 
 
-class WheelNames(str, Enum):
+class WheelNames(StrEnum):
     ThAr = "ThAr"
-    qTh = "qTh"
+    qTh = "qTh"  # noqa: N815
 
 
 class SpeedMode(int, Enum):
@@ -72,9 +72,8 @@ class Wheel(Component, SwitchedOutlet):
 
         SwitchedOutlet.__init__(self, domain=OutletDomain.SpecOutlets, outlet_name=f"{self.name}Wheel")
         assert self.power_switch is not None
-        if self.power_switch.detected:
-            if self.is_off():
-                self.power_on()
+        if self.power_switch.detected and self.is_off():
+            self.power_on()
 
         self.logger = get_logger(f"mast.spec.filter-wheel-{self.name}")
         self.serial_number = self.conf.serial_number
@@ -309,7 +308,7 @@ class Wheel(Component, SwitchedOutlet):
     def position_of_filter(self, filter_name: str) -> int:
         if filter_name not in self.filters.values():
             raise ValueError(f"bad {filter_name=}, must be one of {list(self.filters.values())}")
-        return int([key for key in self.filters.keys() if self.filters[key] == filter_name][0])
+        return int(next(key for key in self.filters if self.filters[key] == filter_name))
 
     def at_filter(self, filter_name: str):
         return self.position == self.position_of_filter(filter_name)
@@ -317,7 +316,7 @@ class Wheel(Component, SwitchedOutlet):
     def move_to_filter(self, filter_name: str):
         if filter_name not in self.filters.values():
             raise ValueError(f"bad {filter_name=}, must be one of {list(self.filters.values())}")
-        position = int([key for key in self.filters.keys() if self.filters[key] == filter_name][0])
+        position = int(next(key for key in self.filters if self.filters[key] == filter_name))
         self.move(position)
 
     def move(self, pos: int):

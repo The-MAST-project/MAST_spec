@@ -235,8 +235,8 @@ class Spec(Component):
                     try:
                         result = getattr(comp, method_name)
                         ret[key][name] = result() if callable(result) else result
-                    except Exception as e:  # noqa: BLE001
-                        self.logger.error(f"exception: {e} ({comp=}, {method_name=}")
+                    except Exception as e:  # noqa: BLE001 -- cannot be avoided because we want to continue traversing the components even if one fails
+                        self.logger.error(f"exception: {e} ({comp=}, {method_name=})")
             elif component is not None:
                 ret[key] = getattr(component, method_name)()
             else:

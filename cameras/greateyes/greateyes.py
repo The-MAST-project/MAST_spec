@@ -1253,6 +1253,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 else:
                     self.error(f"exposure-{exposure_number:03} was not saved; nothing to move")
         except Exception:
+            # This is a catch-all for any exceptions that might occur during the execution of the assignment.
             self.error(f"{function_name()}: deepspec-{self.band} assignment failed")
             logger.exception(f"{function_name()}: deepspec-{self.band} assignment failed")
 
