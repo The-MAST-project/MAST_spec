@@ -67,6 +67,24 @@ extend-select = [
 # Optionally ignore some rules:
 # ignore = ["E501"]  # example: disable line-length enforcement
 
+[lint.flake8-bugbear]
+# FastAPI's parameter markers are meant to be called in a default. B008 exists to
+# catch a default that is built once at import and then shared across calls, which
+# is a real bug for a list or a dict -- but `Body(...)` is a marker object the
+# framework unpacks, not the value the endpoint receives.
+#
+# Only one site needs this: highspec.do_autofocus. Every other endpoint spells its
+# markers `Annotated[X, Query(...)]`, which puts the call in the annotation where
+# B008 does not look, so nothing else in the repo fires.
+#
+# That site is also the case B008 argues FOR: its actual default already comes from
+# `default_factory`, deferred per call. The lambda around the factory is likewise
+# load-bearing, not noise -- make_current_autofocus_settings() is defined ~600 lines
+# further down the file, so a bare name reference here would raise NameError at
+# import. Do not "simplify" it.
+extend-immutable-calls = ["fastapi.Body"]
+
+
 [lint.pep8-naming]
 # Andor's SDK names its capability struct fields in Hungarian notation --
 # ulAcqModes, ulEMGainCapability, ulTriggerModes, ... -- and `class Capabilities`
