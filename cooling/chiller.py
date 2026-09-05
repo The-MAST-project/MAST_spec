@@ -1,5 +1,3 @@
-from typing import List
-
 from fastapi.routing import APIRouter
 
 from common.config import Config
@@ -15,7 +13,7 @@ class Chiller(SwitchedOutlet, Component):
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(Chiller, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self):
@@ -85,7 +83,7 @@ class Chiller(SwitchedOutlet, Component):
         return self.power_switch.detected and self.is_on()
 
     @property
-    def why_not_operational(self) -> List[str]:
+    def why_not_operational(self) -> list[str]:
         ret = []
         assert self.power_switch is not None
         if not self.power_switch.detected:

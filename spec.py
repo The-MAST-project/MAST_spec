@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import threading
 import time
 from pathlib import Path
@@ -68,7 +67,7 @@ class Spec(Component):
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(Spec, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self):
@@ -232,16 +231,13 @@ class Spec(Component):
                         ret[key] = None
                         continue
 
-                    if isinstance(comp.name, str):
-                        name = comp.name
-                    elif callable(comp.name):
+                    if isinstance(comp.name, str) or callable(comp.name):
                         name = comp.name
                     try:
                         result = getattr(comp, method_name)
                         ret[key][name] = result() if callable(result) else result
                     except Exception as e:
                         self.logger.error(f"exception: {e} ({comp=}, {method_name=}")
-                        pass
             elif component is not None:
                 ret[key] = getattr(component, method_name)()
             else:

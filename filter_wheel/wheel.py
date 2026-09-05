@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import os.path
 import sys
 import time
@@ -394,7 +393,7 @@ class FilterWheels:
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(FilterWheels, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self, spec: Spec | None = None):
