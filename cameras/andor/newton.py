@@ -102,14 +102,39 @@ _SHUTTER_AUTOMATIC = 0
 _SHUTTER_CLOSED = 2
 
 
+# HELD, and this is the only thing about frame types that this camera does not yet do.
+# SetShutter(mode=2) does not produce usable calibration frames on this Newton. Tested on
+# mast-ns-spec 2026-08-24, sensor steady at -9.804 C: a 10 us bias came back at 63899 ADU of
+# 65535, and the excess over the open-shutter pedestal ran BACKWARDS with integration time
+# (10 us -> +63649, 5 s -> +81, 60 s -> +29). The frames were also nearly featureless,
+# p99-minus-median of 6-7 against ~50 for open-shutter frames. Ordering was ruled out. The
+# log shows the SDK was told exactly the right thing, so this is not a plumbing bug: mode 2
+# puts the sensor into some state whose output dilutes with integration time, and diagnosing
+# that needs someone who knows this camera.
+#
+# Until then, bias and dark get the automatic mode -- the shutter opens for them exactly as
+# it does for a light frame. IMAGETYP still records what was REQUESTED, so a Newton frame
+# labelled `dark` is a mislabelled light frame until this flips. That is not a regression:
+# it is what the hardcoded mode 0 did before, minus the part where nothing recorded it.
+#
+# The greateyes is unaffected and honours closed frames correctly. It is a different SDK
+# reached by a different call -- ge.OpenShutter(0) with a matching showShutter -- so its
+# working says nothing about this one, and this one failing says nothing about it.
+#
+# Flip this to True once mode 2 is understood; nothing else needs to change.
+_NEWTON_HONOURS_CLOSED_SHUTTER = False
+
+
 def _shutter_mode_for(frame_type: FrameType) -> int:
     """The SetShutter mode a frame of this type needs.
 
     Automatic for light and flat frames -- the camera opens the shutter for the integration
-    and closes it for the readout. Closed for bias and dark, which are defined by the sensor
-    seeing nothing.
+    and closes it for the readout. Bias and dark are defined by the sensor seeing nothing and
+    should be _SHUTTER_CLOSED, but on this camera that mode is held; see above.
     """
-    return _SHUTTER_CLOSED if frame_type in CLOSED_SHUTTER_FRAMES else _SHUTTER_AUTOMATIC
+    if _NEWTON_HONOURS_CLOSED_SHUTTER and frame_type in CLOSED_SHUTTER_FRAMES:
+        return _SHUTTER_CLOSED
+    return _SHUTTER_AUTOMATIC
 
 
 class NewtonPreAmpGain(StrEnum):
