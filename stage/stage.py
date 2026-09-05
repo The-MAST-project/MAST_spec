@@ -34,6 +34,17 @@ for u in zaber_motion.Units:
         reverse_units_dict[v] = u
 UnitNames = Enum("UnitNames", units_dict)
 
+# Stage positions and step sizes default to millimetres. Named here rather than spelled
+# `UnitNames("MILLIMETRES")` at each use site: as a parameter default that call is evaluated
+# once at import (B008). Harmless for an enum member -- they are immutable singletons, and
+# `UnitNames("MILLIMETRES") is UnitNames.MILLIMETRES` -- but worth saying once instead of
+# repeating, and it gives the default a single place to change.
+#
+# Not zaber_motion.Units.LENGTH_MILLIMETRES: reverse_units_dict above is keyed on the
+# STRIPPED names, so a raw Zaber member would pass the default and then raise KeyError at
+# the first reverse lookup, not at startup.
+DEFAULT_UNIT_NAME = UnitNames("MILLIMETRES")
+
 
 class StageStatus:
     activities: IntFlag

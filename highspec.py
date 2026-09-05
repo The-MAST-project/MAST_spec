@@ -42,7 +42,7 @@ from common.notifications import Notifier
 from common.paths import PathMaker
 from common.spec import SpecActivities, SpecExposureSettings
 from common.utils import function_name
-from stage.stage import StageController, UnitNames
+from stage.stage import DEFAULT_UNIT_NAME, StageController, UnitNames
 
 logger = get_logger(__name__)
 
@@ -54,7 +54,7 @@ logger = get_logger(__name__)
 class HighspecAutofocusSettings(NewtonSettingsConfig):
     guessed_focus_position: float | None = None  # None - start at current stage position
     positions_per_step: float = 50  # stage steps between exposures
-    unit: UnitNames = UnitNames("MILLIMETRES")
+    unit: UnitNames = DEFAULT_UNIT_NAME
     number_of_exposures: int = 1
     lamp_on: bool = False  # ThAr lamp
     filters: list[str] | None = None  # optional list of filters
@@ -448,7 +448,7 @@ class Highspec(Component):
         unit: Annotated[
             UnitNames,
             Query(description="Unit that `guessed_focus_position` and `step_size` are given in."),
-        ] = UnitNames("MILLIMETRES"),
+        ] = DEFAULT_UNIT_NAME,
         number_of_exposures: Annotated[
             int,
             Query(description="Exposures in the sweep, one per step."),
