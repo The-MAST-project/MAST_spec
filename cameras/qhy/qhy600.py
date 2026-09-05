@@ -307,7 +307,8 @@ class QHY600(Component, SwitchedOutlet):
         ):
             self.debug(
                 f"chip info: {self.chip_width.value}mm x {self.chip_height.value}mm, "
-                f"{self.width.value} x {self.height.value} pixels, {self.pixel_width.value}um x {self.pixel_height.value}um pixels, "
+                f"{self.width.value} x {self.height.value} pixels, "
+                f"{self.pixel_width.value}um x {self.pixel_height.value}um pixels, "
                 f"{self.bits_per_pixel.value} bits per pixel"
             )
         else:
@@ -383,7 +384,7 @@ class QHY600(Component, SwitchedOutlet):
             if not silent:
                 self.debug(f"SDK function {signature} returned {ret}")
             return ret
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- catch-all for logging, not recovery
             self.error(f"SDK function {signature}: {e=}")
             return None
 
@@ -396,7 +397,7 @@ class QHY600(Component, SwitchedOutlet):
             value = qhy.GetQHYCCDParam(self.handle, control_id)
             self.debug(f"SDK get control {control_id} returned {value}")
             return value
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- catch-all for logging, not recovery
             self.error(f"Error getting control {control_id}: {e}")
             return None
 
@@ -422,11 +423,11 @@ class QHY600(Component, SwitchedOutlet):
                 return False
             self.debug(f"SDK set control {control.name} to {value}")
             return True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- catch-all for logging, not recovery
             self.error(f"Error setting control {control.name} to {value}: {e=}")
             return False
 
-    def start_single_exposure(self, settings: QHYCameraSettingsModel):
+    def start_single_exposure(self, settings: QHYCameraSettingsModel):  # noqa: C901
         if qhy is None or self.handle is None:
             self.error("Camera not connected.")
             return
@@ -468,17 +469,17 @@ class QHY600(Component, SwitchedOutlet):
             ctypes.c_double(settings.exposure_duration * 1e6),
         )
 
-        if settings.gain is not None:
-            if not self.sdk_set_control(QHYControlId.CONTROL_GAIN, ctypes.c_double(settings.gain)):
-                self.end_activity(QHYActivities.SettingParameters)
-                self.end_activity(QHYActivities.ExposingSingleFrame)
-                return
+        if settings.gain is not None and not self.sdk_set_control(QHYControlId.CONTROL_GAIN, ctypes.c_double(settings.gain)):
+            self.end_activity(QHYActivities.SettingParameters)
+            self.end_activity(QHYActivities.ExposingSingleFrame)
+            return
 
-        if settings.depth in (8, 16):
-            if not self.sdk_set_control(QHYControlId.CONTROL_TRANSFERBIT, ctypes.c_double(settings.depth)):
-                self.end_activity(QHYActivities.SettingParameters)
-                self.end_activity(QHYActivities.ExposingSingleFrame)
-                return
+        if settings.depth in (8, 16) and not self.sdk_set_control(
+            QHYControlId.CONTROL_TRANSFERBIT, ctypes.c_double(settings.depth)
+        ):
+            self.end_activity(QHYActivities.SettingParameters)
+            self.end_activity(QHYActivities.ExposingSingleFrame)
+            return
 
         if self.sdk_call(qhy.SetQHYCCDBinMode, settings.binning.x, settings.binning.y) != QHYCCD_SUCCESS:
             self.end_activity(QHYActivities.SettingParameters)
@@ -502,11 +503,10 @@ class QHY600(Component, SwitchedOutlet):
             self.end_activity(QHYActivities.ExposingSingleFrame)
             return
 
-        if settings.gain is not None:
-            if not self.sdk_set_control(QHYControlId.CONTROL_GAIN, ctypes.c_double(settings.gain)):
-                self.end_activity(QHYActivities.SettingParameters)
-                self.end_activity(QHYActivities.ExposingSingleFrame)
-                return
+        if settings.gain is not None and not self.sdk_set_control(QHYControlId.CONTROL_GAIN, ctypes.c_double(settings.gain)):
+            self.end_activity(QHYActivities.SettingParameters)
+            self.end_activity(QHYActivities.ExposingSingleFrame)
+            return
 
         self.end_activity(QHYActivities.SettingParameters)
 
@@ -648,13 +648,15 @@ class QHY600(Component, SwitchedOutlet):
                 latest_spec_exposure_settings=self.latest_spec_exposure_settings,
             )
             return stat
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- catch-all for logging, not recovery
             self.error(f"Error getting status: {e=}")
             return None
 
     @property
     def temperature_is_stabilized(self) -> bool:
-        return True  # TODO: implement proper stabilization check based on current and set temperatures, and possibly their rate of change. For now, just assume it's always stabilized to avoid blocking exposures when the temperature control is not working properly.
+        return True  # TODO: implement proper stabilization check based on current and set temperatures,
+        # and possibly their rate of change. For now, just assume it's always stabilized to avoid blocking
+        # exposures when the temperature control is not working properly.
 
     @property
     def operational(self) -> bool:

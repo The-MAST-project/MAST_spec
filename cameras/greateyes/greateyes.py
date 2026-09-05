@@ -38,7 +38,7 @@ from common.spec import (
 from common.utils import OperatingMode, RepeatTimer, function_name
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "sdk"))
-import cameras.greateyes.sdk.greateyesSDK as ge
+import cameras.greateyes.sdk.greateyesSDK as ge  # noqa: N813
 
 logger = get_logger(__name__)
 dll_version = ge.GetDLLVersion()
@@ -212,7 +212,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         try:
             ret = ge.DisconnectCameraServer(addr=self.ge_device)
             self.debug(f"ge.DisconnectCameraServer(addr={self.ge_device}) -> {ret}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- the vendor's SDK sometimes throws an exception here, even when the camera is disconnected
             self.error(f"ge.DisconnectCameraServer(addr={self.ge_device}) caught error {e}, ignoring.")
             # return
 
@@ -258,7 +258,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             return
         fw_version = ge.GetFirmwareVersion(self.ge_device)
         self.debug(
-            f"OK: ge.ConnectCamera(model={model}, ipaddr='{self.network.ipaddr}' addr={self.ge_device} fw={fw_version}) (ret={ret}, msg='{ge.StatusMSG}')"
+            f"OK: ge.ConnectCamera(model={model}, ipaddr='{self.network.ipaddr}' addr={self.ge_device} fw={fw_version}) "
+            f"(ret={ret}, msg='{ge.StatusMSG}')"
         )
 
         self.model_id = model[0]
@@ -445,7 +446,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             )
         else:
             self.append_error(
-                f"FAILED to set temperature to {target_temperature}ֲ°C with ge.TemperatureControl_SetTemperature (status: {ge.StatusMSG} ({ge.Status}))"
+                f"FAILED to set temperature to {target_temperature}ֲ°C with ge.TemperatureControl_SetTemperature "
+                f"(status: {ge.StatusMSG} ({ge.Status}))"
             )
 
     def cool_down(self):
@@ -613,7 +615,9 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             info = ge.GetImageSize(addr=self.ge_device)
             if info[0] != self.x_size or info[1] != self.y_size or info[2] != self.bytes_per_pixel:
                 self.warning(
-                    f"image size changed after setting output mode: was {self.x_size} x {self.y_size} x {self.bytes_per_pixel}, now {info[0]} x {info[1]} x {info[2]}"
+                    f"image size changed after setting output mode: was "
+                    f"{self.x_size} x {self.y_size} x {self.bytes_per_pixel}, "
+                    f"now {info[0]} x {info[1]} x {info[2]}"
                 )
                 self.x_size = info[0]
                 self.y_size = info[1]
@@ -965,7 +969,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.latest_saved_image_path = filename
             self.end_activity(GreatEyesActivities.Saving, label=self.name)
             self.info(f"saved exposure to '{filename}'")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- catch-all for logging, not recovery
             self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
             self.debug(f"failed to save exposure (error: {e})")
         self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
@@ -985,7 +989,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if not ret:
             self.append_error(f"could not ge.StopMeasurement(addr={self.ge_device})")
 
-    def on_timer(self):
+    def on_timer(self):  # noqa: C901
         """
         Called periodically by a timer.
         Checks if any in-progress activities can be ended.
@@ -1061,7 +1065,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
             elif now - self.timings[GreatEyesActivities.StoppingMeasurement].start_time > datetime.timedelta(seconds=5):
                 self.append_error(
-                    f"stopping measurement takes too long ({now - self.timings[GreatEyesActivities.StoppingMeasurement].start_time} > 5 seconds)"
+                    f"stopping measurement takes too long "
+                    f"({now - self.timings[GreatEyesActivities.StoppingMeasurement].start_time} > 5 seconds)"
                 )
                 self.end_activity(GreatEyesActivities.StoppingMeasurement, label=self.name)
                 self.end_activity(GreatEyesActivities.Exposing, label=self.name)
@@ -1248,6 +1253,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 else:
                     self.error(f"exposure-{exposure_number:03} was not saved; nothing to move")
         except Exception:
+            # This is a catch-all for any exceptions that might occur during the execution of the assignment.
             self.error(f"{function_name()}: deepspec-{self.band} assignment failed")
             logger.exception(f"{function_name()}: deepspec-{self.band} assignment failed")
 
@@ -1266,7 +1272,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 cooling_down.append(camera)
         if cooling_down:
             raise RuntimeError(
-                f"cannot execute assignment because the following cameras are currently cooling down: {', '.join(camera.name for camera in cooling_down)}"
+                f"cannot execute assignment because the following cameras are currently cooling down: "
+                f"{', '.join(camera.name for camera in cooling_down)}"
             )
 
         thread = threading.Thread(
@@ -1297,7 +1304,7 @@ def make_camera(band: DeepspecBands):
     op = function_name()
     try:
         cameras[band] = GreateyesFactory.get_instance(band=band)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 -- catch-all for logging, not recovery
         logger.error(f"{op}: could not build camera for band {band}: {e}")
         cameras[band] = None
 

@@ -76,7 +76,8 @@ class Stage(Component):
             axis: zaber_motion.ascii.Axis = self.controller.get_axis(i)  # axes are numbered from 1
             try:
                 axis.activate()
-                self.controller.identify()  # MUST be called after axis.activate() to forget previous stage and identify current
+                self.controller.identify()  # MUST be called after axis.activate()
+                # to forget previous stage and identify current
             except zaber_motion.MotionLibException as ex:
                 # Tested against the device's own reply text rather than f"{ex}", which is
                 # the library's RENDERING of it. Zaber is free to reword that -- prefixing
@@ -416,10 +417,7 @@ class Stage(Component):
 
         pos = self.position(unit=zaber_motion.Units.NATIVE)
         if pos is not None:
-            if math.isnan(pos):
-                pos = None
-            else:
-                pos = round(pos)
+            pos = None if math.isnan(pos) else round(pos)
 
         ret = SpecStageStatus(
             detected=self.detected,
@@ -598,7 +596,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
         if stage_name not in self.stage_names:
             return CanonicalResponse(errors=[f"unknown '{stage_name=}' (known names: {self.stage_names})"])
 
-        stage = [s for s in self.stages if s is not None and s.name == stage_name][0]
+        stage = next(s for s in self.stages if s is not None and s.name == stage_name)
         if not stage.detected:
             return CanonicalResponse(errors=[f"stage '{stage_name}' not detected"])
 
