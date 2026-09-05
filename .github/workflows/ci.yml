@@ -1,0 +1,64 @@
+# Continuous integration for MAST_spec.
+#
+# LINT ONLY, deliberately. There is no test job because this repo cannot be
+# imported off the telescope: `import spec` blocks indefinitely on a bare
+# checkout -- module import reaches for the config database and the operational
+# share, neither of which exists on a runner. Adding a test job before that is
+# untangled would either hang the build or, worse, pass having proved nothing.
+# See MAST_common's ci.yml for the shape a test job takes once a repo has one,
+# and section 4 of code-validation-and-ci-guidelines.md for why the fleet's
+# suites must not touch the real world.
+#
+# Lint runs on Linux even though MAST_spec is a Windows-only service. Ruff never
+# imports the code, so it needs neither the platform nor the dependency install
+# -- only requirements-dev.txt, which pins ruff==0.16.0 so CI and every
+# workstation agree on what counts as a finding.
+#
+# Both steps are BLOCKING, and as of 2026-09-05 `ruff check` FAILS: 119 findings
+# across the 30 first-party files, all pre-existing. That is intended -- the debt
+# shows as red until it is burned down (guidelines section 5) rather than sitting
+# in an advisory step nobody reads. `ruff format --check` already passes.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# A new push supersedes an in-flight run for the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          # ruff.toml sets target-version = "py312"; keep these in step.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install ruff
+        run: python -m pip install --upgrade pip -r requirements-dev.txt
+
+      - name: Format
+        # Deliberately before `ruff check`. This one currently passes, and the
+        # ordering keeps it that way visibly: a formatting regression shows up
+        # on its own line rather than behind the check debt.
+        #
+        # Measured against the LF-normalised tree, which is what a runner sees:
+        # .gitattributes normalises on checkout, so a CRLF working tree reports
+        # far more files locally than CI ever will.
+        run: ruff format --check .
+
+      - name: Lint
+        # Vendored SDKs (Andor, greateyes, QHY, Thorlabs) are excluded in
+        # ruff.toml with force-exclude, so this covers the 30 files we own.
+        run: ruff check .
