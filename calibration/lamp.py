@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 
 from common.activities import CalibrationLampActivities
 from common.config import Config
@@ -56,7 +56,7 @@ class CalibrationLamp(Component, SwitchedOutlet):
         return self.power_switch.detected and self.is_on()
 
     @property
-    def why_not_operational(self) -> List[str]:
+    def why_not_operational(self) -> list[str]:
         ret = []
         if self.power_switch is None:
             ret.append("power switch not detected")

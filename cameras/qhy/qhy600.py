@@ -2,9 +2,10 @@ import ctypes
 import os
 import threading
 import time
+from collections.abc import Callable
 from enum import IntFlag, auto
 from pathlib import Path
-from typing import Annotated, Callable, Literal
+from typing import Annotated, Literal
 
 import zaber_motion
 from fastapi import Query
@@ -95,7 +96,7 @@ class QHY600(Component, SwitchedOutlet):
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(QHY600, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self):
@@ -604,7 +605,7 @@ class QHY600(Component, SwitchedOutlet):
             # release_folder() waits for it rather than discarding it as scratch.
             with MoveGuardian().protect(str(self.latest_settings.image_path)):
                 hdu.writeto(self.latest_settings.image_path, overwrite=True)
-            self.info(f"{self.model}: Image saved to {str(self.latest_settings.image_path)}")
+            self.info(f"{self.model}: Image saved to {self.latest_settings.image_path!s}")
             self.end_activity(QHYActivities.Saving)
 
         self.end_activity(QHYActivities.ReadingOut)

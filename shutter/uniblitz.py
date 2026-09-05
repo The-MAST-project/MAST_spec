@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.interfaces.components import Component
@@ -52,7 +52,7 @@ class UniblitzController(Component, SwitchedOutlet):
         return self.is_on()
 
     @property
-    def why_not_operational(self) -> List[str]:
+    def why_not_operational(self) -> list[str]:
         return ["not-powered"] if not self.is_on() else []
 
     @property
