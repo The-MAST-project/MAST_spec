@@ -427,7 +427,7 @@ class QHY600(Component, SwitchedOutlet):
             self.error(f"Error setting control {control.name} to {value}: {e=}")
             return False
 
-    def start_single_exposure(self, settings: QHYCameraSettingsModel):  # noqa: C901
+    def start_single_exposure(self, settings: QHYCameraSettingsModel):
         if qhy is None or self.handle is None:
             self.error("Camera not connected.")
             return
