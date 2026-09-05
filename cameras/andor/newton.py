@@ -177,7 +177,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self):  # noqa: C901 -- 23, over the raised threshold of 20; tracked for refactoring.
+    def __init__(self):  # noqa: C901 -- too complex for flake8, but this is a state machine and the complexity is inherent
         from common.config import Config
 
         self.logger = get_logger("mast.spec.highspec.camera")
