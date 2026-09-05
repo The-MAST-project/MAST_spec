@@ -989,7 +989,12 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if not ret:
             self.append_error(f"could not ge.StopMeasurement(addr={self.ge_device})")
 
-    def on_timer(self):  # noqa: C901
+        if self.is_active(GreatEyesActivities.Exposing):
+            self.end_activity(GreatEyesActivities.Exposing, label=self.name)
+        if self.is_active(GreatEyesActivities.Acquiring):
+            self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
+
+    def on_timer(self):  # noqa: C901 -- too complex for flake8, but this is a state machine and the complexity is inherent
         """
         Called periodically by a timer.
         Checks if any in-progress activities can be ended.
