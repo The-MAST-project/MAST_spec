@@ -98,6 +98,28 @@ extend-immutable-calls = ["fastapi.Body"]
 # `extend-` keeps ruff's built-in ignore list (setUp, tearDown, ...).
 extend-ignore-names = ["ul*"]
 
+[lint.mccabe]
+# Raised from ruff's default of 10.
+#
+# This is driver code. `on_timer`, `start_exposure`, `driver_event_handler` and the
+# camera constructors branch on detected/connected/powered/cooling state, on vendor
+# return codes, and on which of several hardware configurations is present. That
+# branching is the problem domain, not a failure to decompose it -- and these are the
+# paths with the least test coverage in the repo, so restructuring them is a refactor
+# carrying real risk, not a clean-up. Section 6 of
+# code-validation-and-ci-guidelines.md says to prefer this over rewriting them.
+#
+# 20 clears 9 of the 11 functions that exceeded the default, while still flagging the
+# two genuine outliers, which carry an explicit `noqa: C901` naming their score:
+# GreatEyes.on_timer (26) and NewtonEMCCD.__init__ (23).
+#
+# The cost of a threshold over per-site noqa: it applies to code not yet written, so a
+# new function can reach 20 branches unchallenged. Accepted knowingly -- the alternative
+# was eleven annotations, and the two that matter are named above and tracked for
+# refactoring rather than annotated away.
+max-complexity = 20
+
+
 [lint.isort]
 # `common` is MAST_common, our own shared library -- first-party, grouped with
 # the local modules (cameras, filter_wheel, stage, ...). Without this, ruff's
