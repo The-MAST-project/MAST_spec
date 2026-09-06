@@ -402,7 +402,7 @@ class Spec(Component):
         self.deepspec_exposure_seconds = deepspec_seconds
 
     @endpoint(tier=Tier.OPERATION, methods=("PUT",))
-    async def endpoint_simulate_fiber(self, instrument: SpecInstruments) -> CanonicalResponse:
+    async def simulate_fiber(self, instrument: SpecInstruments) -> CanonicalResponse:
         if self.fiber_stage is None:
             return CanonicalResponse(errors=["Fiber stage not available"])
 
@@ -416,7 +416,7 @@ class Spec(Component):
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, methods=("PUT",))
-    async def endpoint_simulate_disperser(self, grating: GratingNames) -> CanonicalResponse:
+    async def simulate_disperser(self, grating: GratingNames) -> CanonicalResponse:
         if self.disperser_stage is None:
             return CanonicalResponse(errors=["Disperser stage not available"])
 
@@ -430,7 +430,7 @@ class Spec(Component):
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, methods=("PUT",))
-    async def endpoint_simulate_focus(self, grating: GratingNames) -> CanonicalResponse:
+    async def simulate_focus(self, grating: GratingNames) -> CanonicalResponse:
         if self.focusing_stage is None:
             return CanonicalResponse(errors=["Focusing stage not available"])
 
@@ -444,7 +444,7 @@ class Spec(Component):
         return CanonicalResponse_Ok
 
     @endpoint(tier=Tier.OPERATION, methods=("PUT",))
-    async def endpoint_simulate_lightpath(self, instrument: SpecInstruments, onoff: bool) -> CanonicalResponse:
+    async def simulate_lightpath(self, instrument: SpecInstruments, onoff: bool) -> CanonicalResponse:
         match instrument:
             case "highspec":
                 if onoff:
@@ -559,21 +559,21 @@ class Spec(Component):
         add_api_route(
             router,
             base_path + "/simulate/fiber_stage/{instrument}",
-            endpoint=self.endpoint_simulate_fiber,
+            endpoint=self.simulate_fiber,
             methods=["PUT"],
         )
         add_api_route(
             router,
             base_path + "/simulate/disperser_stage/{grating}",
-            endpoint=self.endpoint_simulate_disperser,
+            endpoint=self.simulate_disperser,
             methods=["PUT"],
         )
         add_api_route(
             router,
             base_path + "/simulate/focus_stage/{grating}",
-            endpoint=self.endpoint_simulate_focus,
+            endpoint=self.simulate_focus,
             methods=["PUT"],
         )
-        add_api_route(router, base_path + "/simulate/lightpath", endpoint=self.endpoint_simulate_lightpath, methods=["PUT"])
+        add_api_route(router, base_path + "/simulate/lightpath", endpoint=self.simulate_lightpath, methods=["PUT"])
 
         return router
