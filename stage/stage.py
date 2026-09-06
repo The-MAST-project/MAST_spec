@@ -13,6 +13,7 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.endpoints import Tier, add_api_route, endpoint
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import SpecStageStatus
@@ -614,6 +615,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
         return stage
 
     # FastApi stuff
+    @endpoint(tier=Tier.OPERATION, methods=("GET",))
     def endpoint_get_stage_position(self, stage_name: SpecStageNames, units: UnitNames) -> CanonicalResponse:
         ret = self.find_stage(stage_name)
         if isinstance(ret, CanonicalResponse):
@@ -622,6 +624,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
         stage = ret
         return CanonicalResponse(value=stage.position(unit=reverse_units_dict[units.value]))
 
+    @endpoint(tier=Tier.OPERATION, methods=("GET",))
     def endpoint_get_stage_status(self, stage_name: SpecStageNames):
         ret = self.find_stage(stage_name)
         if isinstance(ret, CanonicalResponse):
@@ -630,6 +633,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
         stage = ret
         return CanonicalResponse(value=stage.status())
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def endpoint_stage_move_absolute(self, stage_name: SpecStageNames, position: float, units: UnitNames):
         ret = self.find_stage(stage_name)
         if isinstance(ret, CanonicalResponse):
@@ -640,6 +644,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
         # be answered with `ok`.
         return stage.move_absolute(position, reverse_units_dict[units.value])
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def endpoint_stage_move_relative(self, stage_name: SpecStageNames, amount: float, units: UnitNames):
         ret = self.find_stage(stage_name)
         if isinstance(ret, CanonicalResponse):
@@ -648,24 +653,28 @@ class StageController(SwitchedOutlet, NetworkedDevice):
         stage = ret
         return stage.move_relative(amount, reverse_units_dict[units.value])
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def endpoint_move_fiber_to_preset(self, preset_name: SpecInstruments) -> CanonicalResponse:
         if self.fiber_stage is None:
             return CanonicalResponse(errors=["self.fiber_stage is None"])
         self.fiber_stage.move_to_preset(preset=preset_name)
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def endpoint_move_disperser_to_preset(self, preset_name: GratingNames) -> CanonicalResponse:
         if self.disperser_stage is None:
             return CanonicalResponse(errors=["self.disperser_stage is None"])
         self.disperser_stage.move_to_preset(preset=preset_name)
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def endpoint_move_focusing_to_preset(self, preset_name: GratingNames) -> CanonicalResponse:
         if self.focusing_stage is None:
             return CanonicalResponse(errors=["self.focusing_stage is None"])
         self.focusing_stage.move_to_preset(preset=preset_name)
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def endpoint_stage_startup(self, stage_name: SpecStageNames):
         ret = self.find_stage(stage_name)
         if isinstance(ret, CanonicalResponse):
@@ -676,6 +685,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
 
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def endpoint_stage_shutdown(self, stage_name: SpecStageNames):
         ret = self.find_stage(stage_name)
         if isinstance(ret, CanonicalResponse):
@@ -686,6 +696,7 @@ class StageController(SwitchedOutlet, NetworkedDevice):
 
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def endpoint_stage_abort(self, stage_name: SpecStageNames):
         ret = self.find_stage(stage_name)
         if isinstance(ret, CanonicalResponse):
@@ -699,48 +710,35 @@ class StageController(SwitchedOutlet, NetworkedDevice):
     @property
     def api_router(self) -> APIRouter:
         base_path = Const().BASE_SPEC_PATH + "/stages"
-        tag = "Stages"
         router = APIRouter()
 
-        router.add_api_route(
-            base_path + "/position",
-            tags=[tag],
-            endpoint=self.endpoint_get_stage_position,
+        # Tier.OPERATION throughout, including startup / shutdown / abort. StageController is
+        # not a Component -- it is a controller exposing every stage by name, so each route
+        # takes a `stage_name` -- and register_component_endpoints has nothing to generate
+        # from. The individual Stage objects are Components; this router is not their surface.
+        # Declaring these INTERFACE would claim an ABC guarantee that does not hold.
+        #
+        # methods= is passed at the call as well as declared: add_api_route does not read
+        # declaration.methods (MAST_common#101).
+        add_api_route(router, base_path + "/position", endpoint=self.endpoint_get_stage_position, methods=["GET"])
+        add_api_route(router, base_path + "/status", endpoint=self.endpoint_get_stage_status, methods=["GET"])
+        add_api_route(router, base_path + "/move_absolute", endpoint=self.endpoint_stage_move_absolute, methods=["PUT"])
+        add_api_route(router, base_path + "/move_relative", endpoint=self.endpoint_stage_move_relative, methods=["PUT"])
+        add_api_route(
+            router, base_path + "/move_fiber_to_preset", endpoint=self.endpoint_move_fiber_to_preset, methods=["PUT"]
         )
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.endpoint_get_stage_status)
-        router.add_api_route(
-            base_path + "/move_absolute",
-            tags=[tag],
-            endpoint=self.endpoint_stage_move_absolute,
-            methods=["PUT"],
-        )
-        router.add_api_route(
-            base_path + "/move_relative",
-            tags=[tag],
-            endpoint=self.endpoint_stage_move_relative,
-            methods=["PUT"],
-        )
-        router.add_api_route(
-            base_path + "/move_fiber_to_preset",
-            tags=[tag],
-            endpoint=self.endpoint_move_fiber_to_preset,
-            methods=["PUT"],
-        )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/move_disperser_to_preset",
-            tags=[tag],
             endpoint=self.endpoint_move_disperser_to_preset,
             methods=["PUT"],
         )
-        router.add_api_route(
-            base_path + "/move_focusing_to_preset",
-            tags=[tag],
-            endpoint=self.endpoint_move_focusing_to_preset,
-            methods=["PUT"],
+        add_api_route(
+            router, base_path + "/move_focusing_to_preset", endpoint=self.endpoint_move_focusing_to_preset, methods=["PUT"]
         )
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_stage_startup, methods=["PUT"])
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_stage_shutdown, methods=["PUT"])
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_stage_abort, methods=["PUT"])
+        add_api_route(router, base_path + "/startup", endpoint=self.endpoint_stage_startup, methods=["PUT"])
+        add_api_route(router, base_path + "/shutdown", endpoint=self.endpoint_stage_shutdown, methods=["PUT"])
+        add_api_route(router, base_path + "/abort", endpoint=self.endpoint_stage_abort, methods=["PUT"])
 
         return router
 
