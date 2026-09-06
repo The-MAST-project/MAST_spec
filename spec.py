@@ -204,11 +204,12 @@ class Spec(Component):
 
     def _startup_worker(self):
         try:
-            self.traverse_components_and_call("startup")
+            # isolate_failures: one component that cannot start must not cost the others
+            # theirs. Each failure is logged there and the traverse continues; the outer
+            # guard here is for anything the traverse itself raises, which on a worker
+            # thread nothing else would ever see.
+            self.traverse_components_and_call("startup", isolate_failures=True)
         except Exception:
-            # traverse_components_and_call stops at the first component that raises, and
-            # on a worker thread nothing else would ever see it. Record it; the failed
-            # component reports itself through why_not_operational.
             self.logger.exception("startup failed")
         finally:
             self.end_activity(SpecActivities.StartingUp)
@@ -254,20 +255,40 @@ class Spec(Component):
     def abort(self):
         self.traverse_components_and_call("abort")
 
-    def traverse_components_and_call(self, method_name: str):
+    def traverse_components_and_call(self, method_name: str, isolate_failures: bool = False):
+        """
+        Call `method_name` on every component.
+
+        With isolate_failures, a component that raises is logged and the traverse
+        carries on to the next one. Startup uses it: the point of coming up degraded
+        is that a chiller which cannot be reached does not also cost you the cameras
+        and the wheels. Shutdown and abort keep the default, where an exception
+        propagates to the caller.
+        """
         op = function_name()
+
+        def call(comp, key: str):
+            if not isolate_failures:
+                getattr(comp, method_name)()
+                return
+            try:
+                getattr(comp, method_name)()
+            except Exception:
+                # Logged rather than raised, so the remaining components still get their
+                # turn. The component reports its own condition through why_not_operational.
+                self.logger.exception(f"{op}: {key=}, {method_name=} - component raised, continuing")
 
         for key, component in self.components_dict.items():
             if isinstance(component, list):
                 for comp in component:
                     if comp:
-                        getattr(comp, method_name)()
+                        call(comp, key)
                     else:
                         self.logger.error(f"{op}: {key=}, {method_name=} - component is None")
             elif component is None:
                 self.logger.error(f"{op}: {key=}, {method_name=} - component is None")
             else:
-                getattr(component, method_name)()
+                call(component, key)
 
     def traverse_components_and_return(self, method_name: str) -> dict:
         op = function_name()
