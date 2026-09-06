@@ -3,6 +3,7 @@ from fastapi.routing import APIRouter
 from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.endpoints import register_component_endpoints
 from common.interfaces.components import Component
 from common.models.statuses import BaseStatus
 
@@ -103,9 +104,16 @@ class Chiller(SwitchedOutlet, Component):
 
     @property
     def api_router(self) -> APIRouter:
-        base_path = Const().BASE_SPEC_PATH + self.name
-        tag = "Chiller"
+        # The separator was missing: BASE_SPEC_PATH + self.name gave
+        # "/mast/api/v1/specchiller", not "/mast/api/v1/spec/chiller". Every other component
+        # in this repo writes + "/<name>". Nothing called the malformed path -- the chiller's
+        # status reaches control through Spec.status()'s component traversal, not over its own
+        # route -- which is why it went unnoticed.
+        base_path = Const().BASE_SPEC_PATH + f"/{self.name}"
         router = APIRouter()
 
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
+        # All four interface verbs, generated from the Component ABC. Only /status was
+        # registered before; startup, shutdown and abort exist on this class and were
+        # reachable through Spec's traversal but had no routes of their own.
+        register_component_endpoints(router, self, base_path)
         return router
