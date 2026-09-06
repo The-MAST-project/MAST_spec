@@ -1140,6 +1140,16 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         # inside one protect: a ram->shared move must not see the file between them. This
         # also records it as a product, so release_folder() waits for it to reach the
         # shared area instead of discarding it as scratch.
+        # The frame is discarded, not written, if an abort arrived while this thread ran.
+        # Checked inside ReadingOut and before the MoveGuardian, so no product is registered
+        # for a file that will never exist.
+        if self.is_active(NewtonActivities.Aborting):
+            self.info("aborted: discarding the buffered frame instead of saving it")
+            self.end_activity(NewtonActivities.ReadingOut)
+            self.end_activity(NewtonActivities.Aborting)
+            self.end_activity(NewtonActivities.Acquiring)
+            return
+
         with MoveGuardian().protect(self.latest_exposure_settings.image_full_name):
             ret = self.sdk.SaveAsFITS(self.latest_exposure_settings.image_full_name, typ=0)
             if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
@@ -1241,6 +1251,19 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                 self.debug("Aborted acquisition")
             else:
                 self.error(f"Could not AbortAcquisition() (code={error_code(ret)})")
+
+        # An abort during the READOUT is the case AbortAcquisition cannot help with. By then
+        # the acquisition is over -- DRV_IDLE is what started the readout thread -- and the
+        # data is in the SDK's buffer. SaveAsFITS then writes "the last acquisition" with
+        # nothing in its return value to say that acquisition was aborted rather than
+        # completed, so only this flag stops the frame reaching disk.
+        #
+        # Set unconditionally, including when nothing was exposing: abort has to be able to
+        # catch a readout that is already running.
+        self.start_activity(NewtonActivities.Aborting)
+        if not self.is_active(NewtonActivities.ReadingOut):
+            # Nothing to discard, so the interval is over as soon as it began.
+            self.end_activity(NewtonActivities.Aborting)
 
     def get_temperature(self) -> float | None:
         if not self.detected:

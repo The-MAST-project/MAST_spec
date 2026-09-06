@@ -770,6 +770,15 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
             return
 
+        # The frame is discarded, not written, if an abort arrived while this thread ran.
+        # The data fetched above is valid -- the measurement completed before the readout
+        # started -- which is exactly why nothing else would stop it reaching disk.
+        if self.is_active(GreatEyesActivities.Aborting):
+            self.info("aborted: discarding the frame instead of saving it")
+            self.end_activity(GreatEyesActivities.Aborting, label=self.name)
+            self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
+            return
+
         self.start_activity(GreatEyesActivities.Saving, label=self.name)
         hdr = fits.Header()
         hdr.append(Card("INSTRUME", "DEEPSPEC", "Instrument"))
@@ -996,6 +1005,17 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # is down the guard cannot re-open.
         self.end_activity(GreatEyesActivities.Exposing, label=self.name)
         self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
+
+        # An abort during the READOUT is the case StopMeasurement cannot help with. The SDK
+        # doc (section 5.5.4) says it "stops an ongoing measurement" -- but a readout only
+        # starts once the measurement is over, so by then DllIsBusy is already false and the
+        # call below is skipped. The data is valid and complete, and the readout thread will
+        # write it. Only this flag stops that.
+        #
+        # Set unconditionally: abort has to be able to catch a readout already running.
+        self.start_activity(GreatEyesActivities.Aborting, label=self.name)
+        if not self.is_active(GreatEyesActivities.ReadingOut):
+            self.end_activity(GreatEyesActivities.Aborting, label=self.name)
 
         if ge.DllIsBusy(addr=self.ge_device):
             ret = ge.StopMeasurement(addr=self.ge_device)
