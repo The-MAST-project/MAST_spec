@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import functools
 import os.path
 import time
+from collections.abc import Callable
 from pathlib import Path
 from threading import Thread
 from typing import Annotated
@@ -31,6 +33,7 @@ from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.config.shutter import ShutterConfig
 from common.const import Const
+from common.endpoints import Tier, add_api_route, endpoint, register_component_endpoints
 from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
@@ -428,6 +431,7 @@ class Highspec(Component):
     # The camera-specific groups are BOTH shown whichever camera is configured, unlike
     # expose_single_image -- this endpoint is Highspec's own, not the camera's, so its
     # signature cannot vary with the camera. Hence each says which camera reads it.
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def manual_autofocus(
         self,
         # --- Focus sweep ---
@@ -550,6 +554,7 @@ class Highspec(Component):
         )
         return self.autofocus(settings)
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def autofocus(self, autofocus_settings: HighspecAutofocusSettings) -> CanonicalResponse:
         if not self.operational:
             return CanonicalResponse(errors=self.why_not_operational)
@@ -718,16 +723,51 @@ class Highspec(Component):
             "| setting | configured |\n|---|---|\n" + "".join(f"| `{name}` | {value} |\n" for name, value in rows)
         )
 
+    def _camera_handler(self, method_name: str) -> Callable:
+        """A camera method, wrapped as a plain function so it can carry a declaration.
+
+        The contract stamps its marker on the handler it is given, and a BOUND METHOD refuses
+        the attribute -- 'method' object has no attribute '__mast_endpoint__'. A
+        functools.wraps'd closure takes it, and __wrapped__ means inspect.signature -- which is
+        what FastAPI reads -- still resolves to the camera's own parameters. That is the point:
+        the two cameras do not share an exposure signature, and /docs is meant to describe the
+        machine in front of you.
+        """
+        bound = getattr(self.camera, method_name)
+
+        @functools.wraps(bound)
+        def handler(*args, **kwargs):
+            return bound(*args, **kwargs)
+
+        return handler
+
+    # Three factories rather than one taking a name: the declaration rides on the factory, so
+    # one shared factory would enumerate as a single endpoint in declared_endpoints() and one
+    # `@endpoint(` would stand for three routes. The grep is meant to return the surface exactly.
+    #
+    # They bind self.camera at registration, as the hand-written routes did. Not a regression,
+    # and not a fix either -- see the note in do_autofocus: the schema is generated once, so
+    # publishing a per-camera schema and rebinding the camera at runtime cannot both be true.
+    @endpoint(tier=Tier.OPERATION, factory=True, methods=("PUT",))
+    def _expose_single_image_endpoint(self) -> Callable:
+        return self._camera_handler("expose_single_image")
+
+    @endpoint(tier=Tier.OPERATION, factory=True, methods=("PUT",))
+    def _start_cooldown_endpoint(self) -> Callable:
+        return self._camera_handler("start_cooldown")
+
+    @endpoint(tier=Tier.OPERATION, factory=True, methods=("PUT",))
+    def _start_warmup_endpoint(self) -> Callable:
+        return self._camera_handler("start_warmup")
+
     @property
     def api_router(self) -> APIRouter:
         base_path = Const().BASE_SPEC_PATH + "/highspec"
         router = APIRouter()
-        tag = "Highspec"
 
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup, methods=["PUT"])
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown, methods=["PUT"])
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort, methods=["PUT"])
+        # The four ABC verbs, generated.
+        register_component_endpoints(router, self, base_path)
+
         # Both cameras implement this, under this name, so it registers unconditionally.
         # Their parameters differ -- the Newton takes Andor hardware settings (amplifier
         # mode, EM gain, horizontal shift speed) that mean nothing to a QHY600 -- and that
@@ -742,10 +782,10 @@ class Highspec(Component):
         # which one this machine has. Without that, a reader of /docs sees a parameter list
         # (exposure_duration + Andor settings, or duration + gain) and has to infer the
         # camera from its shape.
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/expose_single_image",
-            tags=[tag],
-            endpoint=self.camera.expose_single_image,
+            endpoint=self._expose_single_image_endpoint(),
             methods=["PUT"],
             summary=f"Expose a single image ({self.conf.camera})",
             description=(
@@ -755,9 +795,9 @@ class Highspec(Component):
                 "not the endpoint in general.\n\n" + self._configured_settings_markdown()
             ),
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/manual_autofocus",
-            tags=[tag],
             methods=["PUT"],
             endpoint=self.manual_autofocus,
             summary=f"Sweep the focusing stage, exposing at each step ({self.conf.camera})",
@@ -773,23 +813,23 @@ class Highspec(Component):
                 "below.\n\n" + self._configured_settings_markdown()
             ),
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/autofocus",
-            tags=[tag],
             methods=["PUT"],
             endpoint=self.autofocus,
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/start_cooldown",
-            tags=[tag],
             methods=["PUT"],
-            endpoint=self.camera.start_cooldown,
+            endpoint=self._start_cooldown_endpoint(),
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/start_warmup",
-            tags=[tag],
             methods=["PUT"],
-            endpoint=self.camera.start_warmup,
+            endpoint=self._start_warmup_endpoint(),
         )
 
         return router
