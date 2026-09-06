@@ -21,6 +21,7 @@ from common.dlipowerswitch import (
     PowerSwitchFactory,
     SwitchedOutlet,
 )
+from common.endpoints import Tier, add_api_route, endpoint, register_component_endpoints
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.assignments import (
@@ -148,9 +149,6 @@ class Spec(Component):
     def name(self, value):
         self._name = value
 
-    def endpoint_status(self) -> CanonicalResponse:
-        return CanonicalResponse(value=self.status())
-
     def status(self) -> SpecStatus:
         ret = self.traverse_components_and_return("status")
         ret |= {
@@ -175,6 +173,7 @@ class Spec(Component):
     def is_shutting_down(self) -> bool:
         return any(comp.is_shutting_down for comp in self.components)
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def powerdown(self):
         if not self._was_shut_down:
             logger.info("powerdown called without shutdown - calling shutdown first...")
@@ -347,6 +346,7 @@ class Spec(Component):
 
         self.end_activity(SpecActivities.Acquiring)
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def acquire(
         self,
         spec_name: SpecName,
@@ -401,6 +401,7 @@ class Spec(Component):
         self.highspec_exposure_seconds = highspec_seconds
         self.deepspec_exposure_seconds = deepspec_seconds
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     async def endpoint_simulate_fiber(self, instrument: SpecInstruments) -> CanonicalResponse:
         if self.fiber_stage is None:
             return CanonicalResponse(errors=["Fiber stage not available"])
@@ -414,6 +415,7 @@ class Spec(Component):
         self.fiber_stage.end_activity(StageActivities.Moving)
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     async def endpoint_simulate_disperser(self, grating: GratingNames) -> CanonicalResponse:
         if self.disperser_stage is None:
             return CanonicalResponse(errors=["Disperser stage not available"])
@@ -427,6 +429,7 @@ class Spec(Component):
         self.disperser_stage.end_activity(StageActivities.Moving)
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     async def endpoint_simulate_focus(self, grating: GratingNames) -> CanonicalResponse:
         if self.focusing_stage is None:
             return CanonicalResponse(errors=["Focusing stage not available"])
@@ -440,6 +443,7 @@ class Spec(Component):
         self.focusing_stage.end_activity(StageActivities.Moving)
         return CanonicalResponse_Ok
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     async def endpoint_simulate_lightpath(self, instrument: SpecInstruments, onoff: bool) -> CanonicalResponse:
         match instrument:
             case "highspec":
@@ -525,85 +529,51 @@ class Spec(Component):
     @property
     def api_router(self) -> APIRouter:
         base_path = Const().BASE_SPEC_PATH
-        tag = "Spec"
-
         router = APIRouter()
-        # methods=["PUT"] on everything that changes state; the readers stay GET.
-        #
-        # PUT-only, not GET-and-PUT. This is the fleet convention -- a state-changing route
-        # is PUT (MAST_common#98 moved the units) -- and taking it in one step rather than
-        # running a dual-verb window is a deliberate choice: the window's cost is that
-        # nothing ever forces the callers to move, and the routes sit accepting both
-        # indefinitely.
-        #
-        # The consequence is real and is being accepted knowingly. Callers still sending GET
-        # get 405 until they are updated, and most of them are in MAST_control. Two that are
-        # known:
-        #
-        #   - MAST_common's plan client aborts the spectrograph with GET
-        #     (common/models/plans.py). MAST_common#51 moves it to PUT and is open; until it
-        #     lands, the fleet's abort path answers 405. It was answering 404 until
-        #     MAST_spec#69 two days ago, so this is not a regression from working -- but it
-        #     is a change from one failure to another, and #51 is what ends it.
-        #   - MAST_gui and anything driving these by hand or by bookmark.
-        #
-        # The readers keep GET and are unaffected: /status, /position, the wheel listing.
-        router.add_api_route(path=base_path + "/status", endpoint=self.endpoint_status, tags=[tag])
-        router.add_api_route(path=base_path + "/startup", endpoint=self.startup, tags=[tag], methods=["PUT"])
-        router.add_api_route(path=base_path + "/shutdown", endpoint=self.shutdown, tags=[tag], methods=["PUT"])
-        router.add_api_route(path=base_path + "/powerdown", endpoint=self.powerdown, tags=[tag], methods=["PUT"])
-        # The fleet's abort path. Spec.abort() has existed all along and was routed nowhere,
-        # so `<spec>/mast/api/v1/spec/abort` -- which is exactly what the shared plan client
-        # calls -- answered 404. Every /abort this repo did serve was on a sub-path
-        # (/deepspec, /highspec, /fw, /stages), none of which the client asks for.
-        #
-        # Both verbs on purpose. The client aborts the spectrograph with GET today and moves
-        # to PUT when MAST_common#51 lands (units already did, in MAST_common#98). Accepting
-        # both means neither side has to be deployed first; drop GET once the client has
-        # moved, per MAST_common#113.
-        router.add_api_route(
-            path=base_path + "/abort",
-            endpoint=self.abort,
-            tags=[tag],
-            methods=["PUT"],
-        )
-        router.add_api_route(path=base_path + "/acquire", endpoint=self.acquire, tags=[tag], methods=["PUT"])
 
-        # tag = "Assignments"
+        # startup / shutdown / abort / status, generated from the Component ABC. The verbs and
+        # their methods -- PUT, PUT, PUT, GET -- are read from the ABC, and match what
+        # MAST_spec#70 set by hand.
+        #
+        # This replaces the hand-registered /status, which routed endpoint_status, a method
+        # whose entire body was CanonicalResponse(value=self.status()). enveloped() does that
+        # now, so the body on the wire is unchanged and the method is gone.
+        #
+        # /abort is the fleet's abort path. It answered 404 until MAST_spec#69: Spec.abort()
+        # existed and was routed nowhere, while every /abort this repo served sat on a
+        # sub-path the plan client never asks for. It is generated like the rest now.
+        register_component_endpoints(router, self, base_path)
+
+        # The operator surface. powerdown is on the ABC but is not one of the four generated
+        # verbs, so it declares itself. methods= is passed at the call as well as declared,
+        # because add_api_route does not read declaration.methods (MAST_common#101).
+        add_api_route(router, base_path + "/powerdown", endpoint=self.powerdown, methods=["PUT"])
+        add_api_route(router, base_path + "/acquire", endpoint=self.acquire, methods=["PUT"])
+
         # router.add_api_route(
         #     path=base_path + "/execute_assignment",
         #     methods=["PUT"],
         #     endpoint=self.execute_assignment,
-        #     tags=[tag],
         # )
 
-        tag = "Simulation"
-        router.add_api_route(
-            methods=["PUT"],
-            path=base_path + "/simulate/fiber_stage/{instrument}",
+        add_api_route(
+            router,
+            base_path + "/simulate/fiber_stage/{instrument}",
             endpoint=self.endpoint_simulate_fiber,
-            tags=[tag],
-        )
-
-        router.add_api_route(
             methods=["PUT"],
-            path=base_path + "/simulate/disperser_stage/{grating}",
+        )
+        add_api_route(
+            router,
+            base_path + "/simulate/disperser_stage/{grating}",
             endpoint=self.endpoint_simulate_disperser,
-            tags=[tag],
-        )
-
-        router.add_api_route(
             methods=["PUT"],
-            path=base_path + "/simulate/focus_stage/{grating}",
+        )
+        add_api_route(
+            router,
+            base_path + "/simulate/focus_stage/{grating}",
             endpoint=self.endpoint_simulate_focus,
-            tags=[tag],
-        )
-
-        router.add_api_route(
             methods=["PUT"],
-            path=base_path + "/simulate/lightpath",
-            endpoint=self.endpoint_simulate_lightpath,
-            tags=[tag],
         )
+        add_api_route(router, base_path + "/simulate/lightpath", endpoint=self.endpoint_simulate_lightpath, methods=["PUT"])
 
         return router
