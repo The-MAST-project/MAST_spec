@@ -583,6 +583,3 @@ class Deepspec(Component):
         )
 
         return router
-
-
-deepspec = Deepspec()
