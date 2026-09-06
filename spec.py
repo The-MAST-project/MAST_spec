@@ -557,10 +557,11 @@ class Spec(Component):
         # calls -- answered 404. Every /abort this repo did serve was on a sub-path
         # (/deepspec, /highspec, /fw, /stages), none of which the client asks for.
         #
-        # Both verbs on purpose. The client aborts the spectrograph with GET today and moves
-        # to PUT when MAST_common#51 lands (units already did, in MAST_common#98). Accepting
-        # both means neither side has to be deployed first; drop GET once the client has
-        # moved, per MAST_common#113.
+        # PUT only. MAST_spec#69 registered this with methods=["GET", "PUT"] so that neither
+        # side had to be deployed first; MAST_spec#70 took it to PUT-only with the rest of the
+        # state-changing routes, and MAST_common#100 moved the plan client's two spectrograph
+        # abort calls to PUT the same day. Both halves have landed -- there is no GET window
+        # left to describe, and MAST_common#51 covers the units, not this route.
         router.add_api_route(
             path=base_path + "/abort",
             endpoint=self.abort,
