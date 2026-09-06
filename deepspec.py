@@ -16,6 +16,7 @@ from common.activities import DeepspecActivities, GreatEyesActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
+from common.endpoints import Tier, add_api_route, endpoint, register_component_endpoints
 from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
@@ -197,6 +198,7 @@ class Deepspec(Component):
     def is_working(self) -> bool:
         return self.is_active(DeepspecActivities.Acquiring)
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def expose(
         self,
         seconds: float,
@@ -278,6 +280,7 @@ class Deepspec(Component):
             if owns_base_folder:
                 MoveGuardian().release_folder(base_folder, logger=logger)
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def expose_one_camera(
         self,
         band: DeepspecBands,
@@ -431,6 +434,7 @@ class Deepspec(Component):
         finally:
             MoveGuardian().release_folder(folder, logger=logger)
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def adjust_temperature_one_camera(self, band: DeepspecBands, target_temperature: int | None = None):
         if band not in list(get_args(DeepspecBands)):
             return CanonicalResponse(errors=[f"invalid band '{band}', must be one of {list(get_args(DeepspecBands))}"])
@@ -546,24 +550,33 @@ class Deepspec(Component):
     @property
     def api_router(self) -> APIRouter:
         base_path = Const().BASE_SPEC_PATH + "/deepspec"
-        tag = "Deepspec"
         router = APIRouter()
 
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup, methods=["PUT"])
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown, methods=["PUT"])
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort, methods=["PUT"])
-        router.add_api_route(base_path + "/expose", tags=[tag], endpoint=self.expose, response_model=None, methods=["PUT"])
-        router.add_api_route(
+        # startup / shutdown / abort / status come from the Component ABC's own declarations,
+        # so membership of the interface contract is provable by provenance rather than by
+        # each component remembering to register the same four verbs the same way. The verbs
+        # and their methods (PUT, PUT, PUT, GET) are read from the ABC, not repeated here.
+        register_component_endpoints(router, self, base_path)
+
+        # The operation verbs declare themselves at their definition site; this is common's
+        # add_api_route, not FastAPI's, so it refuses a handler that has not. No tags= -- the
+        # tag is derived from the declared tier.
+        #
+        # methods= is passed here as well as declared on @endpoint, and both are needed:
+        # add_api_route does not read declaration.methods, it ends in
+        # `methods=methods or ["GET"]`. Only register_component_endpoints reads the
+        # declaration. Omitting it here silently serves these as GET (MAST_common#101).
+        add_api_route(router, base_path + "/expose", endpoint=self.expose, response_model=None, methods=["PUT"])
+        add_api_route(
+            router,
             base_path + "/expose_one_camera",
-            tags=[tag],
             endpoint=self.expose_one_camera,
             response_model=None,
             methods=["PUT"],
         )
-        router.add_api_route(
+        add_api_route(
+            router,
             base_path + "/adjust_temperature_one_camera",
-            tags=[tag],
             endpoint=self.adjust_temperature_one_camera,
             response_model=None,
             methods=["PUT"],
