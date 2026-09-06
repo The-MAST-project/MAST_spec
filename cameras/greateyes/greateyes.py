@@ -43,23 +43,29 @@ import cameras.greateyes.sdk.greateyesSDK as ge  # noqa: N813
 logger = get_logger(__name__)
 dll_version = ge.GetDLLVersion()
 
-# One DLL, four cameras, no thread safety.
+# One DLL, four cameras, no thread safety -- but the lock goes only where it is safe to wait.
 #
 # The SDK keeps its status in module-level globals -- Status, c_Status, StatusMSG -- which
 # UpdateStatus() rewrites on every call. A result and the status that explains it are therefore
-# only consistent if nothing else calls in between, and four cameras are constructed in
-# parallel at import, so something always does.
+# only consistent if nothing else calls in between, and four camera threads run concurrently.
+# The fingerprint is in the log for 2026-09-06 12:24:20, three lines within 15 ms, each
+# reporting ret=False beside msg='camera detected and ok' -- a status belonging to another
+# thread's call (MAST_spec#87).
 #
-# The fingerprint is in the log for 2026-09-06 12:24:20, three lines within 15 ms:
+# WHY THE CONNECT PATH IS NOT LOCKED. A first attempt serialised every SDK call and made
+# things far worse. ConnectToSingleCameraServer blocks indefinitely when a camera is already
+# claimed by another process, so the one stuck thread held the lock and the other three failed
+# every 60 s for as long as it lived:
 #
-#   Deepspec-G: could not ge.ConnectToSingleCameraServer(addr=1) (ret=False, msg='camera detected and ok')
+#   Thread 20696 (active): deepspec-camera-I-timer-thread
+#       ConnectToSingleCameraServer (greateyesSDK.py:180)   <- holding the lock
+#   Thread 7468/6896/10080 (idle): G / R / U
+#       ge_call (greateyes.py:89)                            <- parked on acquire
 #
-# ret=False beside 'camera detected and ok' -- the return value and the status contradict each
-# other, because the status being read belongs to another thread's call. The same race is why a
-# different band fails to come up on each start (MAST_spec#87).
-#
-# Locking each call is NOT enough: the gap that matters is between the call and the status
-# read, so ge_call() closes over both and hands back all three values together.
+# One absent camera starved all four. So calls that can block without bound -- the connect
+# and probe sequence -- use ge_call_unserialised: their status reads stay racy, which is what
+# they already were, and no camera can be starved by another. Everything operational, where a
+# call returns in milliseconds, is serialised and correct.
 _GE_LOCK = threading.RLock()
 _GE_LOCK_TIMEOUT = 60.0
 
@@ -94,6 +100,19 @@ def ge_call(func: Callable, *args: Any, **kwargs: Any) -> tuple[Any, str, int]:
         return func(*args, **kwargs), ge.StatusMSG, ge.Status
     finally:
         _GE_LOCK.release()
+
+
+def ge_call_unserialised(func: Callable, *args: Any, **kwargs: Any) -> tuple[Any, str, int]:
+    """Call an SDK function WITHOUT the lock, and read the status best-effort.
+
+    For the connect and probe sequence only, where a call can block indefinitely against a
+    camera another process is holding. Serialising those lets one stuck camera starve the
+    rest -- see the note above the lock.
+
+    The status returned here may belong to another thread's call. That is the pre-existing
+    behaviour on this path and is why its error messages are not to be trusted about WHICH
+    camera failed; the band in the log prefix is reliable, the status text is not."""
+    return func(*args, **kwargs), ge.StatusMSG, ge.Status
 
 
 shown_dll_version = False
@@ -272,7 +291,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         # This just tells the Greateyes server how to interface with the specific camera
         # NOTE: it should not fail
-        ret, status_msg, _status = ge_call(
+        ret, status_msg, _status = ge_call_unserialised(
             ge.SetupCameraInterface,
             ge.connectionType_Ethernet,
             ipAddress=self.network.ipaddr,
@@ -290,7 +309,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         #     + f"ipaddress={self.network.ipaddr}, addr={self.ge_device}) (ret={ret}, msg='{ge.StatusMSG}')"
         # )
 
-        ret, status_msg, _status = ge_call(ge.ConnectToSingleCameraServer, addr=self.ge_device)
+        ret, status_msg, _status = ge_call_unserialised(ge.ConnectToSingleCameraServer, addr=self.ge_device)
         if not ret:
             self.error(
                 f"could not ge.ConnectToSingleCameraServer(addr={self.ge_device}) ipaddr='{self.network.ipaddr}' "
@@ -304,7 +323,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # )
 
         model = []
-        ret, status_msg, _status = ge_call(ge.ConnectCamera, model=model, addr=self.ge_device)
+        ret, status_msg, _status = ge_call_unserialised(ge.ConnectCamera, model=model, addr=self.ge_device)
         if not ret:
             self.error(f"could not ge.ConnectCamera(model=[], addr={self.ge_device}) (ret={ret}, " + f"msg='{status_msg}')")
             self.end_activity(GreatEyesActivities.Probing, label=self.name)
@@ -365,7 +384,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         assert self.ge_device is not None
         self.firmware_version = ge.GetFirmwareVersion(addr=self.ge_device)
 
-        ret, status_msg, _status = ge_call(ge.InitCamera, addr=self.ge_device)
+        ret, status_msg, _status = ge_call_unserialised(ge.InitCamera, addr=self.ge_device)
         if not ret:
             self.error(f"FAILED - ge.InitCamera(addr={self.ge_device}) (ret={ret}, msg='{status_msg}')")
             ge.DisconnectCamera(addr=self.ge_device)
