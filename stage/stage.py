@@ -712,30 +712,39 @@ class StageController(SwitchedOutlet, NetworkedDevice):
             base_path + "/move_absolute",
             tags=[tag],
             endpoint=self.endpoint_stage_move_absolute,
+            methods=["GET", "PUT"],
         )
         router.add_api_route(
             base_path + "/move_relative",
             tags=[tag],
             endpoint=self.endpoint_stage_move_relative,
+            methods=["GET", "PUT"],
         )
         router.add_api_route(
             base_path + "/move_fiber_to_preset",
             tags=[tag],
             endpoint=self.endpoint_move_fiber_to_preset,
+            methods=["GET", "PUT"],
         )
         router.add_api_route(
             base_path + "/move_disperser_to_preset",
             tags=[tag],
             endpoint=self.endpoint_move_disperser_to_preset,
+            methods=["GET", "PUT"],
         )
         router.add_api_route(
             base_path + "/move_focusing_to_preset",
             tags=[tag],
             endpoint=self.endpoint_move_focusing_to_preset,
+            methods=["GET", "PUT"],
         )
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.endpoint_stage_startup)
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_stage_shutdown)
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_stage_abort)
+        router.add_api_route(
+            base_path + "/startup", tags=[tag], endpoint=self.endpoint_stage_startup, methods=["GET", "PUT"]
+        )
+        router.add_api_route(
+            base_path + "/shutdown", tags=[tag], endpoint=self.endpoint_stage_shutdown, methods=["GET", "PUT"]
+        )
+        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_stage_abort, methods=["GET", "PUT"])
 
         return router
 

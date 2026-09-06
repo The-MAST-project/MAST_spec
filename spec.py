@@ -528,10 +528,20 @@ class Spec(Component):
         tag = "Spec"
 
         router = APIRouter()
+        # methods=["GET", "PUT"] on everything that changes state, GET alone on the readers.
+        #
+        # PUT is where the fleet is going -- the shared plan client already aborts units with
+        # PUT (MAST_common#98), and the convention there is that a state-changing route is
+        # PUT-only. Both verbs are accepted here rather than PUT alone because the existing
+        # callers -- the GUI, the plan client, anything curling these by hand -- still send
+        # GET, and a repo with no tests and no way to import itself off the telescope is a
+        # bad place to make a flag-day switch. Drop GET once the callers have moved.
+        #
+        # The readers stay GET-only: /status, /position, and the wheel listing.
         router.add_api_route(path=base_path + "/status", endpoint=self.endpoint_status, tags=[tag])
-        router.add_api_route(path=base_path + "/startup", endpoint=self.startup, tags=[tag])
-        router.add_api_route(path=base_path + "/shutdown", endpoint=self.shutdown, tags=[tag])
-        router.add_api_route(path=base_path + "/powerdown", endpoint=self.powerdown, tags=[tag])
+        router.add_api_route(path=base_path + "/startup", endpoint=self.startup, tags=[tag], methods=["GET", "PUT"])
+        router.add_api_route(path=base_path + "/shutdown", endpoint=self.shutdown, tags=[tag], methods=["GET", "PUT"])
+        router.add_api_route(path=base_path + "/powerdown", endpoint=self.powerdown, tags=[tag], methods=["GET", "PUT"])
         # The fleet's abort path. Spec.abort() has existed all along and was routed nowhere,
         # so `<spec>/mast/api/v1/spec/abort` -- which is exactly what the shared plan client
         # calls -- answered 404. Every /abort this repo did serve was on a sub-path
@@ -547,7 +557,7 @@ class Spec(Component):
             tags=[tag],
             methods=["GET", "PUT"],
         )
-        router.add_api_route(path=base_path + "/acquire", endpoint=self.acquire, tags=[tag])
+        router.add_api_route(path=base_path + "/acquire", endpoint=self.acquire, tags=[tag], methods=["GET", "PUT"])
 
         # tag = "Assignments"
         # router.add_api_route(
