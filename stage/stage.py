@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum, IntFlag
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 
 import zaber_motion
 import zaber_motion.ascii
@@ -62,19 +62,24 @@ class StageStatus:
 class Stage(Component):
     def __init__(
         self,
-        name: str,
+        name: SpecStageNames,
         controller: zaber_motion.ascii.Device,
     ):
         Component.__init__(self, StageActivities)
 
         self._was_shut_down = False
         specs_conf = Config().get_specs()
-        if name == "fiber":
-            self.conf = specs_conf.stage.fiber
-        elif name == "disperser":
-            self.conf = specs_conf.stage.disperser
-        elif name == "focusing":
-            self.conf = specs_conf.stage.focusing
+
+        # The three names map onto identically-named attributes of specs_conf.stage, so the
+        # lookup is getattr; the match is here for the `case _`. Without it an unrecognised
+        # name left self.conf unassigned and the next line raised
+        # "AttributeError: 'Stage' object has no attribute 'conf'" -- which names this class
+        # rather than the caller that passed the bad name.
+        match name:
+            case "fiber" | "disperser" | "focusing":
+                self.conf = getattr(specs_conf.stage, name)
+            case _:
+                raise ValueError(f"unknown stage name '{name}', expected one of {get_args(SpecStageNames)}")
 
         self.max_position = self.conf.max_position
 
