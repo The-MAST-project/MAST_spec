@@ -12,6 +12,7 @@ from common.activities import Activities
 from common.config import Config
 from common.const import Const
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
+from common.endpoints import Tier, add_api_route, endpoint
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.statuses import WheelStatus
@@ -402,6 +403,7 @@ class FilterWheels:
         self.wheels = make_filter_wheels()
         self._initialized = True
 
+    @endpoint(tier=Tier.OPERATION, methods=("GET",))
     def list_wheels(self):
         ret = {}
         for wheel in self.wheels:
@@ -431,6 +433,7 @@ class FilterWheels:
                 return w
         return None
 
+    @endpoint(tier=Tier.OPERATION, methods=("GET",))
     def get_position(self, wheel: WheelNames):
         w = self._wheel_by_name(wheel)
         if w is not None:
@@ -438,6 +441,7 @@ class FilterWheels:
                 return {"Error": f"{w.serial_number}: device not detected"}
             return w.position
 
+    @endpoint(tier=Tier.OPERATION, methods=("GET",))
     def get_status(self, wheel: WheelNames):
         w = self._wheel_by_name(wheel)
         if w is not None:
@@ -445,6 +449,7 @@ class FilterWheels:
                 return {"Error": f"{w.serial_number}: device not detected"}
             return w.status()
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def move(self, wheel: WheelNames, position: int):
         w = self._wheel_by_name(wheel)
         if w is not None:
@@ -452,14 +457,17 @@ class FilterWheels:
                 return {"Error": f"{w.serial_number}: device not detected"}
             return w.move(position)
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def startup(self):
         for w in self.wheels:
             w.startup()
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def shutdown(self):
         for w in self.wheels:
             w.shutdown()
 
+    @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def abort(self):
         for w in self.wheels:
             w.abort()
@@ -467,17 +475,24 @@ class FilterWheels:
     @property
     def api_router(self) -> APIRouter:
         base_path = Const().BASE_SPEC_PATH + "/fw"
-        tag = "Filter wheels"
         router = APIRouter()
 
-        router.add_api_route(base_path, tags=[tag], endpoint=self.list_wheels)
-        router.add_api_route(base_path + "/position", tags=[tag], endpoint=self.get_position)
-        router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.get_status)
-        router.add_api_route(base_path + "/move", tags=[tag], endpoint=self.move, methods=["PUT"])
+        # Tier.OPERATION throughout, including startup / shutdown / abort. FilterWheels is a
+        # collection, not a Component -- its routes take a `wheel` parameter and it is not
+        # bound by the ABC -- so register_component_endpoints does not apply and declaring
+        # these INTERFACE would claim an ABC guarantee that does not hold here. The
+        # per-wheel Wheel objects are Components; this router is not their surface.
+        #
+        # methods= is passed at the call as well as declared, because add_api_route does not
+        # read declaration.methods (MAST_common#101).
+        add_api_route(router, base_path, endpoint=self.list_wheels, methods=["GET"])
+        add_api_route(router, base_path + "/position", endpoint=self.get_position, methods=["GET"])
+        add_api_route(router, base_path + "/status", endpoint=self.get_status, methods=["GET"])
+        add_api_route(router, base_path + "/move", endpoint=self.move, methods=["PUT"])
 
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup, methods=["PUT"])
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown, methods=["PUT"])
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort, methods=["PUT"])
+        add_api_route(router, base_path + "/startup", endpoint=self.startup, methods=["PUT"])
+        add_api_route(router, base_path + "/shutdown", endpoint=self.shutdown, methods=["PUT"])
+        add_api_route(router, base_path + "/abort", endpoint=self.abort, methods=["PUT"])
 
         return router
 
