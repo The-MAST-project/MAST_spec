@@ -335,7 +335,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.info(
             f"greateyes: ipaddr='{self.network.ipaddr}', size={self.x_size}x{self.y_size}, "
             + f"model_id='{self.model_id}', model='{self.model}', fw_version='{self.firmware_version}', "
-            + f"sensor temp range={self.min_temp}ֲ°C to {self.max_temp}ֲ°C"
+            + f"sensor temp range={self.min_temp}C to {self.max_temp}C"
         )
 
         n_output_modes = ge.GetNumberOfSensorOutputModes(addr=self.ge_device)
@@ -442,11 +442,11 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.start_activity(
                 GreatEyesActivities.AdjustingTemperature,
                 label=self._name,
-                details=[f"to {target_temperature}ֲ°C"],
+                details=[f"to {target_temperature}C"],
             )
         else:
             self.append_error(
-                f"FAILED to set temperature to {target_temperature}ֲ°C with ge.TemperatureControl_SetTemperature "
+                f"FAILED to set temperature to {target_temperature}C with ge.TemperatureControl_SetTemperature "
                 f"(status: {ge.StatusMSG} ({ge.Status}))"
             )
 
@@ -462,7 +462,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.start_activity(
                 GreatEyesActivities.CoolingDown,
                 label=self._name,
-                details=[f"to {target_temp}ֲ°C"],
+                details=[f"to {target_temp}C"],
             )
 
     def warm_up(self):
@@ -475,7 +475,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.start_activity(
                 GreatEyesActivities.WarmingUp,
                 label=self._name,
-                details=[f"to {target_temp}ֲ°C"],
+                details=[f"to {target_temp}C"],
             )
 
     def startup(self):
