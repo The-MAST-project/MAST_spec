@@ -1222,9 +1222,22 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.error("camera not detected")
             return
         if self.is_active(NewtonActivities.Exposing):
+            # Close the guard BEFORE calling the SDK, not after.
+            #
+            # driver_event_handler starts a readout when it sees `Exposing` set and the driver
+            # reporting DRV_IDLE. AbortAcquisition is what makes it IDLE -- and, since that
+            # handler is woken by driver events rather than polling, plausibly what signals the
+            # event that wakes it. Ending the activity afterwards therefore races the handler
+            # on every abort, and losing that race reads out and saves the frame being aborted.
+            #
+            # This clears `Exposing` even when AbortAcquisition fails, which the old order did
+            # not. That is deliberate: leaving it set after a failed abort means the exposure
+            # runs to completion and is read out and saved as though nothing had been asked --
+            # a frame the operator tried to stop. A failed abort is an error either way, and it
+            # is reported below.
+            self.end_activity(NewtonActivities.Exposing)
             ret = self.sdk.AbortAcquisition()
             if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
-                self.end_activity(NewtonActivities.Exposing)
                 self.debug("Aborted acquisition")
             else:
                 self.error(f"Could not AbortAcquisition() (code={error_code(ret)})")

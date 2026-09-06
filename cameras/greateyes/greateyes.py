@@ -983,13 +983,24 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             return
 
         assert self.ge_device is not None
+
+        # Close the guard BEFORE stopping the measurement, not after.
+        #
+        # on_timer starts a readout when it sees `Exposing` set and DllIsBusy false, and
+        # StopMeasurement is exactly what makes DllIsBusy false. Clearing the flags afterwards
+        # leaves a window -- one SDK call wide -- in which the 1 Hz timer thread can read both
+        # conditions as true and read out the frame this call is aborting. That is the bug
+        # MAST_spec#66 fixed on the slow path and left open on the fast one.
+        #
+        # end_activity mutates under self.lock and is_active reads under it, so once the flag
+        # is down the guard cannot re-open.
+        self.end_activity(GreatEyesActivities.Exposing, label=self.name)
+        self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
+
         if ge.DllIsBusy(addr=self.ge_device):
             ret = ge.StopMeasurement(addr=self.ge_device)
             if not ret:
                 self.append_error(f"could not ge.StopMeasurement(addr={self.ge_device})")
-
-        self.end_activity(GreatEyesActivities.Exposing, label=self.name)
-        self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
 
     def on_timer(self):  # noqa: C901 -- a hardware state machine; the branching is the problem domain, not a failure to decompose
         """
