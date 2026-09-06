@@ -550,25 +550,23 @@ class Deepspec(Component):
         router = APIRouter()
 
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
-        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup, methods=["GET", "PUT"])
-        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown, methods=["GET", "PUT"])
-        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort, methods=["GET", "PUT"])
-        router.add_api_route(
-            base_path + "/expose", tags=[tag], endpoint=self.expose, response_model=None, methods=["GET", "PUT"]
-        )
+        router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup, methods=["PUT"])
+        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown, methods=["PUT"])
+        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.abort, methods=["PUT"])
+        router.add_api_route(base_path + "/expose", tags=[tag], endpoint=self.expose, response_model=None, methods=["PUT"])
         router.add_api_route(
             base_path + "/expose_one_camera",
             tags=[tag],
             endpoint=self.expose_one_camera,
             response_model=None,
-            methods=["GET", "PUT"],
+            methods=["PUT"],
         )
         router.add_api_route(
             base_path + "/adjust_temperature_one_camera",
             tags=[tag],
             endpoint=self.adjust_temperature_one_camera,
             response_model=None,
-            methods=["GET", "PUT"],
+            methods=["PUT"],
         )
 
         return router
