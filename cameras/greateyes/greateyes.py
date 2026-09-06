@@ -61,7 +61,7 @@ dll_version = ge.GetDLLVersion()
 # Locking each call is NOT enough: the gap that matters is between the call and the status
 # read, so ge_call() closes over both and hands back all three values together.
 _GE_LOCK = threading.RLock()
-_GE_LOCK_TIMEOUT = 5.0
+_GE_LOCK_TIMEOUT = 60.0
 
 
 def ge_call(func: Callable, *args: Any, **kwargs: Any) -> tuple[Any, str, int]:
@@ -71,13 +71,25 @@ def ge_call(func: Callable, *args: Any, **kwargs: Any) -> tuple[Any, str, int]:
     ge.StatusMSG / ge.Status afterwards -- by then another camera may have overwritten it.
 
     RLock because try_connect_camera and _apply_setting already make several SDK calls in
-    sequence and could come to nest. The 5-second bound is an order of magnitude above the
-    worst hold seen in six nights of logs -- greateyes readouts reach 0.20 s, Newton's 4.03 s
-    -- so it cannot fire on a slow call, only on a genuine deadlock, which then surfaces as an
-    error rather than a silently wedged camera thread."""
+    sequence and could come to nest.
+
+    On timeout this RETURNS a failure; it does not raise. RepeatTimer.run in common/utils.py
+    calls its function with no exception handling, so anything escaping on_timer ends that
+    thread -- and the camera then never probes, never cools and never recovers. A raise here
+    turned one slow SDK call into three permanently dead cameras, which is worse than the race
+    it guards against. The falsy result and the status string are the shape every caller
+    already handles: `if not ret: append_error(... status_msg ...)`.
+
+    The bound is 60 s rather than the 5 s first chosen. That figure came from readout
+    durations (0.20 s) and was the wrong measurement: what contends here is probe and connect,
+    where a single SDK call against an unresponsive camera can hold the lock for many seconds
+    while three other cameras queue behind it. The bound exists only to make a true deadlock
+    visible, not to police slow calls."""
+    name = getattr(func, "__name__", str(func))
     if not _GE_LOCK.acquire(timeout=_GE_LOCK_TIMEOUT):
-        name = getattr(func, "__name__", str(func))
-        raise TimeoutError(f"greateyes SDK lock not acquired within {_GE_LOCK_TIMEOUT}s for {name}")
+        msg = f"greateyes SDK lock not acquired within {_GE_LOCK_TIMEOUT}s"
+        logger.error("%s for %s", msg, name)
+        return False, msg, -1
     try:
         return func(*args, **kwargs), ge.StatusMSG, ge.Status
     finally:
