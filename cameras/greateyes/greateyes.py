@@ -5,7 +5,7 @@ import threading
 import time
 from collections.abc import Callable
 from enum import IntEnum
-from typing import ClassVar, get_args
+from typing import Any, ClassVar, get_args
 
 import numpy as np
 from astropy.io import fits
@@ -42,6 +42,48 @@ import cameras.greateyes.sdk.greateyesSDK as ge  # noqa: N813
 
 logger = get_logger(__name__)
 dll_version = ge.GetDLLVersion()
+
+# One DLL, four cameras, no thread safety.
+#
+# The SDK keeps its status in module-level globals -- Status, c_Status, StatusMSG -- which
+# UpdateStatus() rewrites on every call. A result and the status that explains it are therefore
+# only consistent if nothing else calls in between, and four cameras are constructed in
+# parallel at import, so something always does.
+#
+# The fingerprint is in the log for 2026-09-06 12:24:20, three lines within 15 ms:
+#
+#   Deepspec-G: could not ge.ConnectToSingleCameraServer(addr=1) (ret=False, msg='camera detected and ok')
+#
+# ret=False beside 'camera detected and ok' -- the return value and the status contradict each
+# other, because the status being read belongs to another thread's call. The same race is why a
+# different band fails to come up on each start (MAST_spec#87).
+#
+# Locking each call is NOT enough: the gap that matters is between the call and the status
+# read, so ge_call() closes over both and hands back all three values together.
+_GE_LOCK = threading.RLock()
+_GE_LOCK_TIMEOUT = 5.0
+
+
+def ge_call(func: Callable, *args: Any, **kwargs: Any) -> tuple[Any, str, int]:
+    """Call an SDK function and capture the status it set, atomically.
+
+    Returns (result, status_message, status_code). Read the status from here, never from
+    ge.StatusMSG / ge.Status afterwards -- by then another camera may have overwritten it.
+
+    RLock because try_connect_camera and _apply_setting already make several SDK calls in
+    sequence and could come to nest. The 5-second bound is an order of magnitude above the
+    worst hold seen in six nights of logs -- greateyes readouts reach 0.20 s, Newton's 4.03 s
+    -- so it cannot fire on a slow call, only on a genuine deadlock, which then surfaces as an
+    error rather than a silently wedged camera thread."""
+    if not _GE_LOCK.acquire(timeout=_GE_LOCK_TIMEOUT):
+        name = getattr(func, "__name__", str(func))
+        raise TimeoutError(f"greateyes SDK lock not acquired within {_GE_LOCK_TIMEOUT}s for {name}")
+    try:
+        return func(*args, **kwargs), ge.StatusMSG, ge.Status
+    finally:
+        _GE_LOCK.release()
+
+
 shown_dll_version = False
 
 if not shown_dll_version:
@@ -218,7 +260,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         # This just tells the Greateyes server how to interface with the specific camera
         # NOTE: it should not fail
-        ret = ge.SetupCameraInterface(
+        ret, status_msg, _status = ge_call(
+            ge.SetupCameraInterface,
             ge.connectionType_Ethernet,
             ipAddress=self.network.ipaddr,
             addr=self.ge_device,
@@ -226,7 +269,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if not ret:
             self.error(
                 f"could not ge.SetupCameraInterface({ge.connectionType_Ethernet}, "
-                + f"ipaddress={self.network.ipaddr}, addr={self.ge_device}) (ret={ret}, msg='{ge.StatusMSG}')"
+                + f"ipaddress={self.network.ipaddr}, addr={self.ge_device}) (ret={ret}, msg='{status_msg}')"
             )
             self.end_activity(GreatEyesActivities.Probing, label=self.name)
             return
@@ -235,11 +278,11 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         #     + f"ipaddress={self.network.ipaddr}, addr={self.ge_device}) (ret={ret}, msg='{ge.StatusMSG}')"
         # )
 
-        ret = ge.ConnectToSingleCameraServer(addr=self.ge_device)
+        ret, status_msg, _status = ge_call(ge.ConnectToSingleCameraServer, addr=self.ge_device)
         if not ret:
             self.error(
                 f"could not ge.ConnectToSingleCameraServer(addr={self.ge_device}) ipaddr='{self.network.ipaddr}' "
-                + f"(ret={ret}, msg='{ge.StatusMSG}')"
+                + f"(ret={ret}, msg='{status_msg}')"
             )
             self.end_activity(GreatEyesActivities.Probing, label=self.name)
             return
@@ -249,17 +292,15 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # )
 
         model = []
-        ret = ge.ConnectCamera(model=model, addr=self.ge_device)
+        ret, status_msg, _status = ge_call(ge.ConnectCamera, model=model, addr=self.ge_device)
         if not ret:
-            self.error(
-                f"could not ge.ConnectCamera(model=[], addr={self.ge_device}) (ret={ret}, " + f"msg='{ge.StatusMSG}')"
-            )
+            self.error(f"could not ge.ConnectCamera(model=[], addr={self.ge_device}) (ret={ret}, " + f"msg='{status_msg}')")
             self.end_activity(GreatEyesActivities.Probing, label=self.name)
             return
         fw_version = ge.GetFirmwareVersion(self.ge_device)
         self.debug(
             f"OK: ge.ConnectCamera(model={model}, ipaddr='{self.network.ipaddr}' addr={self.ge_device} fw={fw_version}) "
-            f"(ret={ret}, msg='{ge.StatusMSG}')"
+            f"(ret={ret}, msg='{status_msg}')"
         )
 
         self.model_id = model[0]
@@ -312,9 +353,9 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         assert self.ge_device is not None
         self.firmware_version = ge.GetFirmwareVersion(addr=self.ge_device)
 
-        ret = ge.InitCamera(addr=self.ge_device)
+        ret, status_msg, _status = ge_call(ge.InitCamera, addr=self.ge_device)
         if not ret:
-            self.error(f"FAILED - ge.InitCamera(addr={self.ge_device}) (ret={ret}, msg='{ge.StatusMSG}')")
+            self.error(f"FAILED - ge.InitCamera(addr={self.ge_device}) (ret={ret}, msg='{status_msg}')")
             ge.DisconnectCamera(addr=self.ge_device)
             ge.DisconnectCameraServer(addr=self.ge_device)
             self.end_activity(GreatEyesActivities.Probing, label=self.name)
@@ -378,11 +419,11 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         assert self.ge_device is not None
         op = f"ge.SetLEDStatus({'ON' if on_off else 'OFF'}, addr={self.ge_device})"
-        ret = ge.SetLEDStatus(on_off, addr=self.ge_device)
+        ret, status_msg, status = ge_call(ge.SetLEDStatus, on_off, addr=self.ge_device)
         if ret:
             self.info(f"OK - {op}")
         else:
-            self.error(f"FAILED - {op} (status: {ge.StatusMSG} ({ge.Status}))")
+            self.error(f"FAILED - {op} (status: {status_msg} ({status}))")
 
     def __repr__(self):
         return (
@@ -438,7 +479,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         assert self.ge_device is not None
         self.sensor_temperature_target = target_temperature
-        if ge.TemperatureControl_SetTemperature(temperature=target_temperature, addr=self.ge_device):
+        ret, status_msg, status = ge_call(
+            ge.TemperatureControl_SetTemperature, temperature=target_temperature, addr=self.ge_device
+        )
+        if ret:
             self.start_activity(
                 GreatEyesActivities.AdjustingTemperature,
                 label=self._name,
@@ -447,7 +491,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         else:
             self.append_error(
                 f"FAILED to set temperature to {target_temperature}ֲ°C with ge.TemperatureControl_SetTemperature "
-                f"(status: {ge.StatusMSG} ({ge.Status}))"
+                f"(status: {status_msg} ({status}))"
             )
 
     def cool_down(self):
@@ -507,11 +551,14 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
     def _apply_setting(self, func: Callable, arg):
         op = f"{func.__name__ if hasattr(func, '__name__') else str(func)}({arg}, addr={self.ge_device})"
-        ret = func(*arg, addr=self.ge_device) if isinstance(arg, (tuple, list)) else func(arg, addr=self.ge_device)
+        if isinstance(arg, (tuple, list)):
+            ret, status_msg, status = ge_call(func, *arg, addr=self.ge_device)
+        else:
+            ret, status_msg, status = ge_call(func, arg, addr=self.ge_device)
         if ret:
             self.info(f"OK - {op}")
         else:
-            self.append_error(f"FAILED - {op} (status: {ge.StatusMSG} ({ge.Status}))")
+            self.append_error(f"FAILED - {op} (status: {status_msg} ({status}))")
         return ret
 
     def start_exposure(
@@ -711,7 +758,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self._apply_setting(ge.OpenShutter, 0 if closed else (2 if automatic else 1))
         # showShutter has to agree with OpenShutter or the two cancel out -- that is the bug
         # the comment above records. For a closed frame both say "no shutter movement".
-        ret = ge.StartMeasurement_DynBitDepth(showShutter=automatic, addr=self.ge_device)
+        ret, status_msg, status = ge_call(ge.StartMeasurement_DynBitDepth, showShutter=automatic, addr=self.ge_device)
         op = f"StartMeasurement_DynBitDepth(showShutter={automatic}, addr={self.ge_device})"
         if ret:
             self.info(f"OK - {op}")
@@ -723,7 +770,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.latest_exposure.timing.start = self.latest_exposure.timing.start_utc.astimezone()
             self.latest_greateyes_exposure_settings = greateyes_exposure_settings
         else:
-            self.append_error(f"FAILED - {op} (status: {ge.StatusMSG} ({ge.Status}))")
+            self.append_error(f"FAILED - {op} (status: {status_msg} ({status}))")
             # Acquiring was set on the way in and no readout thread is coming to clear it,
             # since the measurement never started. Left set, it wedges the camera: is_idle()
             # refuses the next exposure, and anything polling `while is_active(Acquiring)`
@@ -751,7 +798,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         assert self.ge_device is not None
         self.start_activity(GreatEyesActivities.ReadingOut, label=self.name)
-        image_array = ge.GetMeasurementData_DynBitDepth(addr=self.ge_device)
+        image_array, status_msg, status = ge_call(ge.GetMeasurementData_DynBitDepth, addr=self.ge_device)
         self.end_activity(GreatEyesActivities.ReadingOut, label=self.name)
 
         assert self.latest_greateyes_exposure_settings
@@ -765,7 +812,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # rather than truthiness because a truth test on an ndarray raises.
         if not isinstance(image_array, np.ndarray):
             self.append_error(
-                f"FAILED - GetMeasurementData_DynBitDepth(addr={self.ge_device}) (status: {ge.StatusMSG} ({ge.Status}))"
+                f"FAILED - GetMeasurementData_DynBitDepth(addr={self.ge_device}) (status: {status_msg} ({status}))"
             )
             self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
             return
