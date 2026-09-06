@@ -177,7 +177,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self):  # noqa: C901 -- too complex for flake8, but this is a state machine and the complexity is inherent
+    def __init__(self):  # noqa: C901 -- a hardware state machine; the branching is the problem domain, not a failure to decompose
         from common.config import Config
 
         self.logger = get_logger("mast.spec.highspec.camera")
