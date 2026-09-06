@@ -428,7 +428,7 @@ class FilterWheels:
         return ret
 
     def _wheel_by_name(self, name: WheelNames) -> Wheel | None:
-        for w in filter_wheels.wheels:
+        for w in self.wheels:
             if w.name == name.value:
                 return w
         return None
