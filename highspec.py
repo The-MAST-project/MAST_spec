@@ -745,9 +745,17 @@ class Highspec(Component):
     # one shared factory would enumerate as a single endpoint in declared_endpoints() and one
     # `@endpoint(` would stand for three routes. The grep is meant to return the surface exactly.
     #
-    # They bind self.camera at registration, as the hand-written routes did. Not a regression,
-    # and not a fix either -- see the note in do_autofocus: the schema is generated once, so
-    # publishing a per-camera schema and rebinding the camera at runtime cannot both be true.
+    # They bind self.camera at registration, as the hand-written routes did, and that is the
+    # decision rather than a limitation to work around (2026-09-06). The schema is generated
+    # once, so publishing a per-camera schema and rebinding the camera at runtime cannot both
+    # be true -- and the per-camera schema is the point of these routes.
+    #
+    # That is safe only while nothing reassigns self.camera after construction. Something once
+    # did: do_autofocus reassigned it from the request, permanently and with no restore, so an
+    # autofocus naming the other camera left /status reporting one camera while
+    # /expose_single_image still exposed on the other. That reassignment is gone; the note at
+    # do_autofocus records it. Reintroducing one would break these three routes silently, since
+    # the schema and the binding are both already fixed by then.
     @endpoint(tier=Tier.OPERATION, factory=True, methods=("PUT",))
     def _expose_single_image_endpoint(self) -> Callable:
         return self._camera_handler("expose_single_image")
