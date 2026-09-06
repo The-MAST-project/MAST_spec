@@ -126,6 +126,12 @@ class Spec(Component):
 
         self._name = "spec"
 
+        # startup() dispatches onto this thread rather than running inline; the lock
+        # guards against a second /spec/startup landing while the first is in flight.
+        self._startup_thread: Thread | None = None
+        self._startup_lock = threading.Lock()
+        self.startup_join_timeout_seconds = 30
+
         self._was_shut_down = False
         self._initialized = True
 
@@ -162,10 +168,65 @@ class Spec(Component):
         return SpecStatus(**ret)
 
     def startup(self):
-        self.traverse_components_and_call("startup")
-        self._was_shut_down = False
+        """
+        Dispatch the component startup sequence onto a worker thread and return.
+
+        Startup is hardware-bound and serial: across every component it connects to
+        camera servers, powers outlets, unparks stages and starts cool-downs. Run
+        inline it blocks whoever called it -- which is either the ASGI lifespan, so
+        uvicorn accepts no request at all until the last camera answers, or an HTTP
+        worker serving PUT /spec/startup. A camera server with another client
+        attached does not answer at all, and that has already cost a whole service
+        start (MAST_spec#87).
+
+        Neither caller needs the result. The long operations dispatch already: they
+        set an activity flag and their RepeatTimer clears it on arrival. So /status
+        is where startup progress is read, and it is reachable immediately --
+        SpecActivities.StartingUp is set for the duration, and `operational` stays
+        False until the components themselves say otherwise.
+
+        Calling this while a startup is already in flight is a no-op.
+        """
+        with self._startup_lock:
+            if self._startup_thread is not None and self._startup_thread.is_alive():
+                self.logger.info("startup already in progress, ignoring")
+                return
+
+            # Set before dispatching, not after: the moment startup begins the spec is
+            # no longer in the shut-down state, whatever the components report meanwhile.
+            self._was_shut_down = False
+            self.start_activity(SpecActivities.StartingUp)
+
+            # Daemon, so a component blocked in an SDK call that never returns cannot
+            # keep the interpreter alive at exit (see RepeatTimer, MAST_common#106).
+            self._startup_thread = Thread(name="spec-startup", target=self._startup_worker, daemon=True)
+            self._startup_thread.start()
+
+    def _startup_worker(self):
+        try:
+            self.traverse_components_and_call("startup")
+        except Exception:
+            # traverse_components_and_call stops at the first component that raises, and
+            # on a worker thread nothing else would ever see it. Record it; the failed
+            # component reports itself through why_not_operational.
+            self.logger.exception("startup failed")
+        finally:
+            self.end_activity(SpecActivities.StartingUp)
 
     def shutdown(self):
+        # A startup still in flight would otherwise traverse the same components
+        # concurrently with this shutdown. Give it a bounded chance to finish; if it
+        # does not, shut down anyway -- the thread is a daemon and the components are
+        # individually responsible for their own state.
+        thread = self._startup_thread
+        if thread is not None and thread.is_alive():
+            self.logger.info("waiting for in-flight startup before shutting down...")
+            thread.join(timeout=self.startup_join_timeout_seconds)
+            if thread.is_alive():
+                self.logger.warning(
+                    f"startup still running after {self.startup_join_timeout_seconds}s, shutting down anyway"
+                )
+
         self.traverse_components_and_call("shutdown")
         self._was_shut_down = True
 

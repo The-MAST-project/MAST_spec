@@ -38,8 +38,13 @@ async def lifespan(fast_app: FastAPI):
     # MAST_common#52.
     Filer(logger).start_product_relocation_sweep(logger=logger)
 
+    # Returns as soon as the startup is dispatched, so uvicorn begins serving while the
+    # hardware is still coming up. /docs and /status are therefore reachable during a slow
+    # or failing bring-up, which is when they are most wanted; SpecActivities.StartingUp
+    # and `operational` say where it has got to.
     spec.startup()
     yield
+    # Joins an in-flight startup first, bounded by Spec.startup_join_timeout_seconds.
     spec.shutdown()
 
     # Drain outstanding ram->shared moves while the process is still healthy, rather than
