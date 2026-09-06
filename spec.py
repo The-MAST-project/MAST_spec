@@ -532,6 +532,21 @@ class Spec(Component):
         router.add_api_route(path=base_path + "/startup", endpoint=self.startup, tags=[tag])
         router.add_api_route(path=base_path + "/shutdown", endpoint=self.shutdown, tags=[tag])
         router.add_api_route(path=base_path + "/powerdown", endpoint=self.powerdown, tags=[tag])
+        # The fleet's abort path. Spec.abort() has existed all along and was routed nowhere,
+        # so `<spec>/mast/api/v1/spec/abort` -- which is exactly what the shared plan client
+        # calls -- answered 404. Every /abort this repo did serve was on a sub-path
+        # (/deepspec, /highspec, /fw, /stages), none of which the client asks for.
+        #
+        # Both verbs on purpose. The client aborts the spectrograph with GET today and moves
+        # to PUT when MAST_common#51 lands (units already did, in MAST_common#98). Accepting
+        # both means neither side has to be deployed first; drop GET once the client has
+        # moved, per MAST_common#113.
+        router.add_api_route(
+            path=base_path + "/abort",
+            endpoint=self.abort,
+            tags=[tag],
+            methods=["GET", "PUT"],
+        )
         router.add_api_route(path=base_path + "/acquire", endpoint=self.acquire, tags=[tag])
 
         # tag = "Assignments"
