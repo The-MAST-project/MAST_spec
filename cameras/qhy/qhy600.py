@@ -74,6 +74,11 @@ class QHYActivities(IntFlag):
     SettingParameters = auto()
     ReadingOut = auto()
     Saving = auto()
+    # Appended, not inserted: auto() numbers by position, so a member added anywhere else
+    # renumbers everything after it. This enum is local to this module rather than in
+    # common.activities, so the blast radius is smaller than the Newton's and greateyes' --
+    # but ComponentStatus.activities still carries the raw bitmask on the wire.
+    Aborting = auto()
 
 
 class QHYCameraSettingsModel(BaseModel):
@@ -549,10 +554,21 @@ class QHY600(Component, SwitchedOutlet):
         ):
             self.end_activity(QHYActivities.ExposingSingleFrame)
             self.end_activity(QHYActivities.ReadingOut)
+            # A cancelled GetQHYCCDSingleFrame lands here, which is the intended path for an
+            # abort: no frame was fetched, so there is nothing to write and nothing to discard.
+            self.end_activity(QHYActivities.Aborting)
             return
 
         self.end_activity(QHYActivities.ReadingOut)
         self.info(f"Image acquired: {width.value}x{height.value}, {bpp.value} bpp, {channels.value} channels")
+
+        # The frame is discarded, not written, if an abort arrived while this thread ran and
+        # the SDK still handed back data.
+        if self.is_active(QHYActivities.Aborting):
+            self.info("aborted: discarding the frame instead of saving it")
+            self.end_activity(QHYActivities.Aborting)
+            self.end_activity(QHYActivities.ExposingSingleFrame)
+            return
 
         if self.latest_settings is not None and self.latest_settings.image_path is not None:
             self.start_activity(QHYActivities.Saving)
@@ -663,7 +679,34 @@ class QHY600(Component, SwitchedOutlet):
         return self.detected and self.connected
 
     def abort(self):
-        return super().abort()
+        """Stop the exposure and readout, and see to it that no frame is written.
+
+        This camera had no abort at all: the body was `return super().abort()`, which resolves
+        through the MRO to `Component.abort` -- an abstract method whose body is a docstring.
+        It returned None and did nothing, so the whole chain from the plan client down was a
+        no-op here while every layer above reported success (MAST_spec#84).
+
+        CancelQHYCCDExposingAndReadout rather than CancelQHYCCDExposing, because this camera
+        does not separate the two phases the way the other two do: GetQHYCCDSingleFrame is a
+        single blocking call spanning the exposure AND the readout, so cancelling only the
+        exposure would leave that call waiting for a readout that is no longer coming.
+
+        Cancelling makes it return non-success, and complete_exposure's existing failure branch
+        then ends the activities without writing. The Aborting flag is belt and braces for the
+        case where it returns success with a partial frame, and is what a caller can wait on.
+        """
+        if not self.detected:
+            return
+
+        self.start_activity(QHYActivities.Aborting)
+
+        if self.handle is not None:
+            self.sdk_call(qhy.CancelQHYCCDExposingAndReadout)
+
+        # Nothing in flight to discard, so the interval is over as soon as it began -- the flag
+        # means "a frame is still to be discarded", not "an abort happened".
+        if not self.is_active(QHYActivities.ExposingSingleFrame) and not self.is_active(QHYActivities.ReadingOut):
+            self.end_activity(QHYActivities.Aborting)
 
     @property
     def name(self) -> str:
