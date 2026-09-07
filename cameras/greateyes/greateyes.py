@@ -56,6 +56,12 @@ FAILED_TEMPERATURE = -300
 # TemperatureControl_GetTemperature in 5.4.3. Not a value we ever set.
 COOLING_TURNED_OFF_STATUS = 11
 
+# The vendor's TEC backside limit, from the SDK header for TemperatureControl_GetTemperature:
+# "Maximum backside temperature is about 55 [degrees] C." Ours, not the camera's -- the camera
+# has its own threshold and announces crossing it as COOLING_TURNED_OFF_STATUS, which is a
+# separate and more authoritative signal. This one is the software's earlier, cruder check.
+MAX_BACKSIDE_TEMPERATURE = 55
+
 FITS_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
 
@@ -1160,10 +1166,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             if ret is None:
                 # self.error("failed to read back temperature")
                 pass
-            elif ret >= 55:
+            elif ret >= MAX_BACKSIDE_TEMPERATURE:
                 self.backside_temp_safe = False
-                self.error(f"back side temperature too high: {ret} degrees celsius")
-                self.retreat_to_room_temperature(f"backside temperature {ret}C")
+                self.error(f"back side temperature too high: {ret} degrees celsius (limit {MAX_BACKSIDE_TEMPERATURE})")
+                self.retreat_to_room_temperature(f"backside temperature {ret}C, limit {MAX_BACKSIDE_TEMPERATURE}C")
             else:
                 self.backside_temp_safe = True
 
