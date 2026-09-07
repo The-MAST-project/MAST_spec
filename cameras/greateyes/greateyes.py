@@ -70,6 +70,8 @@ class BytesPerPixel(IntEnum):
 # vendor's, from the SDK header for SetupGain:
 #   0 -> Low ( Max. Dyn. Range )
 #   1 -> Std ( High Sensitivity )
+# Unused while the SetupGain call in start_exposure is commented out -- these cameras reject
+# both values. Kept with it, so re-enabling that one line needs nothing else.
 _gain_index = {
     Gain.low: 0,
     Gain.high: 1,
@@ -697,12 +699,31 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         # "low"/"high" everywhere the humans are -- database, endpoint, /docs -- and the
         # SDK's integer only here, via _gain_index. Applied only when someone actually asked
-        # for one: the exposure, or failing that the site config. No config carries a gain
-        # today, so while that holds this leaves the sensor exactly as it was before the
-        # setting existed, rather than quietly imposing a default on every deployment.
+        # for one: the exposure, or failing that the site config.
+        #
+        # THESE CAMERAS HAVE NO GAIN CONTROL. Tested on all four bands, 2026-09-07, both of
+        # the vendor's only two documented values:
+        #
+        #   SetupGain(0) -> False, status 'camera detected and ok (0)'
+        #   SetupGain(1) -> False, status 'one ore more parameters are out of range (8)'
+        #
+        # GE 1024 1024 BI DD rejects both, so this is an unsupported feature rather than a
+        # wrong argument or a bad mapping. Nine nights of archived logs agree: 34 attempts,
+        # 34 failures, no success ever -- all of them SetupGain(0), whose status reads
+        # 'camera detected and ok' because the DLL leaves the status word untouched on that
+        # path. Only trying (1), which does set it, made the failure legible.
+        #
+        # Commented rather than deleted: if a future model or firmware supports it, this is
+        # the line and it is already correct. The warning replaces it because the previous
+        # behaviour was to log FAILED and expose anyway -- so every frame was taken at the
+        # camera's default gain, with nothing on the product saying so.
         gain = greateyes_exposure_settings.gain if greateyes_exposure_settings.gain is not None else conf.gain
         if gain is not None:
-            self._apply_setting(ge.SetupGain, _gain_index[gain])
+            # self._apply_setting(ge.SetupGain, _gain_index[gain])
+            self.warning(
+                f"gain '{gain}' was requested but these cameras have no gain control; exposing at the camera's "
+                "default. Remove 'gain' from the deepspec settings to stop asking (MAST_spec#98)."
+            )
 
         self.end_activity(GreatEyesActivities.SettingParameters, label=self.name)
 
