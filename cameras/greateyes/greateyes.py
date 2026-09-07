@@ -238,9 +238,17 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         ret = ge.ConnectToSingleCameraServer(addr=self.ge_device)
         if not ret:
+            # No msg=ge.StatusMSG here. ConnectToSingleCameraServer is one of the 19 SDK
+            # wrappers that never call UpdateStatus(), so on failure StatusMSG still holds
+            # whatever the last call that DID set it left there -- which is the
+            # SetupCameraInterface immediately above, whose success message is
+            # 'camera detected and ok'. Every failed connect therefore used to report a
+            # success beside its own failure, deterministically and with no thread involved.
+            # That line was read as proof of a cross-thread status race (MAST_spec#87) and
+            # cost the fleet the serialisation attempt in #88. MAST_spec#94.
             self.error(
                 f"could not ge.ConnectToSingleCameraServer(addr={self.ge_device}) ipaddr='{self.network.ipaddr}' "
-                + f"(ret={ret}, msg='{ge.StatusMSG}')"
+                + f"(ret={ret})"
             )
             # Read-only, next to the failure it explains: says whether a live process on this
             # machine is holding the camera (MAST_spec#77, killable) or whether the session is
@@ -253,7 +261,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             return
         # self.debug(
         #     f"OK: ge.ConnectToSingleCameraServer(addr={self.ge_device}) "
-        #     + f"(ret={ret}, msg='{ge.StatusMSG}')"
+        #     + f"(ret={ret})"   # no msg=: this call does not set StatusMSG (MAST_spec#94)
         # )
 
         model = []
