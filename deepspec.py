@@ -179,9 +179,25 @@ class Deepspec(Component):
         return ret
 
     def abort(self):
-        if self.is_active(DeepspecActivities.Acquiring):
-            for cam in self.active_cameras:
-                cam.abort()
+        # No `if self.is_active(DeepspecActivities.Acquiring)` guard. That flag is cleared at
+        # the foot of do_expose (and again by status() whenever no camera reports Acquiring),
+        # so it is down precisely when a band has outlived its coordinator -- which is the one
+        # case abort exists for.
+        #
+        # Observed 2026-09-07: band U's StartMeasurement never completed, DllIsBusy(addr=0)
+        # stayed true, and on_timer's `Exposing and not DllIsBusy` could therefore never fire.
+        # The camera sat at Acquiring|Exposing while this object reported activities=0, so
+        # PUT /deepspec/abort returned without touching a camera and U could not be recovered
+        # through the API at all. Only a power cycle would clear it.
+        #
+        # Aborting an idle camera is harmless: GreatEyes.abort returns early when undetected,
+        # ends flags that may already be down, and calls StopMeasurement only under
+        # `if ge.DllIsBusy(...)`.
+        for cam in self.active_cameras:
+            cam.abort()
+
+        # The container's own flag follows the cameras rather than gating them.
+        self.end_activity(DeepspecActivities.Acquiring)
 
     def start_acquisition(self, settings: SpecExposureSettings):
         self.start_activity(DeepspecActivities.Acquiring)
