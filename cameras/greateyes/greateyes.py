@@ -51,6 +51,17 @@ if not shown_dll_version:
 
 FAILED_TEMPERATURE = -300
 
+# ge.Status value 11, 'cooling turned off' -- the camera reporting that it has reset its own
+# cooling control because the TEC backside got too hot. SDK manual 5.5.6, and the note under
+# TemperatureControl_GetTemperature in 5.4.3. Not a value we ever set.
+COOLING_TURNED_OFF_STATUS = 11
+
+# The vendor's TEC backside limit, from the SDK header for TemperatureControl_GetTemperature:
+# "Maximum backside temperature is about 55 [degrees] C." Ours, not the camera's -- the camera
+# has its own threshold and announces crossing it as COOLING_TURNED_OFF_STATUS, which is a
+# separate and more authoritative signal. This one is the software's earlier, cruder check.
+MAX_BACKSIDE_TEMPERATURE = 55
+
 FITS_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
 
@@ -505,6 +516,36 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 label=self._name,
                 details=[f"to {target_temp}C"],
             )
+
+    def retreat_to_room_temperature(self, reason: str):
+        """Back the cooling off to room temperature after a TEC over-temperature.
+
+        This is what greateyes ask for, and it is not SwitchOff. The SDK manual's note on
+        TemperatureControl_GetTemperature (5.4.3):
+
+            If the function returns statusMSG = 11, the camera resets cooling control
+            because the TEC backside temperature is getting too high. In this case you
+            should set coolingLevel to room temperature [...]
+
+        So the camera protects itself -- status 11 is 'cooling turned off', reported by the
+        camera, not requested by us -- and our job is to stop asking for a set point it has
+        already abandoned. Switching off instead would work, but it leaves the control in a
+        state the vendor does not describe, and it is not what the note says to do.
+
+        Idempotent: while the backside stays hot this runs once per check_interval, and the
+        log line each time is the point.
+        """
+        self.backside_temp_safe = False
+        room_temperature = self.max_temp if self.max_temp is not None else 20
+        self.error(f"cooling backed off to {room_temperature}C ({reason}); contact greateyes GmbH")
+
+        if not self._apply_setting(ge.TemperatureControl_SetTemperature, room_temperature):
+            self.append_error(f"FAILED to back the cooling off to {room_temperature}C")
+
+        # Nothing is going to reach the cold set point now, so stop waiting for it rather
+        # than leaving CoolingDown set for the rest of the run.
+        self.end_activity(GreatEyesActivities.CoolingDown, label=self._name)
+        self.sensor_temperature_target = None
 
     def warm_up(self):
         if not self.detected:
@@ -1125,9 +1166,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             if ret is None:
                 # self.error("failed to read back temperature")
                 pass
-            elif ret >= 55:
+            elif ret >= MAX_BACKSIDE_TEMPERATURE:
                 self.backside_temp_safe = False
-                self.error(f"back side temperature too high: {ret} degrees celsius")
+                self.error(f"back side temperature too high: {ret} degrees celsius (limit {MAX_BACKSIDE_TEMPERATURE})")
+                self.retreat_to_room_temperature(f"backside temperature {ret}C, limit {MAX_BACKSIDE_TEMPERATURE}C")
             else:
                 self.backside_temp_safe = True
 
@@ -1176,6 +1218,24 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         if self.is_active(GreatEyesActivities.CoolingDown) or self.is_active(GreatEyesActivities.WarmingUp):
             sensor_temp = self.get_sensor_temperature()
+
+            # Read straight after the temperature call, which is a wrapper that does refresh
+            # the status. Status 11 is 'cooling turned off', and it is the CAMERA saying it
+            # has reset its own cooling control because the TEC backside is too hot -- see
+            # retreat_to_room_temperature. Checking it matters because it can arrive long
+            # before the backside poll above notices: that poll runs once per
+            # temp.check_interval and compares against our own 55C, while this is the
+            # camera's own threshold and its own decision.
+            #
+            # Caveat, and it is the MAST_spec#87 one: ge.Status is a module global shared by
+            # all four band threads, so this can read another band's status. The cost of a
+            # false positive is backing one camera off to room temperature and saying so in
+            # the log, which is recoverable and loud; the cost of missing a real one is a hot
+            # TEC. Worth it in that direction only.
+            if ge.Status == COOLING_TURNED_OFF_STATUS and self.is_active(GreatEyesActivities.CoolingDown):
+                self.retreat_to_room_temperature("camera reported status 11, cooling turned off")
+                return
+
             if sensor_temp is None:
                 if not ge.DllIsBusy(addr=self.ge_device):
                     self.append_error("failed reading sensor temperature")
@@ -1189,7 +1249,27 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                     self.end_activity(GreatEyesActivities.CoolingDown, label=self._name)
                     if self.is_active(GreatEyesActivities.StartingUp):
                         self.end_activity(GreatEyesActivities.StartingUp, label=self._name)
-                    switch_temp_control_off = True
+
+                    # Reaching the set point ends the COOLING DOWN activity, not the cooling.
+                    # This used to set switch_temp_control_off here, and the SDK documents
+                    # TemperatureControl_SwitchOff as "switch sensor cooling off completely" --
+                    # so the sensor started drifting back up the moment it arrived, and nothing
+                    # re-cools it: cool_down() is called only from startup().
+                    #
+                    # Measured 2026-09-07: all four bands reached 15C, the control was switched
+                    # off, and they were at 20C two minutes later and 23C and still climbing
+                    # four minutes after that. Three exposures were taken across that ramp.
+                    # Dark current roughly doubles every 5-7C, so frames minutes apart sat at
+                    # materially different dark levels and no dark taken at one point on the
+                    # ramp matches a frame taken at another.
+                    #
+                    # The vendor uses SwitchOff for exactly one thing, and it is not this: the
+                    # SDK header says to turn cooling off if the BACKSIDE temperature exceeds
+                    # 55C and to contact greateyes. That check lives above and only logs; using
+                    # the same call on the success path inverted the vendor's model.
+                    #
+                    # WarmingUp still switches off below, which is correct -- that path runs
+                    # during shutdown, which is what SwitchOff is for.
 
                 if self.is_active(GreatEyesActivities.WarmingUp) and abs(sensor_temp - self.settings.temp.target_warm) <= 1:
                     self.end_activity(GreatEyesActivities.WarmingUp, label=self._name)
