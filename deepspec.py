@@ -523,7 +523,12 @@ class Deepspec(Component):
 
                 band_threads.append(
                     camera.execute_assignment(
-                        assignment=remote_assignment.assignment.spec,  # type: ignore
+                        # The whole assignment: the band reads `assignment.spec.settings` for
+                        # its DeepspecSettings. This was `remote_assignment.assignment.spec`,
+                        # naming an `.assignment` attribute SpectrographAssignment does not
+                        # have -- the `# type: ignore` is what kept the checker quiet about
+                        # it, and the unregistered route (MAST_spec#47) kept it from running.
+                        assignment=remote_assignment,
                         folder=str(acquisition_folder / band),
                     )
                 )

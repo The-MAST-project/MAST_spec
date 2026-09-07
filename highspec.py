@@ -40,6 +40,7 @@ from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, SpectrographAssignment
 from common.models.highspec import HighspecSettings
 from common.models.newton import NewtonSettingsConfig
+from common.models.spectrographs import SpectrographModel
 from common.models.statuses import HighspecStatus
 from common.notifications import Notifier
 from common.paths import PathMaker
@@ -583,9 +584,11 @@ class Highspec(Component):
         :return:
         """
         self.start_activity(HighspecActivities.Acquiring)
-        assert isinstance(assignment.spec, SpectrographAssignment)
-        assert isinstance(assignment.spec.spec, HighspecSettings)
-        highspec_assignment: HighspecSettings = assignment.spec.spec  # the highspec-specific part of the Union
+        # assignment.spec is a SpectrographModel and its instrument-specific part is
+        # `.settings`, not `.spec`. Both spellings here were stale (MAST_spec#47).
+        assert isinstance(assignment.spec, SpectrographModel)
+        assert isinstance(assignment.spec.settings, HighspecSettings)
+        highspec_assignment: HighspecSettings = assignment.spec.settings  # the highspec-specific part of the Union
 
         disperser_name = highspec_assignment.disperser
         if self.disperser_stage and self.disperser_stage.at_preset != disperser_name:
