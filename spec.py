@@ -28,6 +28,7 @@ from common.models.assignments import (
     SpectrographAssignment,
 )
 from common.models.calibration import CalibrationSettings
+from common.models.spectrographs import SpectrographModel
 from common.models.statuses import SpecStatus
 from common.spec import (
     Disperser,
@@ -544,9 +545,13 @@ class Spec(Component):
         return CanonicalResponse_Ok
 
     def do_execute_assignment(self, remote_assignment: SpectrographAssignment):
-        assert isinstance(remote_assignment.spec, SpectrographAssignment)
+        # `SpectrographAssignment.spec` is a SpectrographModel, not another
+        # SpectrographAssignment, so this used to assert a type it could never be and then
+        # reach through a `.spec.spec` that does not exist. Both survived because the route
+        # was unregistered (MAST_spec#47) -- nothing ever ran this.
+        assert isinstance(remote_assignment.spec, SpectrographModel)
 
-        spec_assignment = remote_assignment.spec.spec
+        spec_assignment = remote_assignment.spec
         executor = self.highspec if spec_assignment.instrument == "highspec" else self.deepspec
 
         assert spec_assignment.calibration is not None
@@ -581,6 +586,9 @@ class Spec(Component):
             return False
         return self.thar_wheel.is_moving or self.fiber_stage.is_moving
 
+    # CONTRACT, not OPERATION: this is the fleet's orchestration path, the route the plan
+    # client drives, not an operator verb. It is this repo's first CONTRACT endpoint.
+    @endpoint(tier=Tier.CONTRACT, methods=("PUT",))
     async def execute_assignment(self, assignment: SpectrographAssignment):
         initiator = assignment.initiator
         work = assignment.batch if assignment.batch else assignment.plan if assignment.plan else None
@@ -591,15 +599,17 @@ class Spec(Component):
 
         what = f"remote assignment: from='{initiator.hostname}' ({initiator.ipaddr}), {type(work).__name__}='{work.ulid}'"
 
-        assert isinstance(assignment.spec, SpectrographAssignment)
+        assert isinstance(assignment.spec, SpectrographModel)
 
         if assignment.plan is not None and assignment.plan.production and not self.operational:
             logger.info(f"REJECTED {what} (not operational: {self.why_not_operational})")
             return CanonicalResponse(errors=self.why_not_operational)
 
         executor = self.highspec if assignment.spec.instrument == "highspec" else self.deepspec
-        assert isinstance(assignment.spec, SpectrographAssignment)
-        can_execute, reasons = executor.can_execute(assignment.spec)
+        # can_execute takes the whole assignment, matching its signature. Neither
+        # implementation reads it -- both answer from their own cameras -- but passing
+        # `assignment.spec` here meant the declared type and the argument disagreed.
+        can_execute, reasons = executor.can_execute(assignment)
         if not can_execute:
             logger.info(f"REJECTED {what} (reasons: {reasons})")
             return CanonicalResponse(errors=reasons)
@@ -632,11 +642,11 @@ class Spec(Component):
         add_api_route(router, base_path + "/powerdown", endpoint=self.powerdown, methods=["PUT"])
         add_api_route(router, base_path + "/acquire", endpoint=self.acquire, methods=["PUT"])
 
-        # router.add_api_route(
-        #     path=base_path + "/execute_assignment",
-        #     methods=["PUT"],
-        #     endpoint=self.execute_assignment,
-        # )
+        # The fleet's assignment path. `Workload.expose` and common/tasks/models.py both call
+        # PUT execute_assignment, and this route was commented out, so every assignment the
+        # controller dispatched to this spectrograph answered 404 -- the same failure as the
+        # abort route in MAST_spec#69, found the same way. MAST_spec#47.
+        add_api_route(router, base_path + "/execute_assignment", endpoint=self.execute_assignment, methods=["PUT"])
 
         add_api_route(
             router,
