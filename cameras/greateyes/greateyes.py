@@ -62,6 +62,11 @@ COOLING_TURNED_OFF_STATUS = 11
 # separate and more authoritative signal. This one is the software's earlier, cruder check.
 MAX_BACKSIDE_TEMPERATURE = 55
 
+# How long abort() waits for ge.StopMeasurement to actually make the DLL idle before saying
+# it did not. Bounds the report, not the camera: nothing here can force a stop, so the value
+# only decides how quickly a stop that did not take is called out.
+STOP_MEASUREMENT_TIMEOUT_SECONDS = 5
+
 FITS_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
 
@@ -182,6 +187,11 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # since", and the wall clock moves (DST, NTP).
         self.last_backside_temp_check: float | None = None
         self.backside_temp_safe = True
+        # time.monotonic() when abort() asked the SDK to stop a measurement, so on_timer can
+        # bound the wait for it to take effect. Monotonic like its neighbours above: this is
+        # only ever read as "how long since", and timings[].start_time is a wall-clock
+        # datetime that cannot be subtracted from time.monotonic().
+        self.stopping_measurement_since: float | None = None
 
         self.readout_thread: threading.Thread | None = None
 
@@ -1119,6 +1129,30 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.end_activity(GreatEyesActivities.Aborting, label=self.name)
 
         if ge.DllIsBusy(addr=self.ge_device):
+            # Raised BEFORE the call, so the clock starts even if StopMeasurement itself
+            # blocks. on_timer's StoppingMeasurement block then polices what this call cannot
+            # confirm on its own: whether the DLL actually went idle. It ends the flag when
+            # DllIsBusy clears, and after 5 seconds says "stopping measurement takes too
+            # long" if it has not.
+            #
+            # That block already existed and nothing ever raised this flag, so it had never
+            # run -- a consumer waiting on a signal no code sent, which is the shape
+            # common/CLAUDE.md warns about under the activity-flag conventions.
+            #
+            # Observed 2026-09-07, and the reason this matters: an abort on a wedged band U
+            # logged `could not ge.StopMeasurement(addr=0)`, cleared the flags and returned.
+            # DllIsBusy stayed true, so the camera could not expose again -- and reported
+            # operational=True with no activity to say otherwise. The bounded wait turns that
+            # into a logged failure at the moment it happens.
+            #
+            # Exposing and Acquiring stay cleared above rather than being left to that block:
+            # MAST_spec#66 needs them down before StopMeasurement makes DllIsBusy false, or
+            # the timer reads out the very frame this call is aborting. The block's own
+            # end_activity calls for them are then no-ops -- end_activity returns early on a
+            # flag that is not set -- so this polices the stop without reopening that window.
+            self.stopping_measurement_since = time.monotonic()
+            self.start_activity(GreatEyesActivities.StoppingMeasurement, label=self.name)
+
             ret = ge.StopMeasurement(addr=self.ge_device)
             if not ret:
                 self.append_error(f"could not ge.StopMeasurement(addr={self.ge_device})")
@@ -1195,14 +1229,29 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         if self.is_active(GreatEyesActivities.StoppingMeasurement):
             if not ge.DllIsBusy(addr=self.ge_device):
+                self.stopping_measurement_since = None
                 self.end_activity(GreatEyesActivities.StoppingMeasurement, label=self.name)
                 self.end_activity(GreatEyesActivities.Exposing, label=self.name)
                 self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
-            elif now - self.timings[GreatEyesActivities.StoppingMeasurement].start_time > datetime.timedelta(seconds=5):
+            # `now` is time.monotonic(); this used to compare it against
+            # timings[...].start_time, which is a datetime -- `float - datetime` is a
+            # TypeError. Nothing ever raised StoppingMeasurement, so the branch never ran and
+            # the error never surfaced. It would have surfaced HERE, in on_timer, on a
+            # RepeatTimer that has no exception handling (MAST_common#106): the band's timer
+            # thread would have died, and with it its probing, cooling and recovery. And it
+            # would have happened in exactly the case this branch exists for -- a stop that
+            # does not take.
+            elif (
+                self.stopping_measurement_since is not None
+                and now - self.stopping_measurement_since > STOP_MEASUREMENT_TIMEOUT_SECONDS
+            ):
+                elapsed = now - self.stopping_measurement_since
                 self.append_error(
                     f"stopping measurement takes too long "
-                    f"({now - self.timings[GreatEyesActivities.StoppingMeasurement].start_time} > 5 seconds)"
+                    f"({elapsed:.1f} > {STOP_MEASUREMENT_TIMEOUT_SECONDS} seconds); "
+                    f"the camera is still busy and will refuse the next exposure"
                 )
+                self.stopping_measurement_since = None
                 self.end_activity(GreatEyesActivities.StoppingMeasurement, label=self.name)
                 self.end_activity(GreatEyesActivities.Exposing, label=self.name)
                 self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
