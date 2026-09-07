@@ -12,6 +12,7 @@ from astropy.io import fits
 from astropy.io.fits import Card
 from pydantic import BaseModel
 
+from cameras.greateyes import stale_session
 from common.activities import GreatEyesActivities
 from common.config import Config
 from common.config.greateyes import GreateyesSettingConfig
@@ -201,7 +202,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.timer.name = f"deepspec-camera-{self.band}-timer-thread"
         self.timer.start()
 
-    def try_connect_camera(self):
+    def try_connect_camera(self, after_power_cycle: bool = False):
         #
         # Clean-up previous connections, if existent
         # NOTE: these actions may return False, but that seems OK
@@ -241,6 +242,13 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 f"could not ge.ConnectToSingleCameraServer(addr={self.ge_device}) ipaddr='{self.network.ipaddr}' "
                 + f"(ret={ret}, msg='{ge.StatusMSG}')"
             )
+            # Read-only, next to the failure it explains: says whether a live process on this
+            # machine is holding the camera (MAST_spec#77, killable) or whether the session is
+            # stranded at the camera end (nothing here to kill). Kills nothing itself -- the
+            # point is to learn which of the two actually dominates before acting on either.
+            # Only on the failure path, so a healthy machine never logs it.
+            for line in stale_session.describe(self.network.ipaddr, after_power_cycle=after_power_cycle):
+                self.warning(line)
             self.end_activity(GreatEyesActivities.Probing, label=self.name)
             return
         # self.debug(
@@ -287,7 +295,12 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.try_connect_camera()
 
         if not self.detected:
+            # Whether the camera was actually power-cycled before the second attempt. It
+            # changes what an accepting server port means, so the diagnosis needs to know:
+            # after a cycle it is a camera that has finished booting, not a stranded session.
+            power_cycled = False
             if self.power_switch is not None and self.power_switch.detected:
+                power_cycled = True
                 if self.is_off():
                     self.info("powering ON")
                     self.power_on()
@@ -298,13 +311,31 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 self.info(f"waiting for the camera to boot ({boot_delay} seconds) ...")
                 assert boot_delay
                 time.sleep(boot_delay)
+                # Polling the camera's server port instead of sleeping was tried on
+                # 2026-09-07 and backed out the same day. It is kept here, commented, because
+                # what it measured is worth having and the replacement is a one-line swap:
+                #
+                #     waited = stale_session.wait_until_accepting(self.network.ipaddr, boot_delay)
+                #
+                # What it showed: boot_delay is too SHORT, not too long. The camera was still
+                # not listening 28.5 s after the power cycle and was listening by 49.7 s, so
+                # the SDK connect fired into a dead port, blocked 21 s, failed, and recovery
+                # waited for the next 60 s probe cycle -- 61 s to bring the array up against
+                # 48 s for the run before it.
+                #
+                # Why it is not simply re-enabled with a bigger budget: that run is also the
+                # only one in which we opened ~12 TCP connections to the camera while it was
+                # booting, and it is the slowest recorded. At n=1 a disturbed boot cannot be
+                # told apart from ordinary variance, and this is a live instrument. If it is
+                # picked up again, sleep boot_delay untouched first and poll only BEYOND it,
+                # so the boot window stays exactly as it is today.
             else:
                 self.warning(
                     f"power switch {self.power_switch} not detected, skipping power cycle, will try to connect "
                     + "to the camera anyway"
                 )
 
-            self.try_connect_camera()
+            self.try_connect_camera(after_power_cycle=power_cycled)
             if not self.detected:
                 self.end_activity(GreatEyesActivities.Probing, label=self.name)
                 return
