@@ -7,6 +7,7 @@ from collections.abc import Callable
 from enum import IntEnum
 from typing import ClassVar, get_args
 
+import humanfriendly
 import numpy as np
 from astropy.io import fits
 from astropy.io.fits import Card
@@ -187,6 +188,9 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # since", and the wall clock moves (DST, NTP).
         self.last_backside_temp_check: float | None = None
         self.backside_temp_safe = True
+        # time.monotonic() when on_timer first saw DllIsBusy true, so the busy->idle edge can
+        # report how long it lasted. None while the DLL is idle.
+        self.dll_busy_since: float | None = None
         # time.monotonic() when abort() asked the SDK to stop a measurement, so on_timer can
         # bound the wait for it to take effect. Monotonic like its neighbours above: this is
         # only ever read as "how long since", and timings[].start_time is a wall-clock
@@ -1192,6 +1196,37 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # simply stop firing -- and the spring jump fires them an hour early. An NTP step or
         # a hand-set clock does the same on any day of the year.
         now = time.monotonic()
+
+        # Watch DllIsBusy across ticks, so the camera coming back to its senses is recorded.
+        #
+        # A camera can get stuck with DllIsBusy true and no measurement that will ever end
+        # (MAST_spec#104): it then refuses every exposure, while `detected`, `connected` and
+        # `operational` all still read True. The only outward sign is that both temperature
+        # getters return None, because they return None precisely when the DLL is busy.
+        #
+        # Recovery was invisible. Band G sat wedged from 15:43 on 2026-09-07 and was exposing
+        # normally by 07:53 the next morning, same process, no power cycle -- and NOTHING was
+        # logged in between, so the 16 hours is only an upper bound on a duration nobody can
+        # recover from the record. By then abort's StoppingMeasurement flag was long ended,
+        # so no activity remained to close and no line was written.
+        #
+        # The busy->idle edge is the one that matters, and its meaning depends on whether an
+        # exposure was running. On the normal path Exposing is still set here: this tick's
+        # later block is what ends it, further down. So an edge with Exposing down is a
+        # camera that has released itself with nothing to release -- the #104 recovery.
+        dll_busy = ge.DllIsBusy(addr=self.ge_device)
+        if dll_busy and self.dll_busy_since is None:
+            self.dll_busy_since = now
+        elif not dll_busy and self.dll_busy_since is not None:
+            busy_for = humanfriendly.format_timespan(now - self.dll_busy_since)
+            if self.is_active(GreatEyesActivities.Exposing):
+                self.debug(f"DllIsBusy cleared after {busy_for} (exposure finished)")
+            else:
+                self.warning(
+                    f"DllIsBusy cleared after {busy_for} with no exposure in progress: "
+                    f"the camera has come back on its own (MAST_spec#104)"
+                )
+            self.dll_busy_since = None
         if (
             self.last_backside_temp_check is None
             or (now - self.last_backside_temp_check) > self.settings.temp.check_interval
