@@ -68,6 +68,21 @@ MAX_BACKSIDE_TEMPERATURE = 55
 # only decides how quickly a stop that did not take is called out.
 STOP_MEASUREMENT_TIMEOUT_SECONDS = 5
 
+
+def sdk_status() -> str:
+    """The SDK's status word as of the call that has just returned.
+
+    Only meaningful when read immediately after a wrapper that calls UpdateStatus(), with no
+    other SDK call in between -- 19 of the 50 wrappers never touch it, and after one of those
+    this reports some earlier call's status instead (MAST_spec#94, #98).
+
+    Carries the MAST_spec#87 caveat: ge.Status is a module global shared by all four band
+    threads, so a busy moment can return another band's. Fine for a log line, not something
+    to branch on without weighing what a wrong read would cost.
+    """
+    return f"status={ge.Status} '{ge.StatusMSG}'"
+
+
 FITS_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
 
@@ -1396,7 +1411,26 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             return None
         ret = ge.TemperatureControl_GetTemperature(thermistor=0, addr=self.ge_device)
         if ret == FAILED_TEMPERATURE:
-            self.append_error(f"failed to read sensor temperature ({ret=})")
+            # -300 is the wrapper's own sentinel and says nothing about why. The DLL call
+            # took a statusMSG pointer and the wrapper called UpdateStatus() before
+            # returning, so the status read here is this call's -- unlike the cases in
+            # MAST_spec#94 and #98, where the wrapper never wrote it.
+            #
+            # The point is to tell "this read failed" from "the camera is gone". Status 1 is
+            # 'no camera connected' and 2 is 'couldn't open USB device' -- either means the
+            # session is over and `detected` should come down, so the probe re-runs and
+            # try_connect_camera re-establishes it. Status 4, 'WriteReadRequest failed', is a
+            # transport read error that may be transient.
+            #
+            # Observed 2026-09-08: band G had its camera rebooted underneath it and then
+            # failed every temperature read for 4 minutes -- 13 errors -- while still
+            # reporting detected, connected and operational, with why_not_operational empty.
+            # Nothing demoted it and nothing re-probed it, so it could not recover.
+            #
+            # Logged before it is acted on: nothing here has ever recorded which status the
+            # camera reports in that situation, and demoting `detected` on a guess would
+            # trade a camera that cannot recover for one that re-probes when it should not.
+            self.append_error(f"failed to read sensor temperature ({ret=}, {sdk_status()})")
             return None
         return ret
 
@@ -1409,7 +1443,9 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if not ge.DllIsBusy(addr=self.ge_device):
             ret = ge.TemperatureControl_GetTemperature(thermistor=1, addr=self.ge_device)
             if ret == FAILED_TEMPERATURE:
-                self.append_error(f"failed to read back temperature ({ret=})")
+                # Same reasoning as get_sensor_temperature above: the -300 is a sentinel, the
+                # status is what says whether the camera is still there.
+                self.append_error(f"failed to read back temperature ({ret=}, {sdk_status()})")
                 return None
             return ret
 
