@@ -1214,6 +1214,20 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # exposure was running. On the normal path Exposing is still set here: this tick's
         # later block is what ends it, further down. So an edge with Exposing down is a
         # camera that has released itself with nothing to release -- the #104 recovery.
+        #
+        # Read ONCE per tick and reused by every branch below that needs it. This tick's
+        # decisions -- end Exposing and start the readout, resolve StoppingMeasurement,
+        # decide whether a None temperature means "busy" or "failed" -- were each re-reading
+        # it, so a single pass could act on up to five different answers and reason about
+        # them as though they were one. One snapshot makes the tick self-consistent.
+        #
+        # The cost is that the view can be up to a tick stale, which is bounded by the timer
+        # interval and is what a 1 Hz poll means anyway: the worst case is noticing an idle
+        # DLL one second later. Nothing here starts a measurement, so the flag cannot go the
+        # other way behind our back mid-tick.
+        #
+        # get_sensor_temperature and get_back_temperature keep their own reads: status()
+        # calls them from the HTTP thread, where there is no tick and no snapshot to share.
         dll_busy = ge.DllIsBusy(addr=self.ge_device)
         if dll_busy and self.dll_busy_since is None:
             self.dll_busy_since = now
@@ -1244,7 +1258,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
             self.last_backside_temp_check = now
 
-        if self.is_active(GreatEyesActivities.Exposing) and not ge.DllIsBusy(addr=self.ge_device):
+        if self.is_active(GreatEyesActivities.Exposing) and not dll_busy:
             self.end_activity(GreatEyesActivities.Exposing, label=self.name)
 
             # Computed in UTC and converted for the local twins, so the pair cannot disagree
@@ -1263,7 +1277,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.readout_thread.start()
 
         if self.is_active(GreatEyesActivities.StoppingMeasurement):
-            if not ge.DllIsBusy(addr=self.ge_device):
+            if not dll_busy:
                 self.stopping_measurement_since = None
                 self.end_activity(GreatEyesActivities.StoppingMeasurement, label=self.name)
                 self.end_activity(GreatEyesActivities.Exposing, label=self.name)
@@ -1294,7 +1308,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if self.is_active(GreatEyesActivities.AdjustingTemperature) and self.sensor_temperature_target is not None:
             sensor_temp = self.get_sensor_temperature()
             if sensor_temp is None:
-                if not ge.DllIsBusy(addr=self.ge_device):
+                if not dll_busy:
                     self.append_error("failed reading sensor temperature")
             elif abs(sensor_temp - self.sensor_temperature_target) <= 1:
                 self.end_activity(GreatEyesActivities.AdjustingTemperature, label=self._name)
@@ -1321,7 +1335,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 return
 
             if sensor_temp is None:
-                if not ge.DllIsBusy(addr=self.ge_device):
+                if not dll_busy:
                     self.append_error("failed reading sensor temperature")
             else:
                 switch_temp_control_off = False
