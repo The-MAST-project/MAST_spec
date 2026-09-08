@@ -7,6 +7,7 @@ from collections.abc import Callable
 from enum import IntEnum
 from typing import ClassVar, get_args
 
+import humanfriendly
 import numpy as np
 from astropy.io import fits
 from astropy.io.fits import Card
@@ -187,6 +188,9 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # since", and the wall clock moves (DST, NTP).
         self.last_backside_temp_check: float | None = None
         self.backside_temp_safe = True
+        # time.monotonic() when on_timer first saw DllIsBusy true, so the busy->idle edge can
+        # report how long it lasted. None while the DLL is idle.
+        self.dll_busy_since: float | None = None
         # time.monotonic() when abort() asked the SDK to stop a measurement, so on_timer can
         # bound the wait for it to take effect. Monotonic like its neighbours above: this is
         # only ever read as "how long since", and timings[].start_time is a wall-clock
@@ -1192,6 +1196,51 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # simply stop firing -- and the spring jump fires them an hour early. An NTP step or
         # a hand-set clock does the same on any day of the year.
         now = time.monotonic()
+
+        # Watch DllIsBusy across ticks, so the camera coming back to its senses is recorded.
+        #
+        # A camera can get stuck with DllIsBusy true and no measurement that will ever end
+        # (MAST_spec#104): it then refuses every exposure, while `detected`, `connected` and
+        # `operational` all still read True. The only outward sign is that both temperature
+        # getters return None, because they return None precisely when the DLL is busy.
+        #
+        # Recovery was invisible. Band G sat wedged from 15:43 on 2026-09-07 and was exposing
+        # normally by 07:53 the next morning, same process, no power cycle -- and NOTHING was
+        # logged in between, so the 16 hours is only an upper bound on a duration nobody can
+        # recover from the record. By then abort's StoppingMeasurement flag was long ended,
+        # so no activity remained to close and no line was written.
+        #
+        # The busy->idle edge is the one that matters, and its meaning depends on whether an
+        # exposure was running. On the normal path Exposing is still set here: this tick's
+        # later block is what ends it, further down. So an edge with Exposing down is a
+        # camera that has released itself with nothing to release -- the #104 recovery.
+        #
+        # Read ONCE per tick and reused by every branch below that needs it. This tick's
+        # decisions -- end Exposing and start the readout, resolve StoppingMeasurement,
+        # decide whether a None temperature means "busy" or "failed" -- were each re-reading
+        # it, so a single pass could act on up to five different answers and reason about
+        # them as though they were one. One snapshot makes the tick self-consistent.
+        #
+        # The cost is that the view can be up to a tick stale, which is bounded by the timer
+        # interval and is what a 1 Hz poll means anyway: the worst case is noticing an idle
+        # DLL one second later. Nothing here starts a measurement, so the flag cannot go the
+        # other way behind our back mid-tick.
+        #
+        # get_sensor_temperature and get_back_temperature keep their own reads: status()
+        # calls them from the HTTP thread, where there is no tick and no snapshot to share.
+        dll_busy = ge.DllIsBusy(addr=self.ge_device)
+        if dll_busy and self.dll_busy_since is None:
+            self.dll_busy_since = now
+        elif not dll_busy and self.dll_busy_since is not None:
+            busy_for = humanfriendly.format_timespan(now - self.dll_busy_since)
+            if self.is_active(GreatEyesActivities.Exposing):
+                self.debug(f"DllIsBusy cleared after {busy_for} (exposure finished)")
+            else:
+                self.warning(
+                    f"DllIsBusy cleared after {busy_for} with no exposure in progress: "
+                    f"the camera has come back on its own (MAST_spec#104)"
+                )
+            self.dll_busy_since = None
         if (
             self.last_backside_temp_check is None
             or (now - self.last_backside_temp_check) > self.settings.temp.check_interval
@@ -1209,7 +1258,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
             self.last_backside_temp_check = now
 
-        if self.is_active(GreatEyesActivities.Exposing) and not ge.DllIsBusy(addr=self.ge_device):
+        if self.is_active(GreatEyesActivities.Exposing) and not dll_busy:
             self.end_activity(GreatEyesActivities.Exposing, label=self.name)
 
             # Computed in UTC and converted for the local twins, so the pair cannot disagree
@@ -1228,7 +1277,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.readout_thread.start()
 
         if self.is_active(GreatEyesActivities.StoppingMeasurement):
-            if not ge.DllIsBusy(addr=self.ge_device):
+            if not dll_busy:
                 self.stopping_measurement_since = None
                 self.end_activity(GreatEyesActivities.StoppingMeasurement, label=self.name)
                 self.end_activity(GreatEyesActivities.Exposing, label=self.name)
@@ -1259,7 +1308,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         if self.is_active(GreatEyesActivities.AdjustingTemperature) and self.sensor_temperature_target is not None:
             sensor_temp = self.get_sensor_temperature()
             if sensor_temp is None:
-                if not ge.DllIsBusy(addr=self.ge_device):
+                if not dll_busy:
                     self.append_error("failed reading sensor temperature")
             elif abs(sensor_temp - self.sensor_temperature_target) <= 1:
                 self.end_activity(GreatEyesActivities.AdjustingTemperature, label=self._name)
@@ -1286,7 +1335,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 return
 
             if sensor_temp is None:
-                if not ge.DllIsBusy(addr=self.ge_device):
+                if not dll_busy:
                     self.append_error("failed reading sensor temperature")
             else:
                 switch_temp_control_off = False
