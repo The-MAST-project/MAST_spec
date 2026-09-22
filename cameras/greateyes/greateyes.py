@@ -68,6 +68,38 @@ MAX_BACKSIDE_TEMPERATURE = 55
 # only decides how quickly a stop that did not take is called out.
 STOP_MEASUREMENT_TIMEOUT_SECONDS = 5
 
+
+# ge.Status 1, whose wrapper string is 'no camera detected' (the SDK manual's table calls it
+# "No camera connected"). Reported by TemperatureControl_GetTemperature when the session is
+# gone rather than when a single read failed -- observed on band G, 2026-09-08, after its
+# camera was rebooted underneath the service.
+NO_CAMERA_STATUS = 1
+
+# Consecutive failed reads reporting NO_CAMERA_STATUS before `detected` comes down.
+#
+# Not 1. ge.Status is the global shared by four band threads (MAST_spec#87), and demoting is
+# not free: the probe that follows calls try_connect_camera, which disconnects and
+# re-establishes the session. Doing that to a healthy camera on one stray read is worse than
+# waiting. Requiring a run makes a cross-thread coincidence have to repeat, and the cost is
+# latency measured against the 30 s backside poll, against a failure that currently persists
+# until someone restarts the service.
+NO_CAMERA_READS_BEFORE_DEMOTING = 3
+
+
+def sdk_status() -> str:
+    """The SDK's status word as of the call that has just returned.
+
+    Only meaningful when read immediately after a wrapper that calls UpdateStatus(), with no
+    other SDK call in between -- 19 of the 50 wrappers never touch it, and after one of those
+    this reports some earlier call's status instead (MAST_spec#94, #98).
+
+    Carries the MAST_spec#87 caveat: ge.Status is a module global shared by all four band
+    threads, so a busy moment can return another band's. Fine for a log line, not something
+    to branch on without weighing what a wrong read would cost.
+    """
+    return f"status={ge.Status} '{ge.StatusMSG}'"
+
+
 FITS_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
 
@@ -173,6 +205,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.errors = []
         self.output_modes: list[str] = []
         self.sensor_temperature_target: float | None = None
+        # Consecutive failed temperature reads that reported NO_CAMERA_STATUS. Reset by any
+        # successful read and by any failure reporting a different status, so only an
+        # unbroken run demotes.
+        self.consecutive_no_camera_reads = 0
 
         from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 
@@ -1396,24 +1432,57 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             return None
         ret = ge.TemperatureControl_GetTemperature(thermistor=0, addr=self.ge_device)
         if ret == FAILED_TEMPERATURE:
-            self.append_error(f"failed to read sensor temperature ({ret=})")
+            self.temperature_read_failed("sensor")
             return None
+        self.consecutive_no_camera_reads = 0
         return ret
 
+    def temperature_read_failed(self, which: str) -> None:
+        """Record a failed temperature read, and bring `detected` down if the camera is gone.
+
+        Called with the SDK status still describing the read that just failed -- nothing may
+        call into the SDK between that call and this.
+        """
+        # Captured once. sdk_status() reads the same globals and nothing between touches the
+        # SDK, so the logged text and the decision cannot disagree.
+        status = ge.Status
+        self.append_error(f"failed to read {which} temperature (ret={FAILED_TEMPERATURE}, {sdk_status()})")
+
+        if status != NO_CAMERA_STATUS:
+            # A read that failed for some other reason says nothing about the session.
+            self.consecutive_no_camera_reads = 0
+            return
+
+        self.consecutive_no_camera_reads += 1
+        if self.consecutive_no_camera_reads < NO_CAMERA_READS_BEFORE_DEMOTING:
+            return
+
+        # Bringing `detected` down is the whole point: on_timer probes only when it is False,
+        # and probe() -> try_connect_camera() is what re-establishes the session. Band G sat
+        # unusable for hours on 2026-09-08 with the camera powered and its server accepting
+        # on port 12345, purely because nothing ever set this and so nothing ever retried.
+        self.warning(
+            f"camera reports 'no camera detected' on {self.consecutive_no_camera_reads} consecutive "
+            f"temperature reads: marking it undetected so the probe re-establishes the session"
+        )
+        self.consecutive_no_camera_reads = 0
+        self._detected = False
+        self._connected = False
+
     def get_back_temperature(self) -> float | None:
-        ret = None
         if not self.detected:
-            return ret
+            return None
 
         assert self.ge_device is not None
-        if not ge.DllIsBusy(addr=self.ge_device):
-            ret = ge.TemperatureControl_GetTemperature(thermistor=1, addr=self.ge_device)
-            if ret == FAILED_TEMPERATURE:
-                self.append_error(f"failed to read back temperature ({ret=})")
-                return None
-            return ret
+        if ge.DllIsBusy(addr=self.ge_device):
+            return None
 
-        return None
+        ret = ge.TemperatureControl_GetTemperature(thermistor=1, addr=self.ge_device)
+        if ret == FAILED_TEMPERATURE:
+            self.temperature_read_failed("back")
+            return None
+        self.consecutive_no_camera_reads = 0
+        return ret
 
     @property
     def operational(self) -> bool:
