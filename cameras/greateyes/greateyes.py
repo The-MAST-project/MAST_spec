@@ -13,7 +13,7 @@ from astropy.io import fits
 from astropy.io.fits import Card
 from pydantic import BaseModel
 
-from cameras.greateyes import stale_session
+from cameras.greateyes import stale_session, wedge_report
 from common.activities import GreatEyesActivities
 from common.config import Config
 from common.config.greateyes import GreateyesSettingConfig
@@ -67,6 +67,17 @@ MAX_BACKSIDE_TEMPERATURE = 55
 # it did not. Bounds the report, not the camera: nothing here can force a stop, so the value
 # only decides how quickly a stop that did not take is called out.
 STOP_MEASUREMENT_TIMEOUT_SECONDS = 5
+
+# How far past any legitimate busy window a band must stay busy before it is called wedged.
+# DllIsBusy spans on-camera readout and transfer as well as integration, so the bound has to
+# clear those too; STOP_MEASUREMENT_TIMEOUT_SECONDS above is 5, which puts a minute comfortably
+# outside anything the normal path produces.
+WEDGE_GRACE_SECONDS = 60
+
+# A wedge lasts hours, not ticks -- band G's ran to at least 16, which at 1 Hz is ~57,600 of
+# them. Repeating the report at this interval leaves a trail with timestamps, the thing missing
+# from the record last time, without burying the log it lives in.
+WEDGE_REPEAT_SECONDS = 600
 
 
 # ge.Status 1, whose wrapper string is 'no camera detected' (the SDK manual's table calls it
@@ -227,6 +238,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # time.monotonic() when on_timer first saw DllIsBusy true, so the busy->idle edge can
         # report how long it lasted. None while the DLL is idle.
         self.dll_busy_since: float | None = None
+        # When the last wedge report was written for this band, so a wedge that lasts hours
+        # reports on an interval instead of once per tick. Cleared with dll_busy_since, so a
+        # band that frees itself and wedges again later reports again immediately.
+        self.wedge_reported_at: float | None = None
         # time.monotonic() when abort() asked the SDK to stop a measurement, so on_timer can
         # bound the wait for it to take effect. Monotonic like its neighbours above: this is
         # only ever read as "how long since", and timings[].start_time is a wall-clock
@@ -1197,6 +1212,54 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             if not ret:
                 self.append_error(f"could not ge.StopMeasurement(addr={self.ge_device})")
 
+    def report_if_wedged(self, now: float) -> None:
+        """Write a wedge report once this band has been busy longer than any exposure explains.
+
+        The bound is computed rather than constant because the two observed wedges have
+        opposite shapes. Shape B (band G) is busy with `Exposing` DOWN, where any sustained
+        busy is already anomalous. Shape A (band U) is busy with `Exposing` SET, which looks
+        exactly like a running exposure -- the only thing that marks it is that the exposure's
+        own duration has come and gone. A single fixed threshold would either miss A or shout
+        through every long exposure, so the exposure's duration is added to the bound when one
+        is in progress.
+
+        Everything here is best-effort and must not raise: it runs inside the 1 Hz timer, and
+        a diagnostic that kills the tick would cost more than the wedge it describes.
+        """
+        assert self.dll_busy_since is not None
+        busy_for = now - self.dll_busy_since
+
+        exposing = self.is_active(GreatEyesActivities.Exposing)
+        expected = 0.0
+        if exposing:
+            settings = self.latest_exposure.settings if self.latest_exposure else None
+            duration = getattr(settings, "exposure_duration", None)
+            if isinstance(duration, (int, float)):
+                expected = float(duration)
+
+        if busy_for < expected + WEDGE_GRACE_SECONDS:
+            return
+        if self.wedge_reported_at is not None and (now - self.wedge_reported_at) < WEDGE_REPEAT_SECONDS:
+            return
+
+        # Stamped before the report is built, not after. Building it reads the connection
+        # table through a subprocess, and if that hangs or throws, the interval must still
+        # have started -- otherwise a failing report retries every tick.
+        self.wedge_reported_at = now
+        try:
+            lines = wedge_report.describe(
+                band=self.band,
+                ipaddr=self.network.ipaddr,
+                device=self.ge_device,
+                busy_for=busy_for,
+                exposing=exposing,
+            )
+        except Exception as e:  # noqa: BLE001 -- see the docstring: never raise into the timer
+            self.error(f"wedge report failed to build: {type(e).__name__}: {e}")
+            return
+        for line in lines:
+            self.warning(line)
+
     def on_timer(self):  # noqa: C901 -- a hardware state machine; the branching is the problem domain, not a failure to decompose
         """
         Called periodically by a timer.
@@ -1277,6 +1340,12 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                     f"the camera has come back on its own (MAST_spec#104)"
                 )
             self.dll_busy_since = None
+            self.wedge_reported_at = None
+        elif dll_busy:
+            # Still busy, and was already busy on an earlier tick. The edge cases above say
+            # what happened once it is over; this is the only branch that runs *during* a
+            # wedge, which is the window the record has never had anything from.
+            self.report_if_wedged(now)
         if (
             self.last_backside_temp_check is None
             or (now - self.last_backside_temp_check) > self.settings.temp.check_interval
