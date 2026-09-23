@@ -168,6 +168,18 @@ _trace_file = None
 _trace_file_broken = False
 _call_seq = 0
 
+# Installation is racy without this, and the race is not cosmetic. greateyes.py builds the four
+# cameras on four concurrent threads (`make-deepspec-camera-<band>`), so GreatEyes.__init__ --
+# and this with it -- runs four times at once. An unguarded check-then-set let three of them
+# through on 2026-09-23, which showed up as three copies of the trace header.
+#
+# The headers were the visible symptom; the danger was the other outcome of the same race. All
+# three happened to read the original WinDLL before any assigned, so the last write won and the
+# DLL ended up wrapped exactly once. Had one thread assigned before another read, the second
+# would have wrapped the first's proxy -- and every SDK call would then be traced once per
+# layer, quietly doubling the artefact the whole exercise exists to produce.
+_install_lock = threading.Lock()
+
 
 def _render(value) -> str:
     """One argument or return value, as something a reader can match against the SDK manual.
@@ -365,27 +377,30 @@ class _TracedDLL:
 def install_call_tracer() -> None:
     """Start timing SDK calls. Idempotent; safe to call from every camera's constructor."""
     global _installed
-    if _installed:
-        return
-    try:
-        # Read BEFORE wrapping, deliberately: afterwards this is itself a traced call, and
-        # asking for it from inside the file's first write would recurse into the writer.
-        dll_version = ge.GetDLLVersion()
-        ge.greateyesDLL = _TracedDLL(ge.greateyesDLL)
-        _installed = True
-        # A header, because this file goes to the vendor: a trace that does not say which DLL
-        # produced it invites the first question back to be one we already knew the answer to.
-        _write_trace(
-            f"# greateyes SDK call trace -- {socket.gethostname()} -- opened {_stamp()}\n"
-            f"# DLL version {dll_version!r}, python wrapper {getattr(ge, '__file__', '?')}\n"
-            f"# '>' call entered, '<' returned. #NNNNNNN pairs them across threads.\n"
-            f"# An entry with no matching return is a call that never came back."
-        )
-        # Marked like every other tracer line: an artefact handed to greateyes should say when
-        # tracing started, so a gap in it can be told from a quiet period.
-        logger.info(f"{MARKER} installed: timing every greateyes SDK call from here on")
-    except Exception as e:  # noqa: BLE001 -- a diagnostic must not stop the service starting
-        logger.error(f"{MARKER} could not install SDK call tracing: {type(e).__name__}: {e}")
+    # Check and set under the lock, not around it: four camera-construction threads reach this
+    # simultaneously, and a bare flag lets more than one through. See _install_lock.
+    with _install_lock:
+        if _installed:
+            return
+        try:
+            # Read BEFORE wrapping, deliberately: afterwards this is itself a traced call, and
+            # asking for it from inside the file's first write would recurse into the writer.
+            dll_version = ge.GetDLLVersion()
+            ge.greateyesDLL = _TracedDLL(ge.greateyesDLL)
+            _installed = True
+            # A header, because this file goes to the vendor: a trace that does not say which
+            # DLL produced it invites a first question back whose answer we already had.
+            _write_trace(
+                f"# greateyes SDK call trace -- {socket.gethostname()} -- opened {_stamp()}\n"
+                f"# DLL version {dll_version!r}, python wrapper {getattr(ge, '__file__', '?')}\n"
+                f"# '>' call entered, '<' returned. #NNNNNNN pairs them across threads.\n"
+                f"# An entry with no matching return is a call that never came back."
+            )
+            # Marked like every other tracer line: an artefact handed to greateyes should say
+            # when tracing started, so a gap in it can be told from a quiet period.
+            logger.info(f"{MARKER} installed: timing every greateyes SDK call from here on")
+        except Exception as e:  # noqa: BLE001 -- a diagnostic must not stop the service starting
+            logger.error(f"{MARKER} could not install SDK call tracing: {type(e).__name__}: {e}")
 
 
 def drain_to_log() -> None:
