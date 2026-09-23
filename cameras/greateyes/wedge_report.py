@@ -69,6 +69,20 @@ SDK_FILENAME = "greateyesSDK.py"
 # seconds of history, which is the window that matters.
 CALL_HISTORY = 40
 
+# Every line the tracer writes carries this, so a night's worth can be pulled out of the log
+# with one grep and handed to greateyes support as a single artefact.
+MARKER = "SDK-TRACE"
+
+# A call at or over this is logged on its own, immediately. Normal calls are milliseconds --
+# measured on this fleet, DllIsBusy and the temperature reads are 0.000-0.01 s -- so a second
+# is far outside ordinary behaviour without being so tight that a busy moment floods the log.
+SLOW_CALL_SECONDS = 1.0
+
+# How often the per-function summary is written. The summary is what makes the healthy case
+# presentable: logging every call would be ~5 lines a second across four bands, hundreds of
+# thousands of lines a night, which is not an artefact anyone will read.
+SUMMARY_INTERVAL_SECONDS = 300
+
 # ---------------------------------------------------------------------------------------
 # SDK call tracing
 #
@@ -93,6 +107,15 @@ _trace_lock = threading.Lock()
 _in_flight: dict[int, tuple[str, int | None, float, str]] = {}  # thread ident -> (fn, addr, t0, thread name)
 _history: deque[tuple[str, int | None, float, float, str]] = deque(maxlen=CALL_HISTORY)
 _installed = False
+
+# Accumulated for the periodic summary: function -> [count, total seconds, slowest, its thread].
+_stats: dict[str, list] = {}
+# Slow calls seen but not yet written. The tracer NEVER logs: the daily file handler writes to
+# the operational share, and blocking an SDK call on a network write -- or on a share that has
+# gone away -- would be a worse fault than the one being diagnosed. So the trace path only
+# accumulates, and `drain_to_log` does the I/O from the band timer instead.
+_pending_slow: list[tuple[str, int | None, float, str]] = []
+_last_summary: float | None = None
 
 
 def _addr_of(args: tuple) -> int | None:
@@ -143,7 +166,18 @@ class _TracedFunc:
         finally:
             with contextlib.suppress(Exception), _trace_lock:  # as above
                 name, addr, started, tname = _in_flight.pop(ident, (self._name, None, t0, ""))
-                _history.append((name, addr, started, time.monotonic() - started, tname))
+                took = time.monotonic() - started
+                _history.append((name, addr, started, took, tname))
+                stat = _stats.get(name)
+                if stat is None:
+                    _stats[name] = [1, took, took, tname]
+                else:
+                    stat[0] += 1
+                    stat[1] += took
+                    if took > stat[2]:
+                        stat[2], stat[3] = took, tname
+                if took >= SLOW_CALL_SECONDS:
+                    _pending_slow.append((name, addr, took, tname))
 
 
 class _TracedDLL:
@@ -172,9 +206,54 @@ def install_call_tracer() -> None:
     try:
         ge.greateyesDLL = _TracedDLL(ge.greateyesDLL)
         _installed = True
-        logger.info("SDK call tracing installed")
+        # Marked like every other tracer line: an artefact handed to greateyes should say when
+        # tracing started, so a gap in it can be told from a quiet period.
+        logger.info(f"{MARKER} installed: timing every greateyes SDK call from here on")
     except Exception as e:  # noqa: BLE001 -- a diagnostic must not stop the service starting
-        logger.error(f"could not install SDK call tracing: {type(e).__name__}: {e}")
+        logger.error(f"{MARKER} could not install SDK call tracing: {type(e).__name__}: {e}")
+
+
+def drain_to_log() -> None:
+    """Write whatever the tracer has accumulated. Called from the band timer, once a second.
+
+    All of the tracer's I/O happens here and nowhere else, so an SDK call is never held up by
+    a write to the operational share. Two kinds of line, both carrying MARKER:
+
+      slow     one per call at or over SLOW_CALL_SECONDS, at WARNING. These are the ones worth
+               showing greateyes on their own.
+      summary  every SUMMARY_INTERVAL_SECONDS, one line per function with count, mean, and the
+               slowest instance. This is what makes the HEALTHY case presentable -- a support
+               case needs the normal behaviour to contrast the wedge against, and normal
+               behaviour logged call-by-call would be hundreds of thousands of lines a night.
+
+    Everything is computed under the lock and logged outside it, for the same reason the
+    tracer does not log at all: the file handler writes to a network share.
+    """
+    global _last_summary
+    now = time.monotonic()
+    slow: list[tuple[str, int | None, float, str]] = []
+    summary: list[tuple[str, list]] = []
+    with contextlib.suppress(Exception), _trace_lock:
+        if _pending_slow:
+            slow = _pending_slow[:]
+            _pending_slow.clear()
+        if _last_summary is None:
+            _last_summary = now  # first tick only: do not report a window nobody measured
+        elif now - _last_summary >= SUMMARY_INTERVAL_SECONDS and _stats:
+            summary = sorted(_stats.items(), key=lambda kv: -kv[1][1])
+            _stats.clear()
+            _last_summary = now
+
+    for name, addr, took, tname in slow:
+        logger.warning(f"{MARKER} slow: {name}(addr={addr}) on {tname} took {took:.3f}s")
+    if summary:
+        window = int(SUMMARY_INTERVAL_SECONDS)
+        logger.info(f"{MARKER} summary over {window}s, busiest first:")
+        for name, (count, total, slowest, slow_thread) in summary:
+            logger.info(
+                f"{MARKER} summary   {name}: {count} calls, mean {total / count:.4f}s, "
+                f"slowest {slowest:.3f}s on {slow_thread}"
+            )
 
 
 def calls_in_flight() -> list[str]:
@@ -326,10 +405,12 @@ def describe(band: str, ipaddr: str, device: int, busy_for: float, exposing: boo
     lines += dll_busy_by_device(device)
     lines.append(f"  sockets to the camera at {ipaddr}:")
     lines += sockets_to_camera(ipaddr)
-    lines.append("  SDK calls in flight (timed at the boundary, not inferred from a stack):")
-    lines += calls_in_flight()
-    lines.append("  last completed SDK calls, oldest first:")
-    lines += recent_calls()
+    # The two trace sections carry MARKER as well, so one grep for it pulls the healthy-case
+    # summaries AND the wedge's own trace out of a night's log as a single artefact.
+    lines.append(f"  {MARKER} wedge: SDK calls in flight (timed at the boundary, not inferred from a stack):")
+    lines += [f"  {MARKER} wedge:{line}" for line in calls_in_flight()]
+    lines.append(f"  {MARKER} wedge: last completed SDK calls, oldest first:")
+    lines += [f"  {MARKER} wedge:{line}" for line in recent_calls()]
     lines.append("  threads (is anything still inside the SDK?):")
     lines += thread_stacks()
     return lines

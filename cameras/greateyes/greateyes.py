@@ -1441,6 +1441,13 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         #
         # get_sensor_temperature and get_back_temperature keep their own reads: status()
         # calls them from the HTTP thread, where there is no tick and no snapshot to share.
+        # All of the SDK tracer's logging happens here, on a band timer, rather than on the
+        # SDK call path -- the daily file handler writes to the operational share, and holding
+        # a camera call on a network write would be a worse fault than any it diagnoses. Cheap
+        # and idempotent, so every band calling it once a second is fine; the interval check
+        # inside decides which tick actually writes.
+        wedge_report.drain_to_log()
+
         dll_busy = ge.DllIsBusy(addr=self.ge_device)
         if dll_busy and self.dll_busy_since is None:
             self.dll_busy_since = now
