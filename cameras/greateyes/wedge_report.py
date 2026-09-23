@@ -247,6 +247,15 @@ def thread_stacks() -> list[str]:
     from inside the process. It gives a snapshot per thread, so a frame may be stale by
     the time it is formatted -- which does not matter for a thread that has been parked in
     the same call for minutes, the only case this runs in.
+
+    KNOWN BLIND SPOT, measured 2026-09-22: this sees only threads Python created. The
+    service had **87 OS threads and 25 Python ones**, so two thirds of the process is
+    invisible here -- and the DLL's own workers are in that two thirds (its exports include
+    a geDllRequestMsg / geDllReplyMsg message pump). "No thread is inside the SDK" therefore
+    means "no PYTHON thread is", which is not the same claim. Seeing the rest needs a native
+    tool: `py-spy dump --pid <pid> --native` reaches into greateyes.dll and names its frames
+    (it exports 266 symbols, so nearest-symbol resolution is informative without PDBs), and
+    Process Explorer or WinDbg reach the non-Python threads py-spy also omits.
     """
     try:
         # Private, and the only way to see another thread's stack from inside the process.
