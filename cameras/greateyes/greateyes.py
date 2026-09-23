@@ -13,7 +13,7 @@ from astropy.io import fits
 from astropy.io.fits import Card
 from pydantic import BaseModel
 
-from cameras.greateyes import stale_session
+from cameras.greateyes import stale_session, wedge_report
 from common.activities import GreatEyesActivities
 from common.config import Config
 from common.config.greateyes import GreateyesSettingConfig
@@ -67,6 +67,28 @@ MAX_BACKSIDE_TEMPERATURE = 55
 # it did not. Bounds the report, not the camera: nothing here can force a stop, so the value
 # only decides how quickly a stop that did not take is called out.
 STOP_MEASUREMENT_TIMEOUT_SECONDS = 5
+
+# How far past any legitimate busy window a band must stay busy before it is called wedged.
+# DllIsBusy spans on-camera readout and transfer as well as integration, so the bound has to
+# clear those too; STOP_MEASUREMENT_TIMEOUT_SECONDS above is 5, which puts a minute comfortably
+# outside anything the normal path produces.
+WEDGE_GRACE_SECONDS = 60
+
+# A wedge lasts hours, not ticks -- band G's ran to at least 16, which at 1 Hz is ~57,600 of
+# them. Repeating the report at this interval leaves a trail with timestamps, the thing missing
+# from the record last time, without burying the log it lives in.
+WEDGE_REPEAT_SECONDS = 600
+
+# How long a wedge must persist before the band is handed to the probe. Longer than the report
+# bound on purpose: the evidence lands first, so every recovery in the log is preceded by the
+# report that justified it. Also the minimum gap between attempts.
+WEDGE_RECOVERY_SECONDS = 180
+
+# Attempts within one wedge before giving up and going back to reporting only. probe() escalates
+# to a power cycle when a reconnect does not take, and a band that cannot be recovered must not
+# cycle its camera every few minutes for as long as the service runs. Giving up leaves today's
+# behaviour -- a wedged band -- but says so in the log instead of thrashing the hardware.
+MAX_WEDGE_RECOVERIES = 3
 
 
 # ge.Status 1, whose wrapper string is 'no camera detected' (the SDK manual's table calls it
@@ -205,6 +227,15 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.errors = []
         self.output_modes: list[str] = []
         self.sensor_temperature_target: float | None = None
+        # Whether this band is MEANT to be cold, as opposed to whether it currently is. The set
+        # point lives in the camera, so it does not survive a reconnect -- this is the intent
+        # that has to, and probe() re-applies from it. False until cool_down() runs, so a band
+        # that has never been started up is not cooled behind the operator's back.
+        self.cooling_wanted: bool = False
+        # Idempotent, and here rather than at module scope so importing this file does not
+        # reach into the SDK as a side effect. Cameras are built before anything calls the
+        # DLL in anger, so the first construction catches every call worth timing.
+        wedge_report.install_call_tracer()
         # Consecutive failed temperature reads that reported NO_CAMERA_STATUS. Reset by any
         # successful read and by any failure reporting a different status, so only an
         # unbroken run demotes.
@@ -227,6 +258,15 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # time.monotonic() when on_timer first saw DllIsBusy true, so the busy->idle edge can
         # report how long it lasted. None while the DLL is idle.
         self.dll_busy_since: float | None = None
+        # When the last wedge report was written for this band, so a wedge that lasts hours
+        # reports on an interval instead of once per tick. Cleared with dll_busy_since, so a
+        # band that frees itself and wedges again later reports again immediately.
+        self.wedge_reported_at: float | None = None
+        # When recovery was last attempted, and how many times within this wedge. Both are
+        # cleared on the busy->idle edge, which is the only honest signal that the band is
+        # healthy again -- so the attempt budget is per episode, not per process.
+        self.wedge_recovered_at: float | None = None
+        self.wedge_recoveries: int = 0
         # time.monotonic() when abort() asked the SDK to stop a measurement, so on_timer can
         # bound the wait for it to take effect. Monotonic like its neighbours above: this is
         # only ever read as "how long since", and timings[].start_time is a wall-clock
@@ -452,6 +492,26 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # exposure now applies its own, in start_exposure. The image geometry this class
         # reports was read straight from the camera above, so it is already current.
         self.set_led(False)
+
+        # Exposure settings are deliberately NOT pushed here, per the note above. The cooling
+        # set point is not one of them: it lives in the camera, no exposure re-applies it, and
+        # a reconnect gets a camera that has forgotten it. Measured 2026-09-22 -- band U was
+        # power-cycled and reconnected by this method at 15:07, and then took 65 rounds of
+        # darks at 48C while the other three sat at 15C, reporting detected, connected and
+        # operational the whole time. Nothing in the log said so; the temperature in `status`
+        # was the only sign, and only if someone compared the bands.
+        #
+        # Gated on the intent rather than on production_mode: cooling_wanted is only ever set
+        # by cool_down(), which startup() already gates, and is cleared by shutdown() and by
+        # retreat_to_room_temperature(). So this restores what was asked for and never decides
+        # to cool on its own.
+        #
+        # It matters more now that police_wedge hands wedged bands to this method: without it,
+        # a wedge recovery trades a visibly wedged band for an invisibly warm one.
+        if self.cooling_wanted:
+            self.info("restoring the cooling set point after a reconnect")
+            self.cool_down()
+
         self.end_activity(GreatEyesActivities.Probing, label=self.name)
 
     @property
@@ -560,6 +620,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         target_temp = self.settings.temp.target_cool
         self.sensor_temperature_target = target_temp
+        # This band is now MEANT to be cold, and that intent has to outlive the session: the
+        # set point lives in the camera, and a reconnect gets a camera that has forgotten it.
+        # probe() reads this to decide whether to re-apply -- see the note there.
+        self.cooling_wanted = True
         if self._apply_setting(ge.TemperatureControl_SetTemperature, target_temp):
             self.start_activity(
                 GreatEyesActivities.CoolingDown,
@@ -596,6 +660,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # than leaving CoolingDown set for the rest of the run.
         self.end_activity(GreatEyesActivities.CoolingDown, label=self._name)
         self.sensor_temperature_target = None
+        # The CAMERA abandoned the set point to protect its TEC, and this method exists to
+        # stop asking for one it has already given up on. A reconnect must not start asking
+        # again on its own -- that decision belongs to whoever investigates the over-temperature.
+        self.cooling_wanted = False
 
     def warm_up(self):
         if not self.detected:
@@ -632,6 +700,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.info("MAST_DEBUG is set, not warming up on shutdown")
         self.shutdown_event.set()
         self._was_shut_down = True
+        # Deliberately shut down, so a later reconnect must not quietly start cooling again.
+        self.cooling_wanted = False
 
     @property
     def is_shutting_down(self) -> bool:
@@ -1197,6 +1267,113 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             if not ret:
                 self.append_error(f"could not ge.StopMeasurement(addr={self.ge_device})")
 
+    def police_wedge(self, now: float) -> None:
+        """Report a wedged band, and past a longer bound hand it to the probe to be reset.
+
+        Report first, recover second, deliberately: every recovery in the log is preceded by
+        the evidence that justified it, so a reconnect or a power cycle can always be argued
+        with afterwards rather than taken on trust.
+
+        The bound is computed rather than constant because the two observed wedges have
+        opposite shapes. Shape B (band G) is busy with `Exposing` DOWN, where any sustained
+        busy is already anomalous. Shape A (band U) is busy with `Exposing` SET, which looks
+        exactly like a running exposure -- the only thing that marks it is that the exposure's
+        own duration has come and gone. A single fixed threshold would either miss A or shout
+        through every long exposure, so the exposure's duration is added to the bound when one
+        is in progress.
+
+        Everything here is best-effort and must not raise: it runs inside the 1 Hz timer, and
+        a diagnostic that kills the tick would cost more than the wedge it describes.
+        """
+        assert self.dll_busy_since is not None
+        busy_for = now - self.dll_busy_since
+
+        exposing = self.is_active(GreatEyesActivities.Exposing)
+        expected = 0.0
+        if exposing:
+            settings = self.latest_exposure.settings if self.latest_exposure else None
+            duration = getattr(settings, "exposure_duration", None)
+            if isinstance(duration, (int, float)):
+                expected = float(duration)
+
+        if busy_for < expected + WEDGE_GRACE_SECONDS:
+            return
+
+        # Recovery is decided before the rate limit below, which governs only how often the
+        # report is written. Otherwise a wedge would be recovered at most once per
+        # WEDGE_REPEAT_SECONDS, tying the two intervals together for no reason.
+        if (
+            busy_for >= expected + WEDGE_RECOVERY_SECONDS
+            and self.wedge_recoveries < MAX_WEDGE_RECOVERIES
+            and (self.wedge_recovered_at is None or (now - self.wedge_recovered_at) >= WEDGE_RECOVERY_SECONDS)
+        ):
+            self.recover_from_wedge(now, busy_for)
+            return
+
+        if self.wedge_reported_at is not None and (now - self.wedge_reported_at) < WEDGE_REPEAT_SECONDS:
+            return
+
+        # Stamped before the report is built, not after. Building it reads the connection
+        # table through a subprocess, and if that hangs or throws, the interval must still
+        # have started -- otherwise a failing report retries every tick.
+        self.wedge_reported_at = now
+        try:
+            lines = wedge_report.describe(
+                band=self.band,
+                ipaddr=self.network.ipaddr,
+                device=self.ge_device,
+                busy_for=busy_for,
+                exposing=exposing,
+            )
+        except Exception as e:  # noqa: BLE001 -- see the docstring: never raise into the timer
+            self.error(f"wedge report failed to build: {type(e).__name__}: {e}")
+            return
+        for line in lines:
+            self.warning(line)
+
+    def recover_from_wedge(self, now: float, busy_for: float) -> None:
+        """Hand a wedged band to the probe, which already knows how to reset one.
+
+        Nothing else clears this. Measured on band U, 2026-09-22: `ge.StopMeasurement` returns
+        False, `abort()` clears the activity flags but leaves `DllIsBusy` true, and the band
+        then sits in exactly band G's 2026-09-07 state indefinitely, because no other path
+        looks at it. The status-1 demotion added for a lost session cannot help either:
+        `get_sensor_temperature` returns None at its `DllIsBusy` guard BEFORE any SDK call, so
+        no status is ever read and `temperature_read_failed` never runs.
+
+        `on_timer` probes only while `not detected`, and `probe()` already escalates the way
+        this wants: `try_connect_camera` first -- a disconnect and reconnect, which may clear
+        the DLL's per-device state without touching the hardware -- and a power cycle with
+        `boot_delay` only if that fails, which 2026-09-07 measured as the remedy that works.
+        So the fix is to stop being detected, not to write a recovery.
+
+        Safe to do to one band alone because the busy slot is per-device, measured the same
+        day: device 0 wedged while 1, 2 and 3 exposed normally for 21 minutes.
+
+        `abort()` FIRST, and in this order. It ends `Exposing` and `Acquiring`, which is what
+        releases a `do_expose_one_camera` worker parked in `while camera.is_active(Acquiring)`
+        -- and it returns early when `not detected`, so demoting first would skip it entirely
+        and leave that worker spinning for the life of the process.
+
+        `dll_busy_since` is deliberately NOT reset here. If the reconnect works the flag goes
+        false, the busy->idle edge in on_timer fires and clears this episode's state along with
+        it; if it does not, the elapsed time keeps growing and is exactly what the next report
+        should say. The gap between attempts is policed by `wedge_recovered_at` instead.
+        """
+        self.wedge_recovered_at = now
+        self.wedge_recoveries += 1
+        self.warning(
+            f"wedged for {humanfriendly.format_timespan(busy_for)}: aborting and marking undetected so the probe "
+            f"re-establishes the session (attempt {self.wedge_recoveries} of {MAX_WEDGE_RECOVERIES})"
+        )
+        # Runs on the band's timer thread, and probe() will too. If an SDK call there blocks
+        # on this device's stuck state, this band's timer stops with it -- bounded, because a
+        # wedged band is already useless, and the other three are unaffected for the same
+        # per-device reason that makes this safe at all.
+        self.abort()
+        self._detected = False
+        self._connected = False
+
     def on_timer(self):  # noqa: C901 -- a hardware state machine; the branching is the problem domain, not a failure to decompose
         """
         Called periodically by a timer.
@@ -1264,6 +1441,13 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         #
         # get_sensor_temperature and get_back_temperature keep their own reads: status()
         # calls them from the HTTP thread, where there is no tick and no snapshot to share.
+        # All of the SDK tracer's logging happens here, on a band timer, rather than on the
+        # SDK call path -- the daily file handler writes to the operational share, and holding
+        # a camera call on a network write would be a worse fault than any it diagnoses. Cheap
+        # and idempotent, so every band calling it once a second is fine; the interval check
+        # inside decides which tick actually writes.
+        wedge_report.drain_to_log()
+
         dll_busy = ge.DllIsBusy(addr=self.ge_device)
         if dll_busy and self.dll_busy_since is None:
             self.dll_busy_since = now
@@ -1277,6 +1461,18 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                     f"the camera has come back on its own (MAST_spec#104)"
                 )
             self.dll_busy_since = None
+            self.wedge_reported_at = None
+            # The busy->idle edge is the only honest "this band is healthy again", so the
+            # attempt budget is restored here and nowhere else. A band that frees itself --
+            # whether the probe did it or the camera came back on its own, as G did -- starts
+            # its next episode with a full budget.
+            self.wedge_recovered_at = None
+            self.wedge_recoveries = 0
+        elif dll_busy:
+            # Still busy, and was already busy on an earlier tick. The edge cases above say
+            # what happened once it is over; this is the only branch that runs *during* a
+            # wedge, which is the window the record has never had anything from.
+            self.police_wedge(now)
         if (
             self.last_backside_temp_check is None
             or (now - self.last_backside_temp_check) > self.settings.temp.check_interval

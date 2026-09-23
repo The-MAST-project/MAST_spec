@@ -10,6 +10,7 @@ from typing import Annotated, get_args
 from fastapi import Query
 from fastapi.routing import APIRouter
 
+from cameras.greateyes import wedge_report
 from cameras.greateyes.greateyes import GreatEyes
 from cameras.greateyes.greateyes import cameras as greateyes_cameras
 from common.activities import DeepspecActivities, GreatEyesActivities
@@ -450,6 +451,33 @@ class Deepspec(Component):
         finally:
             MoveGuardian().release_folder(folder, logger=logger)
 
+    @endpoint(tier=Tier.OPERATION, methods=("GET",))
+    def sdk_trace(self) -> CanonicalResponse:
+        """What the greateyes DLL is doing, and what it has just done.
+
+        The tracer runs from the first camera's construction, but until now the only thing
+        that printed it was a wedge report -- so on a healthy fleet the trace existed and was
+        unreadable, which is the wrong way round for something whose whole purpose is to be
+        consulted when a camera misbehaves.
+
+        Cheap and read-only: it formats state the tracer already holds and makes no SDK call
+        of its own, so asking cannot perturb what it is reporting. The history is the last
+        `wedge_report.CALL_HISTORY` completed calls, which at a few calls a second is seconds
+        rather than minutes -- ask while something is wrong, not afterwards.
+
+        Also written to the log, carrying the same marker as everything else the tracer
+        writes. An answer that only came back over HTTP would be the one part of the trace
+        that could not be handed to greateyes with the rest of the night.
+        """
+        in_flight, recent = wedge_report.calls_in_flight(), wedge_report.recent_calls()
+        logger.info(f"{wedge_report.MARKER} on-demand: SDK calls in flight:")
+        for line in in_flight:
+            logger.info(f"{wedge_report.MARKER} on-demand:{line}")
+        logger.info(f"{wedge_report.MARKER} on-demand: last completed SDK calls, oldest first:")
+        for line in recent:
+            logger.info(f"{wedge_report.MARKER} on-demand:{line}")
+        return CanonicalResponse(value={"in_flight": in_flight, "recent": recent})
+
     @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def adjust_temperature_one_camera(self, band: DeepspecBands, target_temperature: int | None = None):
         if band not in list(get_args(DeepspecBands)):
@@ -601,6 +629,13 @@ class Deepspec(Component):
             endpoint=self.adjust_temperature_one_camera,
             response_model=None,
             methods=["PUT"],
+        )
+        add_api_route(
+            router,
+            base_path + "/sdk_trace",
+            endpoint=self.sdk_trace,
+            response_model=None,
+            methods=["GET"],
         )
 
         return router
