@@ -227,6 +227,11 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         self.errors = []
         self.output_modes: list[str] = []
         self.sensor_temperature_target: float | None = None
+        # Whether this band is MEANT to be cold, as opposed to whether it currently is. The set
+        # point lives in the camera, so it does not survive a reconnect -- this is the intent
+        # that has to, and probe() re-applies from it. False until cool_down() runs, so a band
+        # that has never been started up is not cooled behind the operator's back.
+        self.cooling_wanted: bool = False
         # Consecutive failed temperature reads that reported NO_CAMERA_STATUS. Reset by any
         # successful read and by any failure reporting a different status, so only an
         # unbroken run demotes.
@@ -483,6 +488,26 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # exposure now applies its own, in start_exposure. The image geometry this class
         # reports was read straight from the camera above, so it is already current.
         self.set_led(False)
+
+        # Exposure settings are deliberately NOT pushed here, per the note above. The cooling
+        # set point is not one of them: it lives in the camera, no exposure re-applies it, and
+        # a reconnect gets a camera that has forgotten it. Measured 2026-09-22 -- band U was
+        # power-cycled and reconnected by this method at 15:07, and then took 65 rounds of
+        # darks at 48C while the other three sat at 15C, reporting detected, connected and
+        # operational the whole time. Nothing in the log said so; the temperature in `status`
+        # was the only sign, and only if someone compared the bands.
+        #
+        # Gated on the intent rather than on production_mode: cooling_wanted is only ever set
+        # by cool_down(), which startup() already gates, and is cleared by shutdown() and by
+        # retreat_to_room_temperature(). So this restores what was asked for and never decides
+        # to cool on its own.
+        #
+        # It matters more now that police_wedge hands wedged bands to this method: without it,
+        # a wedge recovery trades a visibly wedged band for an invisibly warm one.
+        if self.cooling_wanted:
+            self.info("restoring the cooling set point after a reconnect")
+            self.cool_down()
+
         self.end_activity(GreatEyesActivities.Probing, label=self.name)
 
     @property
@@ -591,6 +616,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         target_temp = self.settings.temp.target_cool
         self.sensor_temperature_target = target_temp
+        # This band is now MEANT to be cold, and that intent has to outlive the session: the
+        # set point lives in the camera, and a reconnect gets a camera that has forgotten it.
+        # probe() reads this to decide whether to re-apply -- see the note there.
+        self.cooling_wanted = True
         if self._apply_setting(ge.TemperatureControl_SetTemperature, target_temp):
             self.start_activity(
                 GreatEyesActivities.CoolingDown,
@@ -627,6 +656,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # than leaving CoolingDown set for the rest of the run.
         self.end_activity(GreatEyesActivities.CoolingDown, label=self._name)
         self.sensor_temperature_target = None
+        # The CAMERA abandoned the set point to protect its TEC, and this method exists to
+        # stop asking for one it has already given up on. A reconnect must not start asking
+        # again on its own -- that decision belongs to whoever investigates the over-temperature.
+        self.cooling_wanted = False
 
     def warm_up(self):
         if not self.detected:
@@ -663,6 +696,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.info("MAST_DEBUG is set, not warming up on shutdown")
         self.shutdown_event.set()
         self._was_shut_down = True
+        # Deliberately shut down, so a later reconnect must not quietly start cooling again.
+        self.cooling_wanted = False
 
     @property
     def is_shutting_down(self) -> bool:
