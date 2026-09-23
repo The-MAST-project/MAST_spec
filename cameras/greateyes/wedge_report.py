@@ -41,6 +41,9 @@ we may look at; we do not go knocking.
 
 import contextlib
 import ctypes
+import datetime
+import os
+import socket
 import sys
 import threading
 import time
@@ -83,6 +86,20 @@ SLOW_CALL_SECONDS = 1.0
 # thousands of lines a night, which is not an artefact anyone will read.
 SUMMARY_INTERVAL_SECONDS = 300
 
+# Every single call, in order, with its arguments -- the artefact for greateyes support, whose
+# first question about any fault is which sequence produced it. Deliberately LOCAL and not the
+# operational share: this is written on the SDK call path (see _write_trace for why it has to
+# be), and the share is the one thing on this machine that can block for seconds.
+#
+# Set to None to turn the per-call file off; the in-memory trace and the log summaries are
+# independent of it. Nothing rotates this -- it is pruned by hand, which at roughly 100 MB a
+# night against 700+ GB free is a decision that can wait.
+TRACE_FILE = r"C:\MAST\greateyes-sdk-trace.txt"
+
+# Longest rendering of a single argument or return value, so one oversized buffer cannot turn
+# a line into a page.
+TRACE_VALUE_CHARS = 120
+
 # ---------------------------------------------------------------------------------------
 # SDK call tracing
 #
@@ -110,12 +127,71 @@ _installed = False
 
 # Accumulated for the periodic summary: function -> [count, total seconds, slowest, its thread].
 _stats: dict[str, list] = {}
-# Slow calls seen but not yet written. The tracer NEVER logs: the daily file handler writes to
-# the operational share, and blocking an SDK call on a network write -- or on a share that has
-# gone away -- would be a worse fault than the one being diagnosed. So the trace path only
-# accumulates, and `drain_to_log` does the I/O from the band timer instead.
+# Slow calls seen but not yet written. Nothing on the call path touches the SERVICE LOG: its
+# daily file handler writes to the operational share, and blocking an SDK call on a network
+# write -- or on a share that has gone away -- would be a worse fault than the one being
+# diagnosed. So the trace path only accumulates, and `drain_to_log` does that I/O from the band
+# timer instead. The per-call file below is the deliberate exception, and it is local; see
+# `_write_trace` for why it cannot be deferred the same way.
 _pending_slow: list[tuple[str, int | None, float, str]] = []
 _last_summary: float | None = None
+
+# The per-call file. Its own lock, not _trace_lock: the in-memory bookkeeping must not be held
+# across a write. `_trace_file_broken` latches on the first failure -- if the file cannot be
+# written, every subsequent SDK call must not pay for discovering that again.
+_file_lock = threading.Lock()
+_trace_file = None
+_trace_file_broken = False
+_call_seq = 0
+
+
+def _render(value) -> str:
+    """One argument or return value, as something a reader can match against the SDK manual.
+
+    Best-effort by design: these are raw ctypes objects, and an argument nobody anticipated
+    must degrade to its type name rather than raise inside a call this is only observing.
+    """
+    with contextlib.suppress(Exception):  # see the docstring: degrade to the type name, never raise
+        if isinstance(value, ctypes.c_char_p):
+            raw = value.value
+            return repr(raw.decode("ascii", "replace")) if raw is not None else "None"
+        if hasattr(value, "value") and isinstance(value.value, (int, float, bool, bytes)):
+            return repr(value.value)[:TRACE_VALUE_CHARS]
+        if isinstance(value, (int, float, bool, str, bytes)) or value is None:
+            return repr(value)[:TRACE_VALUE_CHARS]
+    return type(value).__name__
+
+
+def _write_trace(line: str) -> None:
+    """Append one line to the per-call trace file, opening it on first use.
+
+    ON THE CALL PATH, which reverses the rule the rest of this module follows. The reasoning:
+    a queue drained by the timer would lose whatever had not been drained when the process was
+    killed -- and the calls immediately before a hang or a crash are precisely the ones support
+    will ask about. A trace that is complete except at the interesting moment is not worth
+    keeping. The file is local and line-buffered, so each line reaches the OS on its own and
+    survives the process dying; only a machine crash could lose it.
+
+    A failure latches rather than retrying: if the file has gone, every later SDK call must not
+    pay to rediscover that.
+    """
+    global _trace_file, _trace_file_broken
+    if TRACE_FILE is None or _trace_file_broken:
+        return
+    try:
+        with _file_lock:
+            if _trace_file is None:
+                os.makedirs(os.path.dirname(TRACE_FILE), exist_ok=True)
+                _trace_file = open(TRACE_FILE, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+            _trace_file.write(line + "\n")
+    except Exception as e:  # noqa: BLE001 -- never raise into an SDK call
+        _trace_file_broken = True
+        logger.error(f"{MARKER} per-call trace disabled, could not write {TRACE_FILE}: {type(e).__name__}: {e}")
+
+
+def _stamp() -> str:
+    """UTC with milliseconds, spelled the way the service log spells it, so the two line up."""
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "Z"
 
 
 def _addr_of(args: tuple) -> int | None:
@@ -153,7 +229,24 @@ class _TracedFunc:
         return getattr(self._fn, key)
 
     def __call__(self, *args, **kwargs):
+        global _call_seq
         ident, t0 = threading.get_ident(), time.monotonic()
+
+        # An ENTRY line as well as an exit one, which doubles the file and is the whole point:
+        # a call that never returns writes no exit line, so with exits alone the one call that
+        # matters would be the one call absent from the trace. An unmatched `>` at the end of
+        # the file IS the finding.
+        #
+        # The id is what makes that legible with four bands interleaving -- `>` and `<` for one
+        # call can be many lines apart, and matching them by name would be guesswork.
+        seq = 0
+        with contextlib.suppress(Exception):
+            with _file_lock:
+                _call_seq += 1
+                seq = _call_seq
+            tname = threading.current_thread().name
+            _write_trace(f"{_stamp()} #{seq:07d} > {self._name}({', '.join(_render(a) for a in args)}) [{tname}]")
+
         # Both sides under the lock. Each thread owns its own key, so the dict operations
         # never collide -- but `calls_in_flight` iterates this dict, and iterating one that
         # another thread is inserting into raises "changed size during iteration". The cost
@@ -161,9 +254,20 @@ class _TracedFunc:
         # tracing must never break the call it is timing
         with contextlib.suppress(Exception), _trace_lock:
             _in_flight[ident] = (self._name, _addr_of(args), t0, threading.current_thread().name)
+        result, raised = None, None
         try:
-            return self._fn(*args, **kwargs)
+            result = self._fn(*args, **kwargs)
+            return result
+        except BaseException as e:
+            raised = e
+            raise
         finally:
+            with contextlib.suppress(Exception):
+                outcome = f"!! {type(raised).__name__}: {raised}" if raised is not None else f"-> {_render(result)}"
+                _write_trace(
+                    f"{_stamp()} #{seq:07d} < {self._name} {outcome} ({time.monotonic() - t0:.3f}s) "
+                    f"[{threading.current_thread().name}]"
+                )
             with contextlib.suppress(Exception), _trace_lock:  # as above
                 name, addr, started, tname = _in_flight.pop(ident, (self._name, None, t0, ""))
                 took = time.monotonic() - started
@@ -204,8 +308,19 @@ def install_call_tracer() -> None:
     if _installed:
         return
     try:
+        # Read BEFORE wrapping, deliberately: afterwards this is itself a traced call, and
+        # asking for it from inside the file's first write would recurse into the writer.
+        dll_version = ge.GetDLLVersion()
         ge.greateyesDLL = _TracedDLL(ge.greateyesDLL)
         _installed = True
+        # A header, because this file goes to the vendor: a trace that does not say which DLL
+        # produced it invites the first question back to be one we already knew the answer to.
+        _write_trace(
+            f"# greateyes SDK call trace -- {socket.gethostname()} -- opened {_stamp()}\n"
+            f"# DLL version {dll_version!r}, python wrapper {getattr(ge, '__file__', '?')}\n"
+            f"# '>' call entered, '<' returned. #NNNNNNN pairs them across threads.\n"
+            f"# An entry with no matching return is a call that never came back."
+        )
         # Marked like every other tracer line: an artefact handed to greateyes should say when
         # tracing started, so a gap in it can be told from a quiet period.
         logger.info(f"{MARKER} installed: timing every greateyes SDK call from here on")
