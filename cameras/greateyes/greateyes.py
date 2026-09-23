@@ -232,6 +232,10 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # that has to, and probe() re-applies from it. False until cool_down() runs, so a band
         # that has never been started up is not cooled behind the operator's back.
         self.cooling_wanted: bool = False
+        # Idempotent, and here rather than at module scope so importing this file does not
+        # reach into the SDK as a side effect. Cameras are built before anything calls the
+        # DLL in anger, so the first construction catches every call worth timing.
+        wedge_report.install_call_tracer()
         # Consecutive failed temperature reads that reported NO_CAMERA_STATUS. Reset by any
         # successful read and by any failure reporting a different status, so only an
         # unbroken run demotes.
