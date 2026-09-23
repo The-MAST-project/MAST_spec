@@ -465,18 +465,17 @@ class Deepspec(Component):
         `wedge_report.CALL_HISTORY` completed calls, which at a few calls a second is seconds
         rather than minutes -- ask while something is wrong, not afterwards.
 
-        Also written to the log, carrying the same marker as everything else the tracer
-        writes. An answer that only came back over HTTP would be the one part of the trace
-        that could not be handed to greateyes with the rest of the night.
+        Answers over HTTP only. It used to echo itself into the service log as well, so that
+        the trace could be handed to greateyes with the rest of the night -- the per-call file
+        does that job now, completely rather than forty calls at a time, so echoing it here
+        would only be a second, worse copy.
         """
-        in_flight, recent = wedge_report.calls_in_flight(), wedge_report.recent_calls()
-        logger.info(f"{wedge_report.MARKER} on-demand: SDK calls in flight:")
-        for line in in_flight:
-            logger.info(f"{wedge_report.MARKER} on-demand:{line}")
-        logger.info(f"{wedge_report.MARKER} on-demand: last completed SDK calls, oldest first:")
-        for line in recent:
-            logger.info(f"{wedge_report.MARKER} on-demand:{line}")
-        return CanonicalResponse(value={"in_flight": in_flight, "recent": recent})
+        return CanonicalResponse(
+            value={
+                "in_flight": wedge_report.calls_in_flight(),
+                "recent": wedge_report.recent_calls(),
+            }
+        )
 
     @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def adjust_temperature_one_camera(self, band: DeepspecBands, target_temperature: int | None = None):
