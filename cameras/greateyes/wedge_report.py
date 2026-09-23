@@ -100,6 +100,30 @@ TRACE_FILE = r"C:\MAST\greateyes-sdk-trace.txt"
 # a line into a page.
 TRACE_VALUE_CHARS = 120
 
+# Pointer targets the trace will dereference to show what the DLL wrote back. Deliberately a
+# WHITELIST of scalars, not "anything with .contents": the wrapper also passes pointers to
+# image buffers, and following one of those would put megabytes in a log line -- while anything
+# unanticipated must not be dereferenced at all. Everything outside this renders as its type.
+#
+# Worth the care because of what the commonest one carries: 31 of the wrapper's calls pass
+# `pointer(c_Status)`, the statusMSG the SDK writes its status code into. 19 of the 50 wrappers
+# never call UpdateStatus(), so for those the status is written by the DLL and then dropped on
+# the floor -- which is the whole of MAST_spec#94. Reading it here recovers the true status of
+# EVERY call, including the ones the Python layer throws away.
+TRACE_DEREF_TYPES = (
+    ctypes.c_bool,
+    ctypes.c_byte,
+    ctypes.c_double,
+    ctypes.c_float,
+    ctypes.c_int,
+    ctypes.c_long,
+    ctypes.c_short,
+    ctypes.c_ubyte,
+    ctypes.c_uint,
+    ctypes.c_ulong,
+    ctypes.c_ushort,
+)
+
 # ---------------------------------------------------------------------------------------
 # SDK call tracing
 #
@@ -160,6 +184,40 @@ def _render(value) -> str:
         if isinstance(value, (int, float, bool, str, bytes)) or value is None:
             return repr(value)[:TRACE_VALUE_CHARS]
     return type(value).__name__
+
+
+def _render_outputs(args: tuple) -> str:
+    """What the DLL wrote into the caller's pointers, read after the call returned.
+
+    The half of a call the entry line cannot show. On the way in these are uninitialised
+    memory; on the way out they carry the status code, the model id, the image geometry --
+    the answers support asks about, and in the statusMSG case an answer the Python wrapper
+    frequently discards (MAST_spec#94).
+
+    Safe to do here, and only here. The pointers are created by the wrapper itself and are
+    still referenced by `args` while this runs, so none of them can have been freed; only the
+    whitelisted scalar targets are followed; and a NULL pointer raises rather than reading
+    address zero, which the suppression turns into a skipped field instead of a dead service.
+    """
+    out = []
+    for i, value in enumerate(args):
+        contents = None
+        with contextlib.suppress(Exception):
+            target = getattr(type(value), "_type_", None)
+            if not hasattr(value, "contents") or target is None:
+                continue
+            if target in TRACE_DEREF_TYPES:
+                contents = repr(value.contents.value)[:TRACE_VALUE_CHARS]
+            elif target is ctypes.c_char_p:
+                raw = value.contents.value
+                contents = repr(raw.decode("ascii", "replace")) if raw is not None else "None"
+            else:
+                # An array or a struct: named, never followed. This is where the image
+                # buffers are, and a trace line is not the place for four megapixels.
+                contents = f"<{getattr(target, '__name__', target)}>"
+        if contents is not None:
+            out.append(f"#{i}={contents}")
+    return f" out({', '.join(out)})" if out else ""
 
 
 def _write_trace(line: str) -> None:
@@ -264,9 +322,11 @@ class _TracedFunc:
         finally:
             with contextlib.suppress(Exception):
                 outcome = f"!! {type(raised).__name__}: {raised}" if raised is not None else f"-> {_render(result)}"
+                # Output parameters only on the way out. On the way in they are uninitialised,
+                # and printing them there would put noise where the sequence should be.
                 _write_trace(
-                    f"{_stamp()} #{seq:07d} < {self._name} {outcome} ({time.monotonic() - t0:.3f}s) "
-                    f"[{threading.current_thread().name}]"
+                    f"{_stamp()} #{seq:07d} < {self._name} {outcome}{_render_outputs(args)} "
+                    f"({time.monotonic() - t0:.3f}s) [{threading.current_thread().name}]"
                 )
             with contextlib.suppress(Exception), _trace_lock:  # as above
                 name, addr, started, tname = _in_flight.pop(ident, (self._name, None, t0, ""))
