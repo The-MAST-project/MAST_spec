@@ -43,6 +43,7 @@ import contextlib
 import ctypes
 import datetime
 import os
+import re
 import socket
 import sys
 import threading
@@ -52,7 +53,7 @@ from collections import deque
 
 import cameras.greateyes.sdk.greateyesSDK as ge  # noqa: N813
 from cameras.greateyes import stale_session
-from common.mast_logging import get_logger
+from common.mast_logging import get_logger, observing_night
 
 logger = get_logger(__name__)
 
@@ -77,10 +78,35 @@ CALL_HISTORY = 40
 # operational share: this is written on the SDK call path (see _write_trace for why it has to
 # be), and the share is the one thing on this machine that can block for seconds.
 #
-# Set to None to turn the per-call file off; the in-memory trace and the log summaries are
-# independent of it. Nothing rotates this -- it is pruned by hand, which at roughly 100 MB a
-# night against 700+ GB free is a decision that can wait.
-TRACE_FILE = r"C:\MAST\greateyes-sdk-trace.txt"
+# Its own directory so that pruning is safe by construction: everything matching the name
+# pattern in here was written by this module, and nothing else has to be reasoned about.
+#
+# NOT under Filer's ram root, and that is load-bearing. `_relocate_products` walks that root
+# and carries off every SUBFOLDER directly holding non-bookkeeping files -- which is exactly
+# what this folder is. Here the ram root is D:/MAST/ (Filer picks D: when it is present, C:
+# only otherwise), so C:\MAST is untouched by the sweep. On a machine with no D: drive the ram
+# root would BE C:/MAST/ and the sweeper would relocate this folder to the share on the next
+# startup, taking the trace off the machine and out from under the open handle.
+#
+# Set TRACE_DIR to None to turn the per-call file off; the in-memory trace is independent.
+TRACE_DIR = r"C:\MAST\Greateyes-SDK-Trace"
+
+# One file per observing night, and the last this many kept.
+#
+# The night rather than the calendar day, taken from the one place that anchor is written down
+# (common.mast_logging.observing_night, MAST_common#28). A night turns at 12:00 UTC and spans
+# local midnight, so dating by the calendar would split every night's trace across two files
+# -- and would put the trace on a different clock from the service log and the product folders,
+# which is the one thing a support artefact must not do.
+TRACE_NIGHTS_KEPT = 7
+
+# Filenames this module owns. Pruning deletes only what matches, so a stray file in the
+# directory is left alone rather than swept up with the traces.
+TRACE_NAME_RE = re.compile(r"^greateyes-sdk-trace-\d{4}-\d{2}-\d{2}\.txt$")
+
+# How often the writer re-derives the current night. Rolling over up to this late costs a few
+# lines in the previous night's file and keeps a datetime call off most of the write path.
+NIGHT_RECHECK_SECONDS = 60
 
 # Longest rendering of a single argument or return value, so one oversized buffer cannot turn
 # a line into a page.
@@ -142,6 +168,13 @@ _file_lock = threading.Lock()
 _trace_file = None
 _trace_file_broken = False
 _call_seq = 0
+# The observing night the open handle belongs to, and when that was last derived. Compared
+# rather than recomputed per call; see _write_trace.
+_trace_night: str | None = None
+_night_checked_at: float | None = None
+# Captured before the DLL is wrapped, for every night's header. Read afterwards it would be a
+# traced call, and asking for it from inside a header write would recurse into the writer.
+_dll_version: str | None = None
 
 # Installation is racy without this, and the race is not cosmetic. greateyes.py builds the four
 # cameras on four concurrent threads (`make-deepspec-camera-<band>`), so GreatEyes.__init__ --
@@ -207,6 +240,49 @@ def _render_outputs(args: tuple) -> str:
     return f" out({', '.join(out)})" if out else ""
 
 
+def _prune_old_traces() -> None:
+    """Keep the newest TRACE_NIGHTS_KEPT nights and delete the rest.
+
+    Only names matching TRACE_NAME_RE, and only files -- a stray anything else in the directory
+    is left where it is rather than swept up with the traces. ISO dates sort chronologically,
+    so lexicographic order is the age order.
+    """
+    with contextlib.suppress(Exception):
+        # Filtered to FILES before the slice, not inside the loop. A directory that happens to
+        # match the pattern would otherwise occupy a deletion slot and survive it, so one
+        # too few real traces would be removed.
+        names = sorted(
+            n for n in os.listdir(TRACE_DIR) if TRACE_NAME_RE.match(n) and os.path.isfile(os.path.join(TRACE_DIR, n))
+        )
+        for name in names[:-TRACE_NIGHTS_KEPT] if len(names) > TRACE_NIGHTS_KEPT else []:
+            os.remove(os.path.join(TRACE_DIR, name))
+
+
+def _open_for_night(night: str) -> None:
+    """Open tonight's trace file, header it, and prune what has aged out.
+
+    Called with _file_lock held. Every file gets its own header: a night's trace is handed to
+    the vendor on its own, so each has to say which machine and which DLL produced it rather
+    than referring back to a file from six nights ago.
+    """
+    global _trace_file, _trace_night
+    if _trace_file is not None:
+        with contextlib.suppress(Exception):
+            _trace_file.close()
+        _trace_file = None
+    os.makedirs(TRACE_DIR, exist_ok=True)
+    path = os.path.join(TRACE_DIR, f"greateyes-sdk-trace-{night}.txt")
+    _trace_file = open(path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+    _trace_night = night
+    _trace_file.write(
+        f"# greateyes SDK call trace -- {socket.gethostname()} -- observing night {night}\n"
+        f"# opened {_stamp()}, DLL version {_dll_version!r}\n"
+        f"# '>' call entered, '<' returned. #NNNNNNN pairs them across threads.\n"
+        f"# An entry with no matching return is a call that never came back.\n"
+    )
+    _prune_old_traces()
+
+
 def _write_trace(line: str) -> None:
     """Append one line to the per-call trace file, opening it on first use.
 
@@ -217,21 +293,26 @@ def _write_trace(line: str) -> None:
     keeping. The file is local and line-buffered, so each line reaches the OS on its own and
     survives the process dying; only a machine crash could lose it.
 
-    A failure latches rather than retrying: if the file has gone, every later SDK call must not
-    pay to rediscover that.
+    A failure latches rather than retrying: if the directory has gone, every later SDK call must
+    not pay to rediscover that.
     """
-    global _trace_file, _trace_file_broken
-    if TRACE_FILE is None or _trace_file_broken:
+    global _trace_file_broken, _night_checked_at
+    if TRACE_DIR is None or _trace_file_broken:
         return
     try:
         with _file_lock:
-            if _trace_file is None:
-                os.makedirs(os.path.dirname(TRACE_FILE), exist_ok=True)
-                _trace_file = open(TRACE_FILE, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+            # Deriving the night costs a datetime per call, so it is done on first use and then
+            # at most every NIGHT_RECHECK_SECONDS. Between checks the open handle is used as-is.
+            now = time.monotonic()
+            if _trace_file is None or _night_checked_at is None or now - _night_checked_at >= NIGHT_RECHECK_SECONDS:
+                _night_checked_at = now
+                night = observing_night(datetime.datetime.now(datetime.UTC))
+                if night != _trace_night:
+                    _open_for_night(night)
             _trace_file.write(line + "\n")
     except Exception as e:  # noqa: BLE001 -- never raise into an SDK call
         _trace_file_broken = True
-        logger.error(f"per-call trace disabled, could not write {TRACE_FILE}: {type(e).__name__}: {e}")
+        logger.error(f"per-call trace disabled, could not write under {TRACE_DIR}: {type(e).__name__}: {e}")
 
 
 def _stamp() -> str:
@@ -341,7 +422,7 @@ class _TracedDLL:
 
 def install_call_tracer() -> None:
     """Start timing SDK calls. Idempotent; safe to call from every camera's constructor."""
-    global _installed
+    global _installed, _dll_version
     # Check and set under the lock, not around it: four camera-construction threads reach this
     # simultaneously, and a bare flag lets more than one through. See _install_lock.
     with _install_lock:
@@ -350,17 +431,11 @@ def install_call_tracer() -> None:
         try:
             # Read BEFORE wrapping, deliberately: afterwards this is itself a traced call, and
             # asking for it from inside the file's first write would recurse into the writer.
-            dll_version = ge.GetDLLVersion()
+            _dll_version = ge.GetDLLVersion()
             ge.greateyesDLL = _TracedDLL(ge.greateyesDLL)
             _installed = True
-            # A header, because this file goes to the vendor: a trace that does not say which
-            # DLL produced it invites a first question back whose answer we already had.
-            _write_trace(
-                f"# greateyes SDK call trace -- {socket.gethostname()} -- opened {_stamp()}\n"
-                f"# DLL version {dll_version!r}, python wrapper {getattr(ge, '__file__', '?')}\n"
-                f"# '>' call entered, '<' returned. #NNNNNNN pairs them across threads.\n"
-                f"# An entry with no matching return is a call that never came back."
-            )
+            # No header written here any more: every night's file needs one of its own, so
+            # _open_for_night writes it as part of opening. The first traced call triggers that.
         except Exception as e:  # noqa: BLE001 -- a diagnostic must not stop the service starting
             logger.error(f"could not install SDK call tracing: {type(e).__name__}: {e}")
 
