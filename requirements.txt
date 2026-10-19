@@ -20,23 +20,23 @@
 #                  installed on mast-ns-spec. It is vendored at
 #                  cameras/andor/sdk/pyAndorSDK2 and reached from there.
 
-fastapi==0.115.6
-astropy==7.0.0
-pymongo==4.10.1
-cachetools==5.5.0
+fastapi==0.140.9
+astropy==8.0.1
+pymongo==4.17.0
+cachetools==7.1.6
 httpx==0.28.1
-uvicorn==0.34.0
-pydantic==2.10.4
-pydantic_core==2.27.2
+uvicorn==0.51.0
+pydantic==2.13.4
+pydantic_core==2.46.4
 zaber_motion==8.2.0
-tomlkit==0.13.2
-typing_extensions==4.12.2
-pywin32==308; sys_platform == "win32"
-numpy==2.2.0
-requests==2.32.3
-urllib3==2.2.3
-beautifulsoup4==4.12.3
-rich==14.1.0
+tomlkit==0.15.1
+typing_extensions==4.16.0
+pywin32==312; sys_platform == "win32"
+numpy==2.5.1
+requests==2.34.2
+urllib3==2.7.0
+beautifulsoup4==4.15.0
+rich==15.0.0
 humanfriendly==10.0
-Pillow==11.1.0
-python-ulid==3.1.0
+Pillow==12.3.0
+python-ulid==4.0.1
