@@ -53,3 +53,18 @@ def temperature_cards(reading: TemperatureReading | None, set_point: float | Non
     if reading is not None and reading.state is not None:
         cards.append(("TEMPSTAT", reading.state.value, "cooler state after exposure"))
     return cards
+
+
+#: Andor's own temperature cards, written by SaveAsFITS: TEMP when the cooler is stabilized and
+#: UNSTTEMP otherwise, with -999 in the one that does not apply (checked on frames from a
+#: stabilized run and from a cooldown, MAST_spec#107). Frames saved before CCD-TEMP carry these.
+ANDOR_TEMPERATURE_KEYWORDS = ("TEMP", "UNSTTEMP")
+
+
+def andor_cards_superseded(cards: list[tuple[str, float | str, str]]) -> tuple[str, ...]:
+    """The Andor cards to drop: both once CCD-TEMP records the reading, none otherwise.
+
+    Without our reading -- a failed read after the exposure -- the SDK's cards are the only
+    temperature the frame has, so they stay.
+    """
+    return ANDOR_TEMPERATURE_KEYWORDS if any(keyword == "CCD-TEMP" for keyword, _, _ in cards) else ()
