@@ -744,9 +744,9 @@ class Highspec(Component):
 
         return handler
 
-    # Three factories rather than one taking a name: the declaration rides on the factory, so
+    # One factory per route rather than one taking a name: the declaration rides on the factory, so
     # one shared factory would enumerate as a single endpoint in declared_endpoints() and one
-    # `@endpoint(` would stand for three routes. The grep is meant to return the surface exactly.
+    # `@endpoint(` would stand for all of them. The grep is meant to return the surface exactly.
     #
     # They bind self.camera at registration, as the hand-written routes did, and that is the
     # decision rather than a limitation to work around (2026-09-06). The schema is generated
@@ -757,7 +757,7 @@ class Highspec(Component):
     # did: do_autofocus reassigned it from the request, permanently and with no restore, so an
     # autofocus naming the other camera left /status reporting one camera while
     # /expose_single_image still exposed on the other. That reassignment is gone; the note at
-    # do_autofocus records it. Reintroducing one would break these three routes silently, since
+    # do_autofocus records it. Reintroducing one would break these routes silently, since
     # the schema and the binding are both already fixed by then.
     @endpoint(tier=Tier.OPERATION, factory=True, methods=("PUT",))
     def _expose_single_image_endpoint(self) -> Callable:
@@ -770,6 +770,10 @@ class Highspec(Component):
     @endpoint(tier=Tier.OPERATION, factory=True, methods=("PUT",))
     def _start_warmup_endpoint(self) -> Callable:
         return self._camera_handler("start_warmup")
+
+    @endpoint(tier=Tier.OPERATION, factory=True, methods=("PUT",))
+    def _adjust_temperature_endpoint(self) -> Callable:
+        return self._camera_handler("adjust_temperature")
 
     @property
     def api_router(self) -> APIRouter:
@@ -841,6 +845,21 @@ class Highspec(Component):
             base_path + "/start_warmup",
             methods=["PUT"],
             endpoint=self._start_warmup_endpoint(),
+        )
+        add_api_route(
+            router,
+            base_path + "/adjust_temperature",
+            methods=["PUT"],
+            endpoint=self._adjust_temperature_endpoint(),
+            summary=f"Set the cooler to a new set point ({self.conf.camera})",
+            description=(
+                f"Configured camera: **{self.conf.camera}** (`{type(self.camera).__name__}`).\n\n"
+                "`target_temperature` in degrees C. The Newton takes whole degrees, so it is rounded "
+                "there and the answer says what was applied; the QHY600 takes it as given. The "
+                "camera's `AdjustingTemperature` activity runs until the sensor is within 1 C of "
+                "the set point. Exposures are allowed meanwhile; changing the set point during "
+                "one is refused."
+            ),
         )
 
         return router

@@ -17,6 +17,7 @@ from pyAndorSDK2 import (
 )
 from pyAndorSDK2.atmcd import AndorCapabilities
 
+from cameras.temperature import TemperatureReading, is_at_set_point, temperature_cards
 from common.activities import NewtonActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.shutter import ShutterConfig
@@ -32,7 +33,7 @@ from common.models.newton import (
     NewtonSettingsConfig,
     NewtonTemperatureConfig,
 )
-from common.models.statuses import NewtonStatus
+from common.models.statuses import CameraTemperatureState, NewtonStatus
 from common.paths import PathMaker
 from common.spec import (
     CLOSED_SHUTTER_FRAMES,
@@ -162,6 +163,17 @@ def error_code(code) -> str:
     return atmcd_errors.Error_Codes(code).__repr__()
 
 
+#: The GetTemperatureF answers that come with a temperature, and the cooler state each means.
+#: Anything else (DRV_ACQUIRING, DRV_NOT_INITIALIZED, DRV_ERROR_ACK) comes without one.
+_ANDOR_TEMPERATURE_STATES: dict[int, CameraTemperatureState] = {
+    atmcd_errors.Error_Codes.DRV_TEMP_STABILIZED: CameraTemperatureState.STABILIZED,
+    atmcd_errors.Error_Codes.DRV_TEMP_NOT_STABILIZED: CameraTemperatureState.NOT_STABILIZED,
+    atmcd_errors.Error_Codes.DRV_TEMP_NOT_REACHED: CameraTemperatureState.NOT_REACHED,
+    atmcd_errors.Error_Codes.DRV_TEMP_DRIFT: CameraTemperatureState.DRIFT,
+    atmcd_errors.Error_Codes.DRV_TEMP_OFF: CameraTemperatureState.OFF,
+}
+
+
 class NewtonEMCCD(Component, SwitchedOutlet):
     _instance = None
 
@@ -205,6 +217,10 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         # What the camera said it would actually expose for, from GetAcquisitionTimings.
         # None until an exposure has been configured, or if that call failed.
         self.actual_exposure_duration: float | None = None
+        # The latest temperature reading, which /status reports during an acquisition, when
+        # the camera is not read; and the one readout() took for the frame's header.
+        self.latest_temperature: TemperatureReading | None = None
+        self.post_exposure_temperature: TemperatureReading | None = None
 
         assert self.power_switch is not None
         if self.power_switch.detected and not self.is_on():
@@ -395,20 +411,71 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                 set_point = self.conf.temperature.regular_set_point if self.conf.temperature else None
 
         self.turn_cooler(True)
-        ret = self.sdk.SetTemperature(set_point)
-        if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.error(f"failed to set temperature to {set_point} degrees (code={error_code(ret)})")
+        if not self._set_temperature(set_point):
             return
         self.start_activity(NewtonActivities.CoolingDown, details=[f"set_point={set_point}"])
 
     def start_warmup(self):
         self.turn_cooler(True)
         target_temp = self.max_temp
-        ret = self.sdk.SetTemperature(target_temp)
-        if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
-            self.error(f"failed to set temperature to {target_temp} degrees (code={error_code(ret)})")
+        if not self._set_temperature(target_temp):
             return
         self.start_activity(NewtonActivities.WarmingUp, details=[f"set_point={target_temp}"])
+
+    def _set_temperature(self, set_point) -> bool:
+        """SetTemperature, and record the set point it took. False, logged, if refused.
+
+        Recorded here so /status and SET-TEMP report what the camera was last given: the
+        cooldown and warmup paths used to set the camera without updating `set_point`.
+        """
+        ret = self.sdk.SetTemperature(set_point)
+        if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
+            self.error(f"failed to set temperature to {set_point} degrees (code={error_code(ret)})")
+            return False
+        self.set_point = set_point
+        return True
+
+    def adjust_temperature(self, target_temperature: float) -> CanonicalResponse:
+        """Move the cooler to a new set point; `AdjustingTemperature` until it stabilizes there.
+
+        The SDK takes whole degrees (`SetTemperature(int)`), so the target is rounded and the
+        answer says what was applied. Exposures are allowed meanwhile.
+
+        Refused while starting up or shutting down: those wait for CoolingDown / WarmingUp to
+        end before they finish, and shutdown then powers the camera off, so a new set point
+        would break them. Refused during an acquisition, where the SDK would refuse it anyway
+        and the frame would be taken at a moving temperature. A cooldown or warmup in progress
+        is superseded: the new target is the one that counts.
+        """
+        if not self.detected:
+            return CanonicalResponse(errors=["camera not detected"])
+        if not self._initialized:
+            return CanonicalResponse(errors=["SDK not initialized"])
+        for blocking in (NewtonActivities.StartingUp, NewtonActivities.ShuttingDown, NewtonActivities.Acquiring):
+            if self.is_active(blocking):
+                return CanonicalResponse(errors=[f"cannot adjust the temperature while {blocking.name}"])
+
+        set_point = round(target_temperature)
+        if self.min_temp is not None and self.max_temp is not None and not self.min_temp <= set_point <= self.max_temp:
+            return CanonicalResponse(
+                errors=[f"set point {set_point} C is out of the camera's range [{self.min_temp}, {self.max_temp}]"]
+            )
+
+        self.turn_cooler(True)
+        if not self._set_temperature(set_point):
+            return CanonicalResponse(errors=[f"the camera refused set point {set_point} C"])
+
+        for superseded in (NewtonActivities.CoolingDown, NewtonActivities.WarmingUp):
+            if self.is_active(superseded):
+                self.end_activity(superseded)
+        self.start_activity(NewtonActivities.AdjustingTemperature, details=[f"set_point={set_point}"])
+        # Already there, the driver signals no event to end it; a reading ends it now instead.
+        self.read_temperature()
+
+        applied = f"set point {set_point} C"
+        if set_point != target_temperature:
+            applied += f" (requested {target_temperature}, the camera takes whole degrees)"
+        return CanonicalResponse(value=applied)
 
     @property
     def name(self) -> str:
@@ -479,9 +546,24 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                         self.end_activity(NewtonActivities.Exposing)
                         threading.Thread(name="highspec-readout", target=self.readout).start()
 
-                    elif self.is_active(NewtonActivities.CoolingDown) or self.is_active(NewtonActivities.WarmingUp):
-                        (temp_code, temp) = self.sdk.GetTemperatureF()
-                        if temp_code == atmcd_errors.Error_Codes.DRV_TEMPERATURE_STABILIZED:
+                    elif (
+                        self.is_active(NewtonActivities.CoolingDown)
+                        or self.is_active(NewtonActivities.WarmingUp)
+                        or self.is_active(NewtonActivities.AdjustingTemperature)
+                    ):
+                        # The driver signals stabilized, drifted, or could not be reached
+                        # (SetDriverEvent, condition 3). read_temperature() ends
+                        # AdjustingTemperature itself; CoolingDown / WarmingUp end below.
+                        reading = self.read_temperature()
+                        if reading is None:
+                            pass  # an acquisition, or a failed read that read_temperature logged
+                        elif reading.state in (CameraTemperatureState.NOT_REACHED, CameraTemperatureState.DRIFT):
+                            self.warning(
+                                f"temperature {reading.state.value} at {reading.value:.2f} degrees "
+                                f"(set point {self.set_point})"
+                            )
+                        elif reading.state == CameraTemperatureState.STABILIZED:
+                            temp = reading.value
                             self.info(f"temperature has stabilized at {temp:.2f} degrees")
 
                             if self.is_active(NewtonActivities.CoolingDown):
@@ -500,8 +582,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                                     power_off = True
                             if power_off:
                                 self.power_off()
-                        else:
-                            self.error(f"Could not GetTemperatureF() (code={error_code(temp_code)})")
+                        # NOT_STABILIZED / OFF: still on the way, nothing to end yet.
 
                     elif status_code == atmcd_errors.Error_Codes.DRV_ERROR_ACK:
                         self.error(f"Driver cannot communicate with the camera (code={error_code(status_code)})")
@@ -1112,6 +1193,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         ret = self.sdk.StartAcquisition()
         if ret != atmcd_errors.Error_Codes.DRV_SUCCESS:
             self.error(f"could not StartAcquisition() (code={error_code(ret)})")
+            # No exposure, so no readout() to end it. Left set, it held highspec's
+            # `while ... Acquiring` loops forever and stopped /status reading the temperature.
+            self.end_activity(NewtonActivities.Acquiring)
             return
         self.info("started exposure with sdk.StartAcquisition()")
 
@@ -1142,6 +1226,10 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.end_activity(NewtonActivities.Aborting)
             self.end_activity(NewtonActivities.Acquiring)
             return
+
+        # Once the exposure is over and before SaveAsFITS: the nearest reading to the
+        # temperature the frame was taken at. The driver is idle by now, so the SDK answers.
+        self.post_exposure_temperature = self.read_temperature()
 
         with MoveGuardian().protect(self.latest_exposure_settings.image_full_name):
             ret = self.sdk.SaveAsFITS(self.latest_exposure_settings.image_full_name, typ=0)
@@ -1180,6 +1268,10 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                     value=self.latest_exposure_settings.frame_type.value,
                     comment="frame type requested (light/bias/dark/flat)",
                 )
+                for keyword, value, comment in temperature_cards(self.post_exposure_temperature, self.set_point):
+                    fits.setval(self.latest_exposure_settings.image_full_name, keyword, value=value, comment=comment)
+                if self.post_exposure_temperature is None:
+                    self.warning("no temperature reading after the exposure: CCD-TEMP and TEMPSTAT not written")
             else:
                 self.error(f"failed sdk.SaveAsFITS({self.latest_exposure_settings.image_full_name}, typ=0) (ret={ret})")
 
@@ -1244,6 +1336,10 @@ class NewtonEMCCD(Component, SwitchedOutlet):
                 self.debug("Aborted acquisition")
             else:
                 self.error(f"Could not AbortAcquisition() (code={error_code(ret)})")
+            # With `Exposing` cleared no readout follows, and readout() was the only place
+            # `Acquiring` ended -- so every abort mid-exposure left it set for good, holding
+            # highspec's `while ... Acquiring` loops and /status's temperature guard.
+            self.end_activity(NewtonActivities.Acquiring)
 
         # An abort during the READOUT is the case AbortAcquisition cannot help with. By then
         # the acquisition is over -- DRV_IDLE is what started the readout thread -- and the
@@ -1258,40 +1354,59 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             # Nothing to discard, so the interval is over as soon as it began.
             self.end_activity(NewtonActivities.Aborting)
 
-    def get_temperature(self) -> float | None:
+    def read_temperature(self) -> TemperatureReading | None:
+        """Read the sensor temperature, in whatever state the cooler is in.
+
+        Every answer that carries a temperature is kept. This used to return one only for
+        DRV_TEMP_STABILIZED, so a camera cooling down or drifting reported no temperature at
+        all. DRV_ACQUIRING is the SDK declining during an acquisition: busy, not a failure, and
+        not logged as one. A reading at the set point ends AdjustingTemperature, which covers
+        the case where no driver event comes because the camera was already there.
+        """
         if not self.detected:
             self.error("camera not detected")
-            return
+            return None
         if not self._initialized:
             self.error("SDK not initialized")
-            return
+            return None
 
         (ret, temp) = self.sdk.GetTemperatureF()
-        if ret == atmcd_errors.Error_Codes.DRV_TEMP_STABILIZED:
-            return temp
-        elif ret == atmcd_errors.Error_Codes.DRV_TEMP_NOT_STABILIZED:
+        state = _ANDOR_TEMPERATURE_STATES.get(ret)
+        if state is None:
+            if ret != atmcd_errors.Error_Codes.DRV_ACQUIRING:
+                self.error(f"Could not GetTemperatureF() (code={error_code(ret)})")
             return None
-        else:
-            self.error(f"Could not GetTemperatureF() (code={error_code(ret)})")
-            return None
+
+        reading = TemperatureReading.now(value=temp, state=state)
+        self.latest_temperature = reading
+        if (
+            self.is_active(NewtonActivities.AdjustingTemperature)
+            and state == CameraTemperatureState.STABILIZED
+            and is_at_set_point(temp, self.set_point)
+        ):
+            self.info(f"temperature has stabilized at {temp:.2f} degrees (set point {self.set_point})")
+            self.end_activity(NewtonActivities.AdjustingTemperature)
+        return reading
+
+    def _temperature_for_status(self) -> TemperatureReading | None:
+        """A fresh reading, or -- during an acquisition -- the latest one, without asking.
+
+        The SDK is not thread-safe, and SettingParameters / Acquiring span every SDK call of
+        an exposure, SaveAsFITS included. A reading taken then would at best come back
+        DRV_ACQUIRING; the latest one carries its own `at`, so its age is visible.
+        """
+        if self.is_active(NewtonActivities.Acquiring) or self.is_active(NewtonActivities.SettingParameters):
+            return self.latest_temperature
+        return self.read_temperature() or self.latest_temperature
+
+    def get_temperature(self) -> float | None:
+        reading = self.read_temperature()
+        return reading.value if reading is not None else None
 
     @property
     def temperature_is_stabilized(self) -> bool:
-        if not self.detected:
-            self.error("camera not detected")
-            return False
-        if not self._initialized:
-            self.error("SDK not initialized")
-            return False
-
-        (ret, _temp) = self.sdk.GetTemperatureF()
-        if ret == atmcd_errors.Error_Codes.DRV_TEMP_STABILIZED:
-            return True
-        elif ret == atmcd_errors.Error_Codes.DRV_SUCCESS or ret == atmcd_errors.Error_Codes.DRV_TEMPERATURE_NOT_STABILIZED:
-            return False
-        else:
-            self.error(f"Could not GetTemperatureF() (code={error_code(ret)})")
-            return False
+        reading = self.read_temperature()
+        return reading is not None and reading.state == CameraTemperatureState.STABILIZED
 
     def __del__(self):
         self._terminated = True
@@ -1300,6 +1415,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             self.sdk.ShutDown()
 
     def status(self) -> NewtonStatus:
+        reading = self._temperature_for_status() if self.connected else None
         ret = NewtonStatus(
             detected=self.detected,
             powered=self.is_on(),
@@ -1311,7 +1427,9 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             current_set_point=self.set_point,
             regular_set_point=self.conf.temperature.regular_set_point if self.conf.temperature else None,
             science_set_point=self.conf.temperature.science_set_point if self.conf.temperature else None,
-            temperature=self.get_temperature() if self.connected else None,
+            temperature=reading.value if reading else None,
+            temperature_state=reading.state if reading else None,
+            temperature_at=reading.at if reading else None,
             errors=self.errors,
             latest_spec_exposure_settings=self.latest_exposure_settings,
         )
