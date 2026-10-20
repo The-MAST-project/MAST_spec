@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Annotated, Literal, cast
 
 import win32event
-from astropy.io import fits
 from fastapi import Query
 from pyAndorSDK2 import (
     CameraCapabilities,
@@ -17,7 +16,8 @@ from pyAndorSDK2 import (
 )
 from pyAndorSDK2.atmcd import AndorCapabilities
 
-from cameras.temperature import TemperatureReading, is_at_set_point, temperature_cards
+from cameras.headers import Card, update_header
+from cameras.temperature import TemperatureReading, andor_cards_superseded, is_at_set_point, temperature_cards
 from common.activities import NewtonActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config.shutter import ShutterConfig
@@ -1213,7 +1213,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         Path(self.latest_exposure_settings.image_full_name).parent.mkdir(parents=True, exist_ok=True)
 
         self.start_activity(NewtonActivities.ReadingOut)
-        # The SDK writes the file and `fits.setval` then rewrites its header, so both are
+        # The SDK writes the file and `_update_header` then rewrites its header, so both are
         # inside one protect: a ram->shared move must not see the file between them. This
         # also records it as a product, so release_folder() waits for it to reach the
         # shared area instead of discarding it as scratch.
@@ -1235,48 +1235,53 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             ret = self.sdk.SaveAsFITS(self.latest_exposure_settings.image_full_name, typ=0)
             if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
                 self.info(f"saved {self.latest_exposure_settings.image_full_name}")
-                # Two cards, so a frame says both what was asked for and what happened.
-                # EXPOSURE used to be overwritten with the REQUEST, which destroyed the only
-                # record of the actual: the header could never disagree with the caller,
-                # however the camera had quantised or clamped the request.
-                requested = self.latest_exposure_settings.exposure_duration
-                actual = self.actual_exposure_duration if self.actual_exposure_duration is not None else requested
-                fits.setval(
-                    self.latest_exposure_settings.image_full_name,
-                    "EXPOSURE",
-                    value=actual,
-                    # 43 chars. A FITS card is 80 total, and this one spends 33 on
-                    # `EXPOSURE= <20-wide value> / `, so a comment over 47 is truncated --
-                    # astropy says so with a VerifyWarning at readout, which is easy to miss
-                    # in a log. The original ran to 52 and every frame on the share carries
-                    # "(GetAcquisitionTim" with the parenthesis unclosed.
-                    comment="[s] actual exposure (GetAcquisitionTimings)",
-                )
-                fits.setval(
-                    self.latest_exposure_settings.image_full_name,
-                    "EXPREQ",
-                    value=requested,
-                    comment="[s] exposure requested",
-                )
-                # IMAGETYP is the FITS convention for this, and until now the frame type was
-                # recorded NOWHERE in the file -- only in the filename, which is the first
-                # thing lost to a copy or a rename. A calibration library sorted on the header
-                # could not tell a dark from a light.
-                fits.setval(
-                    self.latest_exposure_settings.image_full_name,
-                    "IMAGETYP",
-                    value=self.latest_exposure_settings.frame_type.value,
-                    comment="frame type requested (light/bias/dark/flat)",
-                )
-                for keyword, value, comment in temperature_cards(self.post_exposure_temperature, self.set_point):
-                    fits.setval(self.latest_exposure_settings.image_full_name, keyword, value=value, comment=comment)
-                if self.post_exposure_temperature is None:
-                    self.warning("no temperature reading after the exposure: CCD-TEMP and TEMPSTAT not written")
+                self._update_header(self.latest_exposure_settings)
             else:
                 self.error(f"failed sdk.SaveAsFITS({self.latest_exposure_settings.image_full_name}, typ=0) (ret={ret})")
 
         self.end_activity(NewtonActivities.ReadingOut)
         self.end_activity(NewtonActivities.Acquiring)
+
+    def _update_header(self, settings: SpecExposureSettings):
+        """Our cards on the frame SaveAsFITS just wrote, in one rewrite of the file.
+
+        It used to be one `fits.setval` -- one open, rewrite and close -- per card. An error
+        here is logged rather than raised: raised, it ended the readout thread with
+        ReadingOut and Acquiring still set.
+        """
+        # Two cards, so a frame says both what was asked for and what happened. EXPOSURE used
+        # to be overwritten with the REQUEST, which destroyed the only record of the actual:
+        # the header could never disagree with the caller, however the camera had quantised
+        # or clamped the request.
+        requested = settings.exposure_duration
+        actual = self.actual_exposure_duration if self.actual_exposure_duration is not None else requested
+        cards: list[Card] = [
+            # 43 chars. A FITS card is 80 total, and this one spends 33 on
+            # `EXPOSURE= <20-wide value> / `, so a comment over 47 is truncated -- astropy says
+            # so with a VerifyWarning at readout, which is easy to miss in a log. The original
+            # ran to 52 and every frame on the share carries "(GetAcquisitionTim" with the
+            # parenthesis unclosed.
+            ("EXPOSURE", actual, "[s] actual exposure (GetAcquisitionTimings)"),
+            ("EXPREQ", requested, "[s] exposure requested"),
+            # IMAGETYP is the FITS convention for this, and until it was added the frame type
+            # was recorded NOWHERE in the file -- only in the filename, which is the first thing
+            # lost to a copy or a rename. A calibration library sorted on the header could not
+            # tell a dark from a light.
+            ("IMAGETYP", settings.frame_type.value, "frame type requested (light/bias/dark/flat)"),
+            *temperature_cards(self.post_exposure_temperature, self.set_point),
+        ]
+        # CCD-TEMP replaces Andor's TEMP / UNSTTEMP, so a frame has one temperature card and it
+        # is the same on both cameras. Earlier frames on the share carry only Andor's.
+        superseded = andor_cards_superseded(cards)
+
+        path = settings.image_full_name
+        try:
+            update_header(path, cards, remove=superseded)
+        except Exception as e:  # noqa: BLE001 -- the readout must finish, whatever the header does
+            self.error(f"could not update the header of {path}: {e!r}")
+            return
+        if self.post_exposure_temperature is None:
+            self.warning("no temperature reading after the exposure: kept Andor's TEMP / UNSTTEMP")
 
     def startup(self):
         if not self.conf.camera_enabled:

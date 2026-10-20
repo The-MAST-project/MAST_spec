@@ -8,8 +8,10 @@ by a run on the hardware, not here.
 from __future__ import annotations
 
 from cameras.temperature import (
+    ANDOR_TEMPERATURE_KEYWORDS,
     SET_POINT_TOLERANCE_DEGREES,
     TemperatureReading,
+    andor_cards_superseded,
     is_at_set_point,
     temperature_cards,
 )
@@ -63,3 +65,13 @@ def test_a_reading_without_a_state_writes_no_tempstat():
 def test_every_comment_fits_its_card():
     for _, _, comment in temperature_cards(_reading(), set_point=-60):
         assert len(comment) <= MAX_COMMENT_LENGTH, comment
+
+
+def test_andors_cards_go_once_ccd_temp_records_the_reading():
+    assert andor_cards_superseded(temperature_cards(_reading(), set_point=-60)) == ANDOR_TEMPERATURE_KEYWORDS
+    assert ANDOR_TEMPERATURE_KEYWORDS == ("TEMP", "UNSTTEMP")
+
+
+def test_andors_cards_stay_without_our_reading():
+    # A failed read after the exposure: the SDK's cards are then the frame's only temperature.
+    assert andor_cards_superseded(temperature_cards(None, set_point=-60)) == ()
