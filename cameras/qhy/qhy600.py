@@ -1,4 +1,5 @@
 import ctypes
+import datetime
 import os
 import threading
 import time
@@ -12,15 +13,18 @@ from fastapi import Query
 from pydantic import BaseModel
 
 from cameras.greateyes.greateyes import Exposure
+from cameras.temperature import TemperatureReading, is_at_set_point, temperature_cards
 from common.activities import HighspecActivities
+from common.canonical import CanonicalResponse
 from common.config import Config
 from common.dlipowerswitch import SwitchedOutlet
 from common.filer import Filer, MoveGuardian
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
-from common.models.statuses import QHY600Status
+from common.models.statuses import CameraTemperatureState, QHY600Status
 from common.paths import PathMaker
-from common.spec import SpecExposureSettings
+from common.spec import FrameType, SpecExposureSettings
+from common.utils import RepeatTimer
 
 from .controls import QHYControlId, qhy_controls
 from .prototypes import set_ctypes_prototypes
@@ -79,6 +83,12 @@ class QHYActivities(IntFlag):
     # common.activities, so the blast radius is smaller than the Newton's and greateyes' --
     # but ComponentStatus.activities still carries the raw bitmask on the wire.
     Aborting = auto()
+    # A set point given through `adjust_temperature`, until on_timer sees the sensor reach it.
+    AdjustingTemperature = auto()
+
+
+#: How often on_timer looks at the temperature while AdjustingTemperature is active.
+TEMPERATURE_CHECK_SECONDS = 5
 
 
 class QHYCameraSettingsModel(BaseModel):
@@ -89,6 +99,8 @@ class QHYCameraSettingsModel(BaseModel):
     number_of_exposures: int = 1
     image_path: str | Path | None = None  # full path to save image
     depth: Literal[8, 16] = 16  # bits per pixel
+    # Recorded as IMAGETYP. This camera has no shutter to drive from it.
+    frame_type: FrameType = FrameType.LIGHT
 
 
 class QHY600(Component, SwitchedOutlet):
@@ -145,9 +157,26 @@ class QHY600(Component, SwitchedOutlet):
         self.latest_exposure: Exposure | None = None
         self.latest_spec_exposure_settings: SpecExposureSettings | None = None
 
+        # The set point last given through adjust_temperature, or None if never: the camera
+        # is then cooling to whatever it was given before this process started.
+        self._set_point: float | None = None
+        # The latest temperature reading, which /status reports during an exposure, when the
+        # camera is not read; and the one taken after the exposure for the frame's header.
+        self.latest_temperature: TemperatureReading | None = None
+        self.post_exposure_temperature: TemperatureReading | None = None
+        # What the camera took CONTROL_EXPOSURE as, read back when the exposure is set up, and
+        # when the exposure started: EXPOSURE and DATE-OBS in the header.
+        self.actual_exposure_duration: float | None = None
+        self.exposure_started_at: str | None = None
+
         self._connected = False
         self.connect()
         self._initialized = True
+
+        # The QHY SDK signals nothing when the sensor reaches its set point, so this looks.
+        self.timer = RepeatTimer(TEMPERATURE_CHECK_SECONDS, function=self.on_timer)
+        self.timer.name = "qhy600-timer-thread"
+        self.timer.start()
 
     def set_parent_spec(self, parent_spec):
         self.parent_spec = parent_spec
@@ -167,6 +196,8 @@ class QHY600(Component, SwitchedOutlet):
         self.initialize_camera()
 
     def __del__(self):
+        if getattr(self, "timer", None) is not None:
+            self.timer.cancel()
         self.disconnect()
 
     def disconnect(self):
@@ -457,15 +488,24 @@ class QHY600(Component, SwitchedOutlet):
         self.start_activity(QHYActivities.ExposingSingleFrame)
         self.start_activity(QHYActivities.SettingParameters)
 
+        # These three returned with ExposingSingleFrame still set, so a failed setup left the
+        # camera looking busy for good -- and /status, which no longer reads the temperature
+        # while it is set, would have reported a stale one from then on.
         read_mode = QHYReadMode.Photographic_DSO_16BIT
         if self.sdk_call(qhy.SetQHYCCDReadMode, read_mode) != QHYCCD_SUCCESS:
+            self.end_activity(QHYActivities.SettingParameters)
+            self.end_activity(QHYActivities.ExposingSingleFrame)
             return
 
         stream_mode = QHYStreamMode.SingleFrame
         if self.sdk_call(qhy.SetQHYCCDStreamMode, stream_mode) != QHYCCD_SUCCESS:
+            self.end_activity(QHYActivities.SettingParameters)
+            self.end_activity(QHYActivities.ExposingSingleFrame)
             return
 
         if self.sdk_call(qhy.SetQHYCCDBitsMode, self.bits_mode) != QHYCCD_SUCCESS:
+            self.end_activity(QHYActivities.SettingParameters)
+            self.end_activity(QHYActivities.ExposingSingleFrame)
             return
 
         self.latest_settings = settings
@@ -473,6 +513,9 @@ class QHY600(Component, SwitchedOutlet):
             QHYControlId.CONTROL_EXPOSURE,
             ctypes.c_double(settings.exposure_duration * 1e6),
         )
+        # What the camera took it as, for EXPOSURE: the header used to carry the request only.
+        exposure_us = self.sdk_get_control(QHYControlId.CONTROL_EXPOSURE)
+        self.actual_exposure_duration = exposure_us / 1e6 if exposure_us is not None else None
 
         if settings.gain is not None and not self.sdk_set_control(QHYControlId.CONTROL_GAIN, ctypes.c_double(settings.gain)):
             self.end_activity(QHYActivities.SettingParameters)
@@ -517,7 +560,10 @@ class QHY600(Component, SwitchedOutlet):
 
         # Start exposure
         self.info(f"Starting exposure: {settings.exposure_duration:.2f}s")
+        # DATE-OBS is when the exposure starts; it used to be when the file was saved.
+        self.exposure_started_at = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
         if self.sdk_call(qhy.ExpQHYCCDSingleFrame) != QHYCCD_SUCCESS:
+            self.end_activity(QHYActivities.ExposingSingleFrame)
             return
 
         completer = threading.Thread(name="qhy600-exposure-completer", target=self.complete_exposure)
@@ -570,6 +616,10 @@ class QHY600(Component, SwitchedOutlet):
             self.end_activity(QHYActivities.ExposingSingleFrame)
             return
 
+        # GetQHYCCDSingleFrame spans the exposure and the readout, so this is the first moment
+        # after the exposure that the camera can be read.
+        self.post_exposure_temperature = self.read_temperature()
+
         if self.latest_settings is not None and self.latest_settings.image_path is not None:
             self.start_activity(QHYActivities.Saving)
 
@@ -596,7 +646,14 @@ class QHY600(Component, SwitchedOutlet):
                 hdu.header["NAXIS1"] = settings.roi.width
                 hdu.header["NAXIS2"] = settings.roi.height
 
-            hdu.header["EXPTIME"] = settings.exposure_duration
+            # The same exposure cards as the Newton's: what happened, and what was asked for.
+            # EXPTIME stays, with the actual, because reduction tools look for it.
+            requested = settings.exposure_duration
+            actual = self.actual_exposure_duration if self.actual_exposure_duration is not None else requested
+            hdu.header["EXPOSURE"] = (actual, "[s] actual exposure (CONTROL_EXPOSURE)")
+            hdu.header["EXPTIME"] = (actual, "[s] actual exposure, as EXPOSURE")
+            hdu.header["EXPREQ"] = (requested, "[s] exposure requested")
+            hdu.header["IMAGETYP"] = (settings.frame_type.value, "frame type requested (light/bias/dark/flat)")
 
             # gain = self.sdk_get_control(QHYControlId.CONTROL_GAIN)
             # hdu.header["GAIN"] = gain if gain is not None else "unknown"
@@ -609,7 +666,14 @@ class QHY600(Component, SwitchedOutlet):
                 hdu.header["XBINNING"] = settings.binning.x
                 hdu.header["YBINNING"] = settings.binning.y
             hdu.header["INSTRUME"] = self.model or "QHY600MM"
-            hdu.header["DATE-OBS"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+            hdu.header["DATE-OBS"] = (
+                self.exposure_started_at or time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
+                "UTC start of exposure",
+            )
+            for keyword, value, comment in temperature_cards(self.post_exposure_temperature, self._set_point):
+                hdu.header[keyword] = (value, comment)
+            if self.post_exposure_temperature is None:
+                self.warning("no temperature reading after the exposure: CCD-TEMP and TEMPSTAT not written")
             if self.parent_spec is not None:
                 hdu.header["FOCUSPOS"] = self.parent_spec.focusing_stage.position(unit=zaber_motion.Units.LENGTH_MILLIMETRES)
                 mnemonic = next(
@@ -652,13 +716,92 @@ class QHY600(Component, SwitchedOutlet):
     def powerdown(self):
         self.power_off()
 
+    def adjust_temperature(self, target_temperature: float) -> CanonicalResponse:
+        """Move the cooler to a new set point; `AdjustingTemperature` until the sensor is there.
+
+        Taken as given: CONTROL_COOLER is a double. Exposures are allowed meanwhile, but the
+        set point is not changed during one, so a frame is never taken while it moves. A new
+        target supersedes one still being adjusted to.
+        """
+        if not self.connected:
+            return CanonicalResponse(errors=["camera not connected"])
+        if self.is_active(QHYActivities.ExposingSingleFrame):
+            return CanonicalResponse(errors=["cannot adjust the temperature during an exposure"])
+        # sdk_set_control checks the value against the control's range, and logs a refusal.
+        if not self.sdk_set_control(QHYControlId.CONTROL_COOLER, ctypes.c_double(target_temperature)):
+            return CanonicalResponse(errors=[f"the camera refused set point {target_temperature} C"])
+
+        self._set_point = target_temperature
+        if self.is_active(QHYActivities.AdjustingTemperature):
+            self.end_activity(QHYActivities.AdjustingTemperature)
+        self.start_activity(QHYActivities.AdjustingTemperature, details=[f"set_point={target_temperature}"])
+        # Already there, it ends now rather than on the next tick.
+        self.read_temperature()
+        return CanonicalResponse(value=f"set point {target_temperature} C")
+
+    def read_temperature(self) -> TemperatureReading | None:
+        """Read the sensor temperature. A reading at the set point ends AdjustingTemperature.
+
+        The QHY SDK reports a temperature and no cooler state, so the state is this driver's
+        own: `adjusting` until the sensor is within SET_POINT_TOLERANCE_DEGREES of the set
+        point, `stabilized` there, `drift` if it later leaves it, and None when no set point
+        has been given -- the camera is then cooling to something this process never chose.
+        """
+        if not self.connected:
+            return None
+        value = self.sdk_get_control(QHYControlId.CONTROL_CURTEMP)
+        if value is None:
+            return None
+
+        at_set_point = is_at_set_point(value, self._set_point)
+        if self.is_active(QHYActivities.AdjustingTemperature) and at_set_point:
+            self.info(f"temperature has reached the set point: {value:.2f} C (set point {self._set_point})")
+            self.end_activity(QHYActivities.AdjustingTemperature)
+
+        if self._set_point is None:
+            state = None
+        elif self.is_active(QHYActivities.AdjustingTemperature):
+            state = CameraTemperatureState.ADJUSTING
+        else:
+            state = CameraTemperatureState.STABILIZED if at_set_point else CameraTemperatureState.DRIFT
+
+        reading = TemperatureReading.now(value=value, state=state)
+        self.latest_temperature = reading
+        return reading
+
+    def _temperature_for_status(self) -> TemperatureReading | None:
+        """A fresh reading, or -- during an exposure -- the latest one, without asking the SDK."""
+        if self.is_active(QHYActivities.ExposingSingleFrame):
+            return self.latest_temperature
+        return self.read_temperature() or self.latest_temperature
+
+    def on_timer(self):
+        """Every TEMPERATURE_CHECK_SECONDS: end AdjustingTemperature once the sensor is there.
+
+        RepeatTimer has no exception handling (MAST_common#106): one exception here would stop
+        the timer silently for the life of the process, so nothing escapes.
+        """
+        try:
+            if (
+                self.connected
+                and self.is_active(QHYActivities.AdjustingTemperature)
+                and not self.is_active(QHYActivities.ExposingSingleFrame)
+            ):
+                self.read_temperature()
+        except Exception as e:  # noqa: BLE001 -- the timer must survive any one tick
+            self.error(f"on_timer: {e!r}")
+
     def status(self) -> QHY600Status | None:
         stat = None
         # with suppress(Exception):
         try:
+            reading = self._temperature_for_status()
             stat = QHY600Status(
                 # powered=self.is_on(),
-                temperature=self.sdk_get_control(QHYControlId.CONTROL_CURTEMP),
+                current_set_point=self._set_point,
+                temperature=reading.value if reading else None,
+                temperature_state=reading.state if reading else None,
+                temperature_at=reading.at if reading else None,
                 errors=self.errors,
                 latest_exposure=self.latest_exposure,
                 latest_spec_exposure_settings=self.latest_spec_exposure_settings,
@@ -670,9 +813,10 @@ class QHY600(Component, SwitchedOutlet):
 
     @property
     def temperature_is_stabilized(self) -> bool:
-        return True  # TODO: implement proper stabilization check based on current and set temperatures,
-        # and possibly their rate of change. For now, just assume it's always stabilized to avoid blocking
-        # exposures when the temperature control is not working properly.
+        # Not while a set point given through adjust_temperature is still being reached.
+        # With none given, as before: assumed stable, since nothing here chose a target to
+        # compare against, and blocking exposures on that would block them for good.
+        return not self.is_active(QHYActivities.AdjustingTemperature)
 
     @property
     def operational(self) -> bool:
@@ -789,6 +933,7 @@ class QHY600(Component, SwitchedOutlet):
             number_of_exposures=spec_exposure_settings.number_of_exposures or 1,
             image_path=spec_exposure_settings.image_full_name,
             depth=16,
+            frame_type=spec_exposure_settings.frame_type,
         )
 
         threading.Thread(
