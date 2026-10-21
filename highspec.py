@@ -611,13 +611,6 @@ class Highspec(Component):
 
         acquisition_folder: Path = Path(PathMaker().make_spec_acquisitions_folder(spec_name="highspec"))
         acquisition_folder = acquisition_folder / PathMaker.make_seq(str(acquisition_folder))
-        # `ram` is Optional only for the non-Windows Filer, where it is None; this folder was
-        # just built under it by make_spec_acquisitions_folder, which asserts the same thing.
-        # Narrowed here rather than reaching for `shared.root` to quiet the type checker:
-        # that silences the warning and raises `ValueError: path is on mount 'D:', start on
-        # mount 'Z:'` the first time an assignment runs.
-        ram = Filer().ram
-        assert ram is not None
 
         work = assignment.batch if assignment.batch is not None else assignment.plan if assignment.plan is not None else None
         assert work is not None and work.ulid is not None
@@ -628,9 +621,10 @@ class Highspec(Component):
                 state="in-progress",
                 # Relative to the shared root, not the absolute ram path this folder is
                 # written to: the controller symlinks it, and a `D:` path means nothing
-                # there. `move_ram_to_shared` only swaps ram.root for shared.root, so the
-                # ram-relative path is exactly where these products land. MAST_spec#39.
-                shared_top=Path(os.path.relpath(acquisition_folder, ram.root)).as_posix(),
+                # there. The share mirrors the RAM area below its root, so the folder's path
+                # within its filing area -- the RAM disk, or its fallback while the disk is
+                # gone -- is exactly where these products land. MAST_spec#39.
+                shared_top=Filer().area_of(acquisition_folder)[1],
                 shared_subpath="highspec",
             )
         )
