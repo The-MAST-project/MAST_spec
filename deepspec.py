@@ -35,6 +35,7 @@ from common.models.greateyes import (
     ReadoutSpeedNames,
     ShutterModel,
 )
+from common.models.plans import write_plan_id_file
 from common.models.spectrographs import SpectrographModel
 from common.models.statuses import DeepspecStatus
 from common.notifications import Notifier
@@ -546,6 +547,12 @@ class Deepspec(Component):
                 shared_subpath="deepspec",
             )
         )
+
+        # Labelled with its plan, as every producer a plan drives labels its folder
+        # (MAST_common `write_plan_id_file`; plans/control_acquisition_design.md 5.10). A
+        # batch's ULID is not a plan's, so only an assignment carrying a plan gets one.
+        if remote_assignment.plan is not None:
+            write_plan_id_file(acquisition_folder, remote_assignment.plan.ulid)
 
         # From here on the ram-disk folder exists and the bands write into it, so every exit
         # path must reach release_folder() -- see the finally.

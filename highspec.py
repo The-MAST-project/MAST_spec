@@ -40,6 +40,7 @@ from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, SpectrographAssignment
 from common.models.highspec import HighspecSettings
 from common.models.newton import NewtonSettingsConfig
+from common.models.plans import write_plan_id_file
 from common.models.spectrographs import SpectrographModel
 from common.models.statuses import HighspecStatus
 from common.notifications import Notifier
@@ -628,6 +629,12 @@ class Highspec(Component):
                 shared_subpath="highspec",
             )
         )
+
+        # Labelled with its plan, as every producer a plan drives labels its folder
+        # (MAST_common `write_plan_id_file`; plans/control_acquisition_design.md 5.10). A
+        # batch's ULID is not a plan's, so only an assignment carrying a plan gets one.
+        if assignment.plan is not None:
+            write_plan_id_file(acquisition_folder, assignment.plan.ulid)
 
         # From here on the ram-disk folder exists and exposures will be written into it, so
         # every exit path must reach release_folder() -- see the finally. The except is not
