@@ -28,6 +28,7 @@ from common.models.greateyes import (
     GreateyesSettingsModel,
     ReadoutSpeed,
 )
+from common.models.latest import LatestSpecExposure
 from common.models.statuses import GreateyesStatus
 from common.networking import NetworkedDevice
 from common.spec import (
@@ -1751,7 +1752,9 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
 
         logger.debug(*args, **kwargs)
 
-    def do_execute_assignment(self, assignment: SpectrographAssignment, folder: str):
+    def do_execute_assignment(
+        self, assignment: SpectrographAssignment, folder: str, latest: LatestSpecExposure | None = None
+    ):
         # Runs on this band's own thread (see execute_assignment). Everything is caught and
         # logged here: an escaping exception would go to threading's excepthook, i.e. to a
         # stderr nobody reads, and Deepspec would only see the thread end.
@@ -1779,14 +1782,22 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
                 # already protected the write, which is what records it as a product.
                 if self.latest_saved_image_path:
                     Filer().move_ram_to_shared(self.latest_saved_image_path)
+                    if latest is not None:
+                        latest.frame_saved(self.latest_saved_image_path)
                 else:
                     self.error(f"exposure-{exposure_number:03} was not saved; nothing to move")
-        except Exception:
+                    if latest is not None:
+                        latest.fail(f"deepspec-{self.band}: exposure-{exposure_number:03} was not saved")
+        except Exception as e:
             # This is a catch-all for any exceptions that might occur during the execution of the assignment.
             self.error(f"{function_name()}: deepspec-{self.band} assignment failed")
             logger.exception(f"{function_name()}: deepspec-{self.band} assignment failed")
+            if latest is not None:
+                latest.fail(f"deepspec-{self.band}: {e}")
 
-    def execute_assignment(self, assignment: SpectrographAssignment, folder: str) -> threading.Thread:
+    def execute_assignment(
+        self, assignment: SpectrographAssignment, folder: str, latest: LatestSpecExposure | None = None
+    ) -> threading.Thread:
         """Start this band's exposures on its own thread and return that thread.
 
         The caller (Deepspec.execute_assignment) joins it. It used to be discarded, leaving
@@ -1808,7 +1819,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         thread = threading.Thread(
             name=f"deepspec-{self.band}-assignment",
             target=self.do_execute_assignment,
-            args=[assignment, folder],
+            args=[assignment, folder, latest],
         )
         thread.start()
         return thread

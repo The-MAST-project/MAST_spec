@@ -30,6 +30,7 @@ from common.models.assignments import (
     SpectrographAssignment,
 )
 from common.models.calibration import CalibrationSettings
+from common.models.latest import LatestSpecExposure, LatestSpecRecords
 from common.models.plans import PlanStage
 from common.models.spectrographs import SpectrographModel
 from common.models.statuses import SpecStatus
@@ -83,6 +84,9 @@ class Spec(Component):
         self.logger = get_logger("spec")
         #: The plan this spectrograph works for, under `SpecActivities.ExecutingPlan` (claim_plan).
         self.plan_id: str | None = None
+        #: The latest exposure series, `SpecStatus.latest.exposure`: a plan's or batch's
+        #: (`execute_assignment`) or an operator's (`acquire`). None before the first.
+        self.latest_exposure: LatestSpecExposure | None = None
         self.power_switches: list[DliPowerSwitch] = [
             PowerSwitchFactory.get_instance("mast-spec-ps1"),
             PowerSwitchFactory.get_instance("mast-spec-ps2"),
@@ -172,6 +176,7 @@ class Spec(Component):
             "operational": self.operational,
             "why_not_operational": self.why_not_operational,
             "plan_id": self.plan_owner,
+            "latest": LatestSpecRecords(exposure=self.latest_exposure),
         }
         return SpecStatus(**ret)
 
@@ -371,13 +376,29 @@ class Spec(Component):
             ret.extend(comp.why_not_operational)
         return ret
 
-    def do_acquire(self, acquisition_settings: SpecAcquisitionSettings):
+    def do_acquire(self, acquisition_settings: SpecAcquisitionSettings, latest: LatestSpecExposure | None = None):
         """
         Performs the actual acquisition (running in a separate thread)
         Should be called after the required resources where checked and found operational.
         :return:
         """
+        # This runs on its own thread, where an escaping exception reaches only a stderr
+        # nobody reads, and used to leave `Acquiring` and `Exposing` raised for good.
+        try:
+            self._acquire(acquisition_settings, latest)
+        except Exception as e:
+            self.logger.exception(f"{function_name()}: the acquisition failed")
+            if latest is not None:
+                latest.fail(f"acquire: {e}")
+        finally:
+            self.end_activity(SpecActivities.Positioning)
+            self.end_activity(SpecActivities.Exposing)
+            self.end_activity(SpecActivities.Acquiring)
+            if latest is not None:
+                latest.finish(not latest.errors and latest.completed == latest.number_of_exposures)
+                latest.write()
 
+    def _acquire(self, acquisition_settings: SpecAcquisitionSettings, latest: LatestSpecExposure | None):
         self.start_activity(SpecActivities.Acquiring)
 
         self.thar_lamp.power_on_or_off(acquisition_settings.lamp_on)
@@ -454,13 +475,15 @@ class Spec(Component):
                 selected_spec.start_acquisition(exposure_settings)
                 while selected_spec.is_working:
                     time.sleep(2)
+                if latest is not None:
+                    latest.frame_saved()
         else:
             exposure_settings.number_in_sequence = None
             selected_spec.start_acquisition(exposure_settings)
             while selected_spec.is_working:
                 time.sleep(2)
-
-        self.end_activity(SpecActivities.Acquiring)
+            if latest is not None:
+                latest.frame_saved()
 
     @endpoint(tier=Tier.OPERATION, methods=("PUT",))
     def acquire(
@@ -510,7 +533,17 @@ class Spec(Component):
             return CanonicalResponse(errors=errors)
         self.end_activity(SpecActivities.Checking)
 
-        threading.Thread(name="spec-acquisition", target=self.do_acquire, args=[acquisition_settings]).start()
+        # The record before the run, so the first status read after this Ok describes it.
+        self.latest_exposure = LatestSpecExposure(
+            instrument=spec_name.lower(),  # as a plan names it
+            exposure_duration=exposure_duration,
+            number_of_exposures=number_of_exposures,
+            lamp_on=lamp_on,
+            filter=filter_name,
+        ).begin(output_folder, self.plan_owner)
+        threading.Thread(
+            name="spec-acquisition", target=self.do_acquire, args=[acquisition_settings, self.latest_exposure]
+        ).start()
         return CanonicalResponse_Ok
 
     def set_params(self, highspec_seconds: float, deepspec_seconds: float):
@@ -577,7 +610,12 @@ class Spec(Component):
 
         return CanonicalResponse_Ok
 
-    def do_execute_assignment(self, remote_assignment: SpectrographAssignment, plan_id: str | None = None):
+    def do_execute_assignment(
+        self,
+        remote_assignment: SpectrographAssignment,
+        plan_id: str | None = None,
+        latest: LatestSpecExposure | None = None,
+    ):
         """Run the assignment; then, if it was a plan's, end the spectrograph's part in it.
 
         The spectrograph is the last actor in a plan: once its products are made, it ends its
@@ -588,10 +626,18 @@ class Spec(Component):
         """
         errors: list[str] = []
         try:
-            self._run_assignment(remote_assignment)
+            self._run_assignment(remote_assignment, latest)
         except Exception as e:
             self.logger.exception(f"{function_name()}: the assignment failed")
             errors.append(f"spectrograph: {e}")
+        if latest is not None:
+            # The executor has already finished the record and written it into its folder,
+            # before releasing the folder -- written now, it would recreate the folder on the
+            # RAM disk with nobody left to release it. Unless the run failed before reaching
+            # the executor: then this ends it, and there is no folder to write it into.
+            latest.finish(not errors and not latest.errors, errors)
+            # A failure the executor recorded, rather than raised, is still the plan's failure.
+            errors = [*errors, *(e for e in latest.errors if e not in errors)]
         if plan_id is None or self.plan_owner != plan_id:
             return
         self.release_plan()
@@ -604,7 +650,7 @@ class Spec(Component):
             )
         )
 
-    def _run_assignment(self, remote_assignment: SpectrographAssignment):
+    def _run_assignment(self, remote_assignment: SpectrographAssignment, latest: LatestSpecExposure | None = None):
         # `SpectrographAssignment.spec` is a SpectrographModel, not another
         # SpectrographAssignment, so this used to assert a type it could never be and then
         # reach through a `.spec.spec` that does not exist. Both survived because the route
@@ -636,9 +682,9 @@ class Spec(Component):
         while self.fiber_stage.is_moving or thar_wheel.is_moving:
             time.sleep(0.5)
 
-        executor.execute_assignment(remote_assignment, self)
-        while executor.is_working:
-            time.sleep(1)
+        # Returns when the exposure series has ended. Each executor finishes `latest` and
+        # writes it into its folder, before releasing the folder to the mover.
+        executor.execute_assignment(remote_assignment, self, latest)
 
     @property
     def is_moving(self) -> bool:
@@ -681,7 +727,18 @@ class Spec(Component):
 
         logger.info(f"ACCEPTED: {what}")
         self.claim_plan(plan_id)  # accepted: the spectrograph works for the plan from here
-        Thread(target=self.do_execute_assignment, args=[assignment, plan_id]).start()
+        # The record before the run, so the first status read after this Ok describes it.
+        # Its folder is the executor's to make, and it says where once it has.
+        calibration = assignment.spec.calibration
+        self.latest_exposure = LatestSpecExposure(
+            instrument=assignment.spec.instrument,
+            exposure_duration=assignment.spec.requested_exposure_duration,
+            number_of_exposures=assignment.spec.requested_number_of_exposures,
+            lamp_on=calibration.lamp_on if calibration is not None else None,
+            filter=calibration.filter if calibration is not None else None,
+            batch_id=assignment.batch.ulid if assignment.batch is not None else None,
+        ).begin(plan_id=plan_id or (assignment.plan.ulid if assignment.plan is not None else None))
+        Thread(target=self.do_execute_assignment, args=[assignment, plan_id, self.latest_exposure]).start()
         return CanonicalResponse_Ok
 
     @property
