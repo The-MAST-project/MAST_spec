@@ -11,6 +11,7 @@ from common.config import Config
 from common.endpoints import TIER_GROUPS, Tier, operation_area_tag
 from common.filer import Filer
 from common.mast_logging import configure_logging, get_logger
+from common.plan_token import plan_ownership_middleware
 from cooling.chiller import Chiller
 from deepspec import Deepspec
 from filter_wheel.wheel import FilterWheels
@@ -125,6 +126,10 @@ app = FastAPI(
     openapi_tags=OPENAPI_TAGS,
     debug=True,
 )
+
+# While the spectrograph works for a plan, a state-changing request without the plan's token
+# is refused; GET and abort pass (plans/control_acquisition_design.md 6.6). Asked live.
+app.middleware("http")(plan_ownership_middleware(lambda: spec.plan_owner))
 
 app.add_middleware(
     CORSMiddleware,

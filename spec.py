@@ -5,8 +5,9 @@ import threading
 import time
 from pathlib import Path
 from threading import Thread
+from typing import Annotated
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 import cooling.chiller
 from calibration.lamp import CalibrationLamp
@@ -25,11 +26,14 @@ from common.endpoints import Tier, add_api_route, endpoint, register_component_e
 from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.assignments import (
+    AssignmentNotification,
     SpectrographAssignment,
 )
 from common.models.calibration import CalibrationSettings
+from common.models.plans import PlanStage
 from common.models.spectrographs import SpectrographModel
 from common.models.statuses import SpecStatus
+from common.notifications import Notifier
 from common.spec import (
     Disperser,
     GratingNames,
@@ -77,6 +81,8 @@ class Spec(Component):
 
         Component.__init__(self, SpecActivities)
         self.logger = get_logger("spec")
+        #: The plan this spectrograph works for, under `SpecActivities.ExecutingPlan` (claim_plan).
+        self.plan_id: str | None = None
         self.power_switches: list[DliPowerSwitch] = [
             PowerSwitchFactory.get_instance("mast-spec-ps1"),
             PowerSwitchFactory.get_instance("mast-spec-ps2"),
@@ -165,6 +171,7 @@ class Spec(Component):
             "activities_verbal": self.activities_verbal,
             "operational": self.operational,
             "why_not_operational": self.why_not_operational,
+            "plan_id": self.plan_owner,
         }
         return SpecStatus(**ret)
 
@@ -254,7 +261,33 @@ class Spec(Component):
                 comp.powerdown()
 
     def abort(self):
-        self.traverse_components_and_call("abort")
+        try:
+            self.traverse_components_and_call("abort")
+        finally:
+            # Last, after every component was asked to stop: the spectrograph no longer works
+            # for the plan (plans/control_acquisition_design.md 6.6).
+            self.release_plan()
+
+    # --- the plan token (plans/control_acquisition_design.md 6.6) -------------------------
+
+    @property
+    def plan_owner(self) -> str | None:
+        """The plan the spectrograph works for, or None. What the refusal middleware asks."""
+        return self.plan_id if self.is_active(SpecActivities.ExecutingPlan) else None
+
+    def claim_plan(self, plan_id: str | None) -> None:
+        """Work for ``plan_id``: raise `ExecutingPlan` and keep the token, until the plan's
+        products are made (`do_execute_assignment` ends it) or an abort releases it."""
+        if plan_id is None:
+            return
+        self.plan_id = plan_id
+        if not self.is_active(SpecActivities.ExecutingPlan):
+            self.start_activity(SpecActivities.ExecutingPlan, details=[plan_id])
+
+    def release_plan(self) -> None:
+        if self.is_active(SpecActivities.ExecutingPlan):
+            self.end_activity(SpecActivities.ExecutingPlan)
+        self.plan_id = None
 
     def traverse_components_and_call(self, method_name: str, isolate_failures: bool = False):
         """
@@ -544,7 +577,34 @@ class Spec(Component):
 
         return CanonicalResponse_Ok
 
-    def do_execute_assignment(self, remote_assignment: SpectrographAssignment):
+    def do_execute_assignment(self, remote_assignment: SpectrographAssignment, plan_id: str | None = None):
+        """Run the assignment; then, if it was a plan's, end the spectrograph's part in it.
+
+        The spectrograph is the last actor in a plan: once its products are made, it ends its
+        own `ExecutingPlan` and tells control, whose handler aborts the plan's units and
+        completes the plan -- or fails it, if the run raised. Unless the plan was aborted
+        meanwhile: the abort has released the token, control is already ending the plan, and
+        there is nothing to tell it (plans/control_acquisition_design.md 6.6).
+        """
+        errors: list[str] = []
+        try:
+            self._run_assignment(remote_assignment)
+        except Exception as e:
+            self.logger.exception(f"{function_name()}: the assignment failed")
+            errors.append(f"spectrograph: {e}")
+        if plan_id is None or self.plan_owner != plan_id:
+            return
+        self.release_plan()
+        Notifier().assignment_notification(
+            AssignmentNotification(
+                assignment_id=plan_id,
+                state="failed" if errors else "completed",
+                errors=errors or None,
+                stage=PlanStage.Spec,
+            )
+        )
+
+    def _run_assignment(self, remote_assignment: SpectrographAssignment):
         # `SpectrographAssignment.spec` is a SpectrographModel, not another
         # SpectrographAssignment, so this used to assert a type it could never be and then
         # reach through a `.spec.spec` that does not exist. Both survived because the route
@@ -589,7 +649,12 @@ class Spec(Component):
     # CONTRACT, not OPERATION: this is the fleet's orchestration path, the route the plan
     # client drives, not an operator verb. It is this repo's first CONTRACT endpoint.
     @endpoint(tier=Tier.CONTRACT, methods=("PUT",))
-    async def execute_assignment(self, assignment: SpectrographAssignment):
+    async def execute_assignment(
+        self,
+        assignment: SpectrographAssignment,
+        # Internal: MAST_control's plan token. Accepted, kept out of the OpenAPI schema.
+        plan_id: Annotated[str | None, Query(include_in_schema=False)] = None,
+    ):
         initiator = assignment.initiator
         work = assignment.batch if assignment.batch else assignment.plan if assignment.plan else None
 
@@ -615,7 +680,8 @@ class Spec(Component):
             return CanonicalResponse(errors=reasons)
 
         logger.info(f"ACCEPTED: {what}")
-        Thread(target=self.do_execute_assignment, args=[assignment]).start()
+        self.claim_plan(plan_id)  # accepted: the spectrograph works for the plan from here
+        Thread(target=self.do_execute_assignment, args=[assignment, plan_id]).start()
         return CanonicalResponse_Ok
 
     @property
