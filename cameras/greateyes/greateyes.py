@@ -1769,25 +1769,40 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             # settings itself, per exposure, from the same model.
             assert greateyes_settings.number_of_exposures is not None
             for exposure_number in range(1, greateyes_settings.number_of_exposures + 1):
-                greateyes_settings.image_file = os.path.join(folder, f"exposure-{exposure_number:03}.fits")
-                # Cleared before each exposure so a failed save cannot leave the previous
-                # exposure's path here and have it moved twice.
-                self.latest_saved_image_path = None
-                self.start_exposure(greateyes_settings)
-                while self.is_active(GreatEyesActivities.Acquiring):
-                    time.sleep(0.5)
+                if latest is not None and latest.cancelled:
+                    logger.info(f"deepspec-{self.band}: aborted before exposure-{exposure_number:03}")
+                    break
+                # One failed exposure does not end the band's series: it is recorded, and the
+                # next one is tried. An abort does end it.
+                try:
+                    greateyes_settings.image_file = os.path.join(folder, f"exposure-{exposure_number:03}.fits")
+                    # Cleared before each exposure so a failed save cannot leave the previous
+                    # exposure's path here and have it moved twice.
+                    self.latest_saved_image_path = None
+                    self.start_exposure(greateyes_settings)
+                    while self.is_active(GreatEyesActivities.Acquiring):
+                        time.sleep(0.5)
 
-                # This exposure is finished: hand it to the mover. Per exposure rather than
-                # per folder, so the local disk never holds a whole assignment. save_image()
-                # already protected the write, which is what records it as a product.
-                if self.latest_saved_image_path:
-                    Filer().move_ram_to_shared(self.latest_saved_image_path)
+                    # This exposure is finished: hand it to the mover. Per exposure rather than
+                    # per folder, so the local disk never holds a whole assignment. save_image()
+                    # already protected the write, which is what records it as a product.
+                    if self.latest_saved_image_path:
+                        Filer().move_ram_to_shared(self.latest_saved_image_path)
+                        if latest is not None:
+                            latest.frame_saved(self.latest_saved_image_path)
+                    elif latest is not None and latest.cancelled:
+                        break  # aborted mid-exposure: no frame, and no failure either
+                    else:
+                        self.error(f"exposure-{exposure_number:03} was not saved; nothing to move")
+                        if latest is not None:
+                            latest.fail(f"deepspec-{self.band}: exposure-{exposure_number:03} was not saved")
+                except Exception as e:
+                    if latest is not None and latest.cancelled:
+                        break  # the abort that ended this exposure ends the series
+                    self.error(f"deepspec-{self.band}: exposure-{exposure_number:03} failed: {e}")
+                    logger.exception(f"{function_name()}: deepspec-{self.band} exposure-{exposure_number:03} failed")
                     if latest is not None:
-                        latest.frame_saved(self.latest_saved_image_path)
-                else:
-                    self.error(f"exposure-{exposure_number:03} was not saved; nothing to move")
-                    if latest is not None:
-                        latest.fail(f"deepspec-{self.band}: exposure-{exposure_number:03} was not saved")
+                        latest.fail(f"deepspec-{self.band}: exposure-{exposure_number:03}: {e}")
         except Exception as e:
             # This is a catch-all for any exceptions that might occur during the execution of the assignment.
             self.error(f"{function_name()}: deepspec-{self.band} assignment failed")

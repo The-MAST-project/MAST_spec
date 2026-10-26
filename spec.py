@@ -266,12 +266,22 @@ class Spec(Component):
                 comp.powerdown()
 
     def abort(self):
+        # First: an exposure loop that sees its exposure aborted must find the series
+        # cancelled, or it would take that for a failed exposure and go on to the next.
+        self.cancel_series()
         try:
             self.traverse_components_and_call("abort")
         finally:
             # Last, after every component was asked to stop: the spectrograph no longer works
             # for the plan (plans/control_acquisition_design.md 6.6).
             self.release_plan()
+
+    def cancel_series(self, instrument: str | None = None) -> None:
+        """Stop the running exposure series -- on ``instrument`` only, when given -- before
+        its next exposure. A failed exposure does not stop a series; an abort does."""
+        latest = self.latest_exposure
+        if latest is not None and latest.running and instrument in (None, latest.instrument):
+            latest.cancel()
 
     # --- the plan token (plans/control_acquisition_design.md 6.6) -------------------------
 
@@ -395,7 +405,7 @@ class Spec(Component):
             self.end_activity(SpecActivities.Exposing)
             self.end_activity(SpecActivities.Acquiring)
             if latest is not None:
-                latest.finish(not latest.errors and latest.completed == latest.number_of_exposures)
+                latest.finish_series()
                 latest.write()
 
     def _acquire(self, acquisition_settings: SpecAcquisitionSettings, latest: LatestSpecExposure | None):
@@ -471,12 +481,24 @@ class Spec(Component):
         assert acquisition_settings.number_of_exposures is not None
         if acquisition_settings.number_of_exposures > 1:
             for i in range(acquisition_settings.number_of_exposures):
-                exposure_settings.number_in_sequence = i
-                selected_spec.start_acquisition(exposure_settings)
-                while selected_spec.is_working:
-                    time.sleep(2)
-                if latest is not None:
-                    latest.frame_saved()
+                if latest is not None and latest.cancelled:
+                    self.logger.info(f"acquire: aborted before exposure #{i}")
+                    break
+                # One failed exposure does not end the series: it is recorded, and the next
+                # one is tried. An abort does end it.
+                try:
+                    exposure_settings.number_in_sequence = i
+                    selected_spec.start_acquisition(exposure_settings)
+                    while selected_spec.is_working:
+                        time.sleep(2)
+                    if latest is not None:
+                        latest.frame_saved()
+                except Exception as e:
+                    if latest is not None and latest.cancelled:
+                        break
+                    self.logger.exception(f"acquire: exposure #{i} failed")
+                    if latest is not None:
+                        latest.fail(f"acquire: exposure #{i}: {e}")
         else:
             exposure_settings.number_in_sequence = None
             selected_spec.start_acquisition(exposure_settings)
@@ -620,7 +642,8 @@ class Spec(Component):
 
         The spectrograph is the last actor in a plan: once its products are made, it ends its
         own `ExecutingPlan` and tells control, whose handler aborts the plan's units and
-        completes the plan -- or fails it, if the run raised. Unless the plan was aborted
+        completes the plan -- or fails it, if the series saved no frame at all: a failed
+        exposure among saved ones is reported, not fatal. Unless the plan was aborted
         meanwhile: the abort has released the token, control is already ending the plan, and
         there is nothing to tell it (plans/control_acquisition_design.md 6.6).
         """
@@ -635,8 +658,11 @@ class Spec(Component):
             # before releasing the folder -- written now, it would recreate the folder on the
             # RAM disk with nobody left to release it. Unless the run failed before reaching
             # the executor: then this ends it, and there is no folder to write it into.
-            latest.finish(not errors and not latest.errors, errors)
-            # A failure the executor recorded, rather than raised, is still the plan's failure.
+            latest.finish(not errors and latest.completed > 0 and not latest.cancelled, errors)
+        # A failed exposure does not fail the plan: it fails only if the series saved nothing.
+        # The exposures that failed still go to control, with the `completed`.
+        failed = bool(errors) or (latest is not None and latest.completed == 0)
+        if latest is not None:
             errors = [*errors, *(e for e in latest.errors if e not in errors)]
         if plan_id is None or self.plan_owner != plan_id:
             return
@@ -644,7 +670,7 @@ class Spec(Component):
         Notifier().assignment_notification(
             AssignmentNotification(
                 assignment_id=plan_id,
-                state="failed" if errors else "completed",
+                state="failed" if failed else "completed",
                 errors=errors or None,
                 stage=PlanStage.Spec,
             )

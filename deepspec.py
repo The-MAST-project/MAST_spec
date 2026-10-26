@@ -182,6 +182,9 @@ class Deepspec(Component):
         return ret
 
     def abort(self):
+        # First, so each band's loop reads its aborted exposure as the end of the series.
+        if self.spec is not None:
+            self.spec.cancel_series("deepspec")
         # No `if self.is_active(DeepspecActivities.Acquiring)` guard. That flag is cleared at
         # the foot of do_expose (and again by status() whenever no camera reports Acquiring),
         # so it is down precisely when a band has outlived its coordinator -- which is the one
@@ -606,8 +609,8 @@ class Deepspec(Component):
             self.end_activity(DeepspecActivities.Acquiring)
             spec.end_activity(SpecActivities.ExposingDeepspec)
             if latest is not None:
-                # Each band reports its own missing frames, as errors.
-                latest.finish(not latest.errors)
+                # Each band records its own failed exposures, as errors.
+                latest.finish_series()
                 latest.write()
             # Reaped only once every protected product has reached the shared area, and
             # never before -- an exposure that failed to move keeps its folder rather than

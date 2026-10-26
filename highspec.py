@@ -166,6 +166,9 @@ class Highspec(Component):
         )
 
     def abort(self):
+        # First, so the exposure loop reads the aborted exposure as the end of the series.
+        if self.spec is not None:
+            self.spec.cancel_series("highspec")
         if self.is_active(HighspecActivities.Exposing):
             self.camera.abort()
         if self.is_active(HighspecActivities.Positioning):
@@ -660,31 +663,43 @@ class Highspec(Component):
                 latest.number_of_exposures = highspec_assignment.camera.number_of_exposures
             spec.start_activity(SpecActivities.ExposingHighspec, data={"instrument": "highspec"})
             for seq in range(1, highspec_assignment.camera.number_of_exposures + 1):
-                spec_exposure_settings.image_full_name = os.path.join(acquisition_folder, f"exposure-{seq:03}.fits")
-                self.camera.start_acquisition(spec_exposure_settings)
-                logger.info(f"waiting for end of exposure-{seq:03} ...")
-                while self.camera.is_active(NewtonActivities.Acquiring):
-                    time.sleep(0.5)
+                if latest is not None and latest.cancelled:
+                    logger.info(f"aborted before exposure-{seq:03}")
+                    break
+                # One failed exposure does not end the series: it is recorded, and the next
+                # one is tried. The series fails only if none was saved.
+                try:
+                    spec_exposure_settings.image_full_name = os.path.join(acquisition_folder, f"exposure-{seq:03}.fits")
+                    self.camera.start_acquisition(spec_exposure_settings)
+                    logger.info(f"waiting for end of exposure-{seq:03} ...")
+                    while self.camera.is_active(NewtonActivities.Acquiring):
+                        time.sleep(0.5)
 
-                # The camera protected the file while writing it; this header update is a
-                # second write to the same path, so it is protected too -- otherwise the
-                # move below could catch the file mid-flush.
-                with (
-                    MoveGuardian().protect(spec_exposure_settings.image_full_name),
-                    fits.open(spec_exposure_settings.image_full_name, mode="update") as hdul,
-                ):
-                    hdr = hdul[0].header  # type: ignore
-                    hdr["PROGRAM"] = "MAST"
-                    hdr["INSTRUME"] = "Highspec"
-                    hdul.flush()
+                    # The camera protected the file while writing it; this header update is a
+                    # second write to the same path, so it is protected too -- otherwise the
+                    # move below could catch the file mid-flush.
+                    with (
+                        MoveGuardian().protect(spec_exposure_settings.image_full_name),
+                        fits.open(spec_exposure_settings.image_full_name, mode="update") as hdul,
+                    ):
+                        hdr = hdul[0].header  # type: ignore
+                        hdr["PROGRAM"] = "MAST"
+                        hdr["INSTRUME"] = "Highspec"
+                        hdul.flush()
 
-                # The exposure is complete: hand it to the mover. Moving per exposure rather
-                # than per folder keeps the local disk from holding a whole assignment, and
-                # matches how MAST_unit moves each image once the flow knows it is done
-                # (src/unit.py, src/solving.py) rather than from the camera's save path.
-                Filer().move_ram_to_shared(spec_exposure_settings.image_full_name)
-                if latest is not None:
-                    latest.frame_saved(spec_exposure_settings.image_full_name)
+                    # The exposure is complete: hand it to the mover. Moving per exposure rather
+                    # than per folder keeps the local disk from holding a whole assignment, and
+                    # matches how MAST_unit moves each image once the flow knows it is done
+                    # (src/unit.py, src/solving.py) rather than from the camera's save path.
+                    Filer().move_ram_to_shared(spec_exposure_settings.image_full_name)
+                    if latest is not None:
+                        latest.frame_saved(spec_exposure_settings.image_full_name)
+                except Exception as e:
+                    if latest is not None and latest.cancelled:
+                        break  # the abort that ended this exposure ends the series
+                    logger.exception(f"{function_name()}: exposure-{seq:03} failed")
+                    if latest is not None:
+                        latest.fail(f"highspec: exposure-{seq:03}: {e}")
         except Exception as e:
             logger.exception(f"{function_name()}: highspec assignment failed")
             if latest is not None:
@@ -696,7 +711,7 @@ class Highspec(Component):
             self.end_activity(HighspecActivities.Acquiring)
             spec.end_activity(SpecActivities.ExposingHighspec)
             if latest is not None:
-                latest.finish(not latest.errors and latest.completed == latest.number_of_exposures)
+                latest.finish_series()
                 latest.write()
             # Reaped only once every protected product has reached the shared area, and
             # never before -- an exposure that failed to move keeps its folder rather than
