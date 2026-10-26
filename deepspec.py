@@ -35,6 +35,7 @@ from common.models.greateyes import (
     ReadoutSpeedNames,
     ShutterModel,
 )
+from common.models.latest import LatestSpecExposure
 from common.models.plans import write_batch_id_file, write_plan_id_file
 from common.models.spectrographs import SpectrographModel
 from common.models.statuses import DeepspecStatus
@@ -181,6 +182,9 @@ class Deepspec(Component):
         return ret
 
     def abort(self):
+        # First, so each band's loop reads its aborted exposure as the end of the series.
+        if self.spec is not None:
+            self.spec.cancel_series("deepspec")
         # No `if self.is_active(DeepspecActivities.Acquiring)` guard. That flag is cleared at
         # the foot of do_expose (and again by status() whenever no camera reports Acquiring),
         # so it is down precisely when a band has outlived its coordinator -- which is the one
@@ -517,7 +521,10 @@ class Deepspec(Component):
                 continue
         return (False, errors) if errors else (True, None)
 
-    def execute_assignment(self, remote_assignment: SpectrographAssignment, spec):
+    def execute_assignment(self, remote_assignment: SpectrographAssignment, spec, latest: LatestSpecExposure | None = None):
+        """Run the assignment, a thread per band, and return when every band has ended.
+        `latest` gathers the bands' frames and errors; it is finished and written into the
+        folder before the folder is released."""
         assert isinstance(remote_assignment.spec, SpectrographModel)
         # deepspec_model: DeepspecModel = remote_assignment.spec
 
@@ -525,6 +532,8 @@ class Deepspec(Component):
             time.sleep(0.5)
 
         acquisition_folder = Path(PathMaker().make_spec_acquisitions_folder(spec_name="deepspec"))
+        if latest is not None:
+            latest.products_at(acquisition_folder)
 
         ulid = None
         if remote_assignment.batch is not None and remote_assignment.batch.ulid is not None:
@@ -577,6 +586,7 @@ class Deepspec(Component):
                         # it, and the unregistered route (MAST_spec#47) kept it from running.
                         assignment=remote_assignment,
                         folder=str(acquisition_folder / band),
+                        latest=latest,
                     )
                 )
 
@@ -588,12 +598,20 @@ class Deepspec(Component):
             # release below it would have reaped the folder from under the bands.
             for thread in band_threads:
                 thread.join()
-
+            if latest is not None and not band_threads:
+                latest.fail("deepspec: no band camera detected")
+        except Exception as e:
+            logger.exception(f"{function_name()}: deepspec assignment failed")
+            if latest is not None:
+                latest.fail(f"deepspec: {e}")
+        finally:
+            # Ended on every path: a failed run used to leave both raised.
             self.end_activity(DeepspecActivities.Acquiring)
             spec.end_activity(SpecActivities.ExposingDeepspec)
-        except Exception:
-            logger.exception(f"{function_name()}: deepspec assignment failed")
-        finally:
+            if latest is not None:
+                # Each band records its own failed exposures, as errors.
+                latest.finish_series()
+                latest.write()
             # Reaped only once every protected product has reached the shared area, and
             # never before -- an exposure that failed to move keeps its folder rather than
             # being deleted with it.

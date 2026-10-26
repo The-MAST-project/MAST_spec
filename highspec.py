@@ -39,6 +39,7 @@ from common.interfaces.components import Component
 from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification, SpectrographAssignment
 from common.models.highspec import HighspecSettings
+from common.models.latest import LatestSpecExposure
 from common.models.newton import NewtonSettingsConfig
 from common.models.plans import write_batch_id_file, write_plan_id_file
 from common.models.spectrographs import SpectrographModel
@@ -165,6 +166,9 @@ class Highspec(Component):
         )
 
     def abort(self):
+        # First, so the exposure loop reads the aborted exposure as the end of the series.
+        if self.spec is not None:
+            self.spec.cancel_series("highspec")
         if self.is_active(HighspecActivities.Exposing):
             self.camera.abort()
         if self.is_active(HighspecActivities.Positioning):
@@ -577,11 +581,13 @@ class Highspec(Component):
             or self.is_active(HighspecActivities.Exposing)
         )
 
-    def do_execute_assignment(self, assignment: SpectrographAssignment, spec):
+    def do_execute_assignment(self, assignment: SpectrographAssignment, spec, latest: LatestSpecExposure | None = None):
         """
-        Executes a highspec spectrograph assignment (runs in a separate Thread)
+        Executes a highspec spectrograph assignment, on the caller's thread
         :param assignment: the assignment, as received from the controller
         :param spec: the parent spectrograph object
+        :param latest: the series' record: frames and errors are noted on it, and it is
+            finished and written into the folder before the folder is released
         :return:
         """
         self.start_activity(HighspecActivities.Acquiring)
@@ -612,6 +618,8 @@ class Highspec(Component):
 
         acquisition_folder: Path = Path(PathMaker().make_spec_acquisitions_folder(spec_name="highspec"))
         acquisition_folder = acquisition_folder / PathMaker.make_seq(str(acquisition_folder))
+        if latest is not None:
+            latest.products_at(acquisition_folder)
 
         work = assignment.batch if assignment.batch is not None else assignment.plan if assignment.plan is not None else None
         assert work is not None and work.ulid is not None
@@ -650,37 +658,61 @@ class Highspec(Component):
             )  # dummy exposure_duration, temporary
             logger.info(f"taking {highspec_assignment.camera.number_of_exposures} exposures")
             assert isinstance(highspec_assignment.camera.number_of_exposures, int)
+            if latest is not None:
+                # What the camera is told to take, which is what the series is measured by.
+                latest.number_of_exposures = highspec_assignment.camera.number_of_exposures
             spec.start_activity(SpecActivities.ExposingHighspec, data={"instrument": "highspec"})
             for seq in range(1, highspec_assignment.camera.number_of_exposures + 1):
-                spec_exposure_settings.image_full_name = os.path.join(acquisition_folder, f"exposure-{seq:03}.fits")
-                self.camera.start_acquisition(spec_exposure_settings)
-                logger.info(f"waiting for end of exposure-{seq:03} ...")
-                while self.camera.is_active(NewtonActivities.Acquiring):
-                    time.sleep(0.5)
+                if latest is not None and latest.cancelled:
+                    logger.info(f"aborted before exposure-{seq:03}")
+                    break
+                # One failed exposure does not end the series: it is recorded, and the next
+                # one is tried. The series fails only if none was saved.
+                try:
+                    spec_exposure_settings.image_full_name = os.path.join(acquisition_folder, f"exposure-{seq:03}.fits")
+                    self.camera.start_acquisition(spec_exposure_settings)
+                    logger.info(f"waiting for end of exposure-{seq:03} ...")
+                    while self.camera.is_active(NewtonActivities.Acquiring):
+                        time.sleep(0.5)
 
-                # The camera protected the file while writing it; this header update is a
-                # second write to the same path, so it is protected too -- otherwise the
-                # move below could catch the file mid-flush.
-                with (
-                    MoveGuardian().protect(spec_exposure_settings.image_full_name),
-                    fits.open(spec_exposure_settings.image_full_name, mode="update") as hdul,
-                ):
-                    hdr = hdul[0].header  # type: ignore
-                    hdr["PROGRAM"] = "MAST"
-                    hdr["INSTRUME"] = "Highspec"
-                    hdul.flush()
+                    # The camera protected the file while writing it; this header update is a
+                    # second write to the same path, so it is protected too -- otherwise the
+                    # move below could catch the file mid-flush.
+                    with (
+                        MoveGuardian().protect(spec_exposure_settings.image_full_name),
+                        fits.open(spec_exposure_settings.image_full_name, mode="update") as hdul,
+                    ):
+                        hdr = hdul[0].header  # type: ignore
+                        hdr["PROGRAM"] = "MAST"
+                        hdr["INSTRUME"] = "Highspec"
+                        hdul.flush()
 
-                # The exposure is complete: hand it to the mover. Moving per exposure rather
-                # than per folder keeps the local disk from holding a whole assignment, and
-                # matches how MAST_unit moves each image once the flow knows it is done
-                # (src/unit.py, src/solving.py) rather than from the camera's save path.
-                Filer().move_ram_to_shared(spec_exposure_settings.image_full_name)
-
+                    # The exposure is complete: hand it to the mover. Moving per exposure rather
+                    # than per folder keeps the local disk from holding a whole assignment, and
+                    # matches how MAST_unit moves each image once the flow knows it is done
+                    # (src/unit.py, src/solving.py) rather than from the camera's save path.
+                    Filer().move_ram_to_shared(spec_exposure_settings.image_full_name)
+                    if latest is not None:
+                        latest.frame_saved(spec_exposure_settings.image_full_name)
+                except Exception as e:
+                    if latest is not None and latest.cancelled:
+                        break  # the abort that ended this exposure ends the series
+                    logger.exception(f"{function_name()}: exposure-{seq:03} failed")
+                    if latest is not None:
+                        latest.fail(f"highspec: exposure-{seq:03}: {e}")
+        except Exception as e:
+            logger.exception(f"{function_name()}: highspec assignment failed")
+            if latest is not None:
+                latest.fail(f"highspec: {e}")
+        finally:
+            # Ended on every path: a failed run used to leave `Acquiring` raised, so
+            # `is_working` -- and anything waiting on it -- never saw the run end.
+            self.end_activity(HighspecActivities.Positioning)
             self.end_activity(HighspecActivities.Acquiring)
             spec.end_activity(SpecActivities.ExposingHighspec)
-        except Exception:
-            logger.exception(f"{function_name()}: highspec assignment failed")
-        finally:
+            if latest is not None:
+                latest.finish_series()
+                latest.write()
             # Reaped only once every protected product has reached the shared area, and
             # never before -- an exposure that failed to move keeps its folder rather than
             # being deleted with it.
@@ -694,13 +726,12 @@ class Highspec(Component):
                 return False, ["camera detected but temperature not stabilized"]
         return False, ["no camera detected"]
 
-    def execute_assignment(self, remote_assignment: SpectrographAssignment, spec):
-        Thread(
-            name="newton-acquisition",
-            target=self.do_execute_assignment,
-            args=[remote_assignment, spec],
-        ).start()
-        return CanonicalResponse_Ok
+    def execute_assignment(self, remote_assignment: SpectrographAssignment, spec, latest: LatestSpecExposure | None = None):
+        """Run the assignment and return when it has ended. `Spec.do_execute_assignment` already
+        runs on a thread of its own. This used to start yet another and return at once, leaving
+        the caller to poll `is_working` -- which reads False until that thread has raised
+        `Acquiring`, so a plan could be reported completed before its first exposure."""
+        self.do_execute_assignment(remote_assignment, spec, latest)
 
     def _configured_settings_markdown(self) -> str:
         """The values an omitted parameter falls back to, as a markdown table.
