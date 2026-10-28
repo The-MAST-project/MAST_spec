@@ -215,18 +215,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         Component.__init__(self, GreatEyesActivities)
 
         self.band = band
-        self.conf = Config().get_specs().deepspec[self.band]  # specific to this camera instance
+        # Checked once, at construction, as it was; read live (`conf`, `settings`) from here on.
         assert self.conf.settings is not None
-        # Narrowed once, here, so nothing downstream repeats the assert. `conf` keeps what is
-        # not a setting -- network, device, enabled -- which is why this class needs both and
-        # cannot bind conf straight to the settings the way NewtonEMCCD does.
-        #
-        # This was a GreateyesSettingsModel converted from the config at startup (twice,
-        # identically), so the class carried two objects holding the same values and read
-        # from both: the model for temp and probing, the config for the per-exposure
-        # fallbacks. The config is the one that is authoritative -- the model is the API
-        # shape, where every field is optional because a caller may omit it.
-        self.settings: GreateyesSettingConfig = self.conf.settings
         self.latest_spec_exposure_settings: SpecExposureSettings | None = None
         self.latest_greateyes_exposure_settings: GreateyesSettingsModel | None = None
         # Path save_image() actually wrote, which may differ from the requested image_file.
@@ -237,6 +227,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # The shutter timings already warned about, so a series says it once.
         self._shutter_timings_warned: set[tuple[int, int]] = set()
 
+        # The SDK's index for this camera, which the connection is opened with: changing
+        # `device` takes a restart.
         self.ge_device = self.conf.device
         self._name = f"Deepspec-{self.band}"
         self.outlet_name = f"Deepspec{self.band}"
@@ -262,8 +254,6 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         assert self.conf.network is not None
         NetworkedDevice.__init__(self, self.conf.model_dump())
         SwitchedOutlet.__init__(self, outlet_name=f"{self.outlet_name}", domain=OutletDomain.SpecOutlets)
-
-        self.enabled = self.conf.enabled
 
         self.acquisition: str | None = None
 
@@ -529,6 +519,30 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.cool_down()
 
         self.end_activity(GreatEyesActivities.Probing, label=self.name)
+
+    @property
+    def conf(self):
+        """This band's configuration: the common deepspec settings merged with the band's own.
+
+        Live: read from the configuration on every access, so an edit in the database
+        reaches the running service through the change stream, not at the next restart.
+        """
+        return Config().get_specs().deepspec[self.band]
+
+    @property
+    def settings(self) -> GreateyesSettingConfig:
+        """This band's settings -- `conf` keeps what is not a setting: network, device, enabled.
+
+        The config is authoritative here; GreateyesSettingsModel is the API's shape, where
+        every field is optional because a caller may omit it.
+        """
+        settings = self.conf.settings
+        assert settings is not None
+        return settings
+
+    @property
+    def enabled(self) -> bool:
+        return self.conf.enabled
 
     @property
     def detected(self) -> bool:

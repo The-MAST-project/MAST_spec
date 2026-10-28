@@ -79,7 +79,6 @@ class Deepspec(Component):
         if self._initialized:
             return
 
-        self.conf = Config().get_specs().deepspec
         Component.__init__(self, DeepspecActivities)
 
         self.cameras = greateyes_cameras
@@ -88,6 +87,15 @@ class Deepspec(Component):
 
         self._initialized = True
         self._name = ""
+
+    @property
+    def conf(self):
+        """Deepspec's configuration, every band's.
+
+        Live: read from the configuration on every access, so an edit in the database
+        reaches the running service through the change stream, not at the next restart.
+        """
+        return Config().get_specs().deepspec
 
     @property
     def detected(self) -> bool:

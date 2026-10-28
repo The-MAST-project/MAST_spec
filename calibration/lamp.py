@@ -18,7 +18,6 @@ class CalibrationLamp(Component, SwitchedOutlet):
         self._name = name
         self.spec = spec
         Component.__init__(self, CalibrationLampActivities)
-        self.conf = Config().get_specs().lamps
 
         SwitchedOutlet.__init__(self, domain=OutletDomain.SpecOutlets, outlet_name=f"{self.name}Lamp")
         if not self.is_on():
@@ -27,6 +26,15 @@ class CalibrationLamp(Component, SwitchedOutlet):
 
     def __repr__(self):
         return f"<Lamp>(name={self.name})"
+
+    @property
+    def conf(self):
+        """The lamps' configuration.
+
+        Live: read from the configuration on every access, so an edit in the database
+        reaches the running service through the change stream, not at the next restart.
+        """
+        return Config().get_specs().lamps
 
     @property
     def detected(self) -> bool:

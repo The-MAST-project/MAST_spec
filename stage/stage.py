@@ -68,24 +68,18 @@ class Stage(Component):
         Component.__init__(self, StageActivities)
 
         self._was_shut_down = False
-        specs_conf = Config().get_specs()
 
-        # The three names map onto identically-named attributes of specs_conf.stage, so the
-        # lookup is getattr; the match is here for the `case _`. Without it an unrecognised
-        # name left self.conf unassigned and the next line raised
-        # "AttributeError: 'Stage' object has no attribute 'conf'" -- which names this class
-        # rather than the caller that passed the bad name.
-        match name:
-            case "fiber" | "disperser" | "focusing":
-                self.conf = getattr(specs_conf.stage, name)
-            case _:
-                raise ValueError(f"unknown stage name '{name}', expected one of {get_args(SpecStageNames)}")
-
-        self.max_position = self.conf.max_position
+        # The three names map onto identically-named attributes of the stage configuration,
+        # so `conf` looks them up by name; refused here, before anything reads it, so a bad
+        # name is reported as the caller's rather than as a missing attribute of this class.
+        if name not in get_args(SpecStageNames):
+            raise ValueError(f"unknown stage name '{name}', expected one of {get_args(SpecStageNames)}")
 
         self._name = f"{name}"
         self.controller: zaber_motion.ascii.Device = controller
-        self.peripheral = self.conf.peripheral  # The Zaber model name of this stage
+        # The Zaber model name of this stage, which picks its axis below: changing
+        # `peripheral` takes a restart.
+        self.peripheral = self.conf.peripheral
         self.logger = get_logger(f"mast.spec.stage.{self._name}")
         self._detected = False
         self.axis: zaber_motion.ascii.Axis | None = None
@@ -118,11 +112,6 @@ class Stage(Component):
                 self._detected = True
                 break
 
-        self.presets = self.conf.presets
-
-        self.startup_preset = self.conf.startup_preset
-        self.shutdown_preset = self.conf.shutdown_preset
-
         self.target: float | None = None
         self.target_units: zaber_motion.Units | None = None
 
@@ -135,6 +124,31 @@ class Stage(Component):
 
             if self.axis.is_parked():
                 self.axis.unpark()
+
+    @property
+    def conf(self):
+        """This stage's configuration.
+
+        Live: read from the configuration on every access, so an edit in the database
+        reaches the running service through the change stream, not at the next restart.
+        """
+        return getattr(Config().get_specs().stage, self._name)
+
+    @property
+    def max_position(self):
+        return self.conf.max_position
+
+    @property
+    def presets(self):
+        return self.conf.presets
+
+    @property
+    def startup_preset(self):
+        return self.conf.startup_preset
+
+    @property
+    def shutdown_preset(self):
+        return self.conf.shutdown_preset
 
     @property
     def name(self):
@@ -481,7 +495,6 @@ class StageController(SwitchedOutlet, NetworkedDevice):
             return
         op = function_name()
 
-        self.conf = Config().get_specs().stage.controller
         self.stages = []
         self.spec = spec
 
@@ -600,6 +613,15 @@ class StageController(SwitchedOutlet, NetworkedDevice):
         logger.info(f"ZABER Controller #1: {identity}")
 
         return ret
+
+    @property
+    def conf(self):
+        """The stage controller's configuration.
+
+        Live: read from the configuration on every access, so an edit in the database
+        reaches the running service through the change stream, not at the next restart.
+        """
+        return Config().get_specs().stage.controller
 
     @property
     def stage_names(self) -> list[str]:

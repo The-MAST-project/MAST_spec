@@ -88,24 +88,26 @@ class Highspec(Component):
 
         self._name = "highspec"
         try:
-            self.conf = Config().get_specs().highspec
+            conf = self.conf
         except ValidationError as ex:
             logger.error(f"Bad highspec configuration: {ex=}")
-            raise ValidationError from ex
+            raise
 
         self.spec = spec  # the parent, instrument-independent part of the spectrograph
         Component.__init__(self, HighspecActivities)
 
-        if self.conf.camera == "qhy600":
+        # Which camera is chosen once: changing `camera` takes a restart, since it decides
+        # which driver is loaded and which device is opened.
+        if conf.camera == "qhy600":
             from cameras.qhy.qhy600 import QHY600
 
             self.camera = QHY600()
-        elif self.conf.camera == "newton":
+        elif conf.camera == "newton":
             from cameras.andor.newton import NewtonEMCCD
 
             self.camera = NewtonEMCCD()
         else:
-            raise ValueError(f"unknown configured camera '{self.conf.camera}'")
+            raise ValueError(f"unknown configured camera '{conf.camera}'")
 
         self.camera.set_parent_spec(self)
 
@@ -115,6 +117,15 @@ class Highspec(Component):
         self.fiber_stage = stage_controller.fiber_stage if hasattr(stage_controller, "fiber_stage") else None
 
         self._initialized = True
+
+    @property
+    def conf(self):
+        """Highspec's configuration.
+
+        Live: read from the configuration on every access, so an edit in the database
+        reaches the running service through the change stream, not at the next restart.
+        """
+        return Config().get_specs().highspec
 
     @property
     def detected(self) -> bool:

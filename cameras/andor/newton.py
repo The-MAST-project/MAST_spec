@@ -20,6 +20,7 @@ from cameras.headers import Card, update_header
 from cameras.temperature import TemperatureReading, andor_cards_superseded, is_at_set_point, temperature_cards
 from common.activities import NewtonActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.config import Config
 from common.config.shutter import ShutterConfig
 from common.dlipowerswitch import OutletDomain, SwitchedOutlet
 from common.filer import Filer, MoveGuardian
@@ -196,8 +197,6 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         return cls._instance
 
     def __init__(self):  # noqa: C901 -- a hardware state machine; the branching is the problem domain, not a failure to decompose
-        from common.config import Config
-
         self.logger = get_logger("mast.spec.highspec.camera")
         self.log_label = "EMCCD"
 
@@ -208,7 +207,6 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         SwitchedOutlet.__init__(self, outlet_name="Highspec", domain=OutletDomain.SpecOutlets)
 
         self._detected = False
-        self.conf: NewtonSettingsConfig = cast(NewtonSettingsConfig, Config().get_specs().highspec.settings)
 
         self.SensorTemp = float("nan")
         self.TargetTemp = float("nan")
@@ -239,7 +237,6 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         if self.power_switch.detected and not self.is_on():
             self.power_on()
 
-        self.enabled = self.conf.camera_enabled
         if not self.enabled:
             self.info("Camera is disabled.")
             self._initialized = True
@@ -376,10 +373,10 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         # exposure would fight them. Everything else -- read mode, acquisition mode,
         # geometry, amplifier, gains, shutter, exposure time -- is applied per exposure by
         # _apply_exposure_settings, so no exposure depends on what a previous one left.
-        if self.conf.temperature is not None:
-            self.set_point = self.conf.temperature.regular_set_point
-            self._apply_setting(self.sdk.SetTemperature, self.conf.temperature.regular_set_point)
-            self._apply_setting(self.sdk.SetCoolerMode, self.conf.temperature.cooler_mode)
+        temperature = self.conf.temperature
+        if temperature is not None:
+            self._set_temperature(temperature.regular_set_point)  # records `set_point` too
+            self._apply_setting(self.sdk.SetCoolerMode, temperature.cooler_mode)
 
         driver_event_handle = win32event.CreateEvent(None, 0, 0, None)
         ret = self.sdk.SetDriverEvent(int(driver_event_handle))
@@ -400,6 +397,19 @@ class NewtonEMCCD(Component, SwitchedOutlet):
         self.parent_spec = None
 
         self._initialized = True
+
+    @property
+    def conf(self) -> NewtonSettingsConfig:
+        """Highspec's camera settings.
+
+        Live: read from the configuration on every access, so an edit in the database
+        reaches the running service through the change stream, not at the next restart.
+        """
+        return cast(NewtonSettingsConfig, Config().get_specs().highspec.settings)
+
+    @property
+    def enabled(self) -> bool:
+        return self.conf.camera_enabled
 
     def set_parent_spec(self, parent):
         self.parent_spec = parent
