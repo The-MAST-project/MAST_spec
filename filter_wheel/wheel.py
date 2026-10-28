@@ -68,15 +68,13 @@ class Wheel(Component, SwitchedOutlet):
         self.id: str = ""
         self._detected = False
 
-        self.conf = Config().get_specs().wheels[wheel_name]
-        self.filters: dict = self.conf.filters
-
         SwitchedOutlet.__init__(self, domain=OutletDomain.SpecOutlets, outlet_name=f"{self.name}Wheel")
         assert self.power_switch is not None
         if self.power_switch.detected and self.is_off():
             self.power_on()
 
         self.logger = get_logger(f"mast.spec.filter-wheel-{self.name}")
+        # Which device this is, found by it below: changing `serial_number` takes a restart.
         self.serial_number = self.conf.serial_number
         self.target: int | None = None
 
@@ -178,15 +176,6 @@ class Wheel(Component, SwitchedOutlet):
             return
         self.logger.info(f"{prefix}: Saved")
 
-        # self.positions = dict()
-        # for i in range(1, 7):
-        #     self.positions[i] = self.conf.filters[str(i)]
-        # if "default" in self.conf.filters:
-        #     self.default_position = int(self.conf.filters["default"])
-        # else:
-        #     self.default_position = None
-        self.default_position = int(self.conf.filters["default"]) if "default" in self.conf.filters else None
-
         self.timer = RepeatTimer(1, function=self.ontimer)
         self.timer.name = f"{self.name}-timer-thread"
         self.timer.start()
@@ -194,6 +183,26 @@ class Wheel(Component, SwitchedOutlet):
         self._was_shut_down = False
 
         self.logger.info("initialized")
+
+    @property
+    def conf(self):
+        """This wheel's configuration.
+
+        Live: read from the configuration on every access, so an edit in the database
+        reaches the running service through the change stream, not at the next restart.
+        """
+        return Config().get_specs().wheels[self._name]
+
+    @property
+    def filters(self) -> dict:
+        return self.conf.filters
+
+    @property
+    def default_position(self) -> int | None:
+        """The configured default position, or None. Was set only once the device had been
+        found, so a wheel whose device was missing had no such attribute at all."""
+        filters = self.conf.filters
+        return int(filters["default"]) if "default" in filters else None
 
     @property
     def detected(self) -> bool:

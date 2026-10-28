@@ -128,7 +128,6 @@ class QHY600(Component, SwitchedOutlet):
         qhy.InitQHYCCDResource()
         logger.info(f"running in '{os.path.realpath(os.curdir)}'")
 
-        self.conf = Config().get_specs().highspec.camera
         self.cam_id = None
         self.serial_number = None
         self.handle = None
@@ -180,6 +179,12 @@ class QHY600(Component, SwitchedOutlet):
 
     def set_parent_spec(self, parent_spec):
         self.parent_spec = parent_spec
+
+    @property
+    def conf(self):
+        """Highspec's camera settings, read live. Was `highspec.camera` -- the camera's NAME, a
+        string -- so the `camera_enabled` check below never found the field."""
+        return Config().get_specs().highspec.settings
 
     @property
     def connected(self) -> bool:

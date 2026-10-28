@@ -21,7 +21,6 @@ class Chiller(SwitchedOutlet, Component):
         if self._initialized:
             return
 
-        self.conf = Config().get_specs().chiller
         SwitchedOutlet.__init__(self, domain=OutletDomain.SpecOutlets, outlet_name="Chiller")
         self._name = "chiller"
 
@@ -37,6 +36,15 @@ class Chiller(SwitchedOutlet, Component):
 
     def __repr__(self):
         return "Chiller()"
+
+    @property
+    def conf(self):
+        """The chiller's configuration.
+
+        Live: read from the configuration on every access, so an edit in the database
+        reaches the running service through the change stream, not at the next restart.
+        """
+        return Config().get_specs().chiller
 
     @property
     def name(self):
