@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from zaber_motion.units import LITERALS_TO_UNITS
 
 from cameras.andor.newton import (
+    CS45_SHUTTER,
     NewtonAmplifierMode,
     NewtonEMCCD,
     NewtonHSSpeed,
@@ -31,7 +32,6 @@ from cameras.qhy.qhy600 import (
 from common.activities import HighspecActivities, NewtonActivities
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
-from common.config.shutter import ShutterConfig
 from common.const import Const
 from common.endpoints import Tier, add_api_route, endpoint, register_component_endpoints
 from common.filer import Filer, MoveGuardian
@@ -911,5 +911,7 @@ def make_current_autofocus_settings() -> HighspecAutofocusSettings:
         number_of_exposures=3,
         lamp_on=False,
         filters=None,
-        shutter=spec.conf.shutter if spec.conf.shutter else ShutterConfig(open_time=12, close_time=9),
+        # `settings.shutter`: HighspecConfig has no `shutter` of its own, so reading one raised
+        # AttributeError and an autofocus requested without a body never started.
+        shutter=spec.conf.settings.shutter or CS45_SHUTTER.model_copy(),
     )

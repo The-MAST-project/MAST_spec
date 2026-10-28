@@ -102,6 +102,19 @@ class NewtonEMGainRange:
 _SHUTTER_AUTOMATIC = 0
 _SHUTTER_CLOSED = 2
 
+#: SetShutter type: the shutter line goes low to open. It drives the VCM-D1's PULSE INPUT,
+#: whose FUNCTION switch C is down -- active-low -- so the two must change together.
+_SHUTTER_TTL_LOW_OPENS = 0
+
+#: Highspec's shutter: a Uniblitz CS45 behind a VCM-D1 in High Energy mode. Worst case from the
+#: CS45 datasheet (v6.6, VCM-D1 with "T" blades): fully open 25.5 ms after the line goes open
+#: (delay 7.5 + transfer 18.0), fully closed 49 ms after it goes closed (delay 15.5 + transfer
+#: 33.5). Rounded up. The SDK starts the exposure `open_time` after opening the shutter and
+#: the readout `close_time` after closing it, so a shorter `close_time` reads the sensor out
+#: while light is still reaching it. The config DB's `highspec.settings.shutter` holds the same
+#: values (2026-10-28); this is what applies where the configuration gives none.
+CS45_SHUTTER = ShutterConfig(open_time=30, close_time=50, automatic=True)
+
 
 def _shutter_mode_for(frame_type: FrameType) -> int:
     """The SetShutter mode a frame of this type needs.
@@ -264,6 +277,7 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             raise RuntimeError("the camera is not a NEWTON")
 
         self.info(f"found a NEWTON camera, SN: {self.serial_number}")
+        self._log_shutter_capabilities()
         self.supports_em_advanced = bool(
             self.caps.ulSetFunctions & atmcd_capabilities.SetFunctions.AC_SETFUNCTION_EMADVANCED
         )
@@ -393,6 +407,27 @@ class NewtonEMCCD(Component, SwitchedOutlet):
     def append_error(self, err: str):
         self.errors.append(err)
         self.error(err)
+
+    def _log_shutter_capabilities(self) -> None:
+        """Say what the camera can do with a shutter. The SDK manual: a camera with an internal
+        shutter but no independent control (AC_FEATURES_SHUTTEREX) always drives the shutter
+        line active-high, whatever SetShutter's type says -- which would open highspec's
+        active-low VCM-D1 exactly when it should close."""
+        features = self.caps.ulFeatures
+        shutter = bool(features & atmcd_capabilities.Features.AC_FEATURES_SHUTTER)
+        shutter_ex = bool(features & atmcd_capabilities.Features.AC_FEATURES_SHUTTEREX)
+        try:
+            ret, internal = self.sdk.IsInternalMechanicalShutter()
+        except Exception as e:  # noqa: BLE001 -- informational: it must not stop the camera starting
+            self.warning(f"could not ask about an internal shutter: {e}")
+            ret, internal = None, 0
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS:
+            internal_said = "yes" if internal else "no"
+        else:
+            internal_said = "not answered" if ret is None else f"not answered (code={error_code(ret)})"  # iXon only
+        self.info(f"shutter: SetShutter={shutter}, SetShutterEx={shutter_ex}, internal shutter={internal_said}")
+        if ret == atmcd_errors.Error_Codes.DRV_SUCCESS and internal and not shutter_ex:
+            self.warning("internal shutter without SetShutterEx: the shutter line is always active-high")
 
     def parse_camera_capabilities(self):
         """
@@ -633,15 +668,13 @@ class NewtonEMCCD(Component, SwitchedOutlet):
 
     @staticmethod
     def defaults(_) -> NewtonSettingsConfig:  # type: ignore
-        from common.config.shutter import ShutterConfig
-
         return NewtonSettingsConfig(
             exposure_duration=10,
             acquisition_mode=AcquisitionMode.SINGLE_SCAN.value,
             number_of_exposures=1,
             em_gain=200,
             binning=NewtonBinning(x=1, y=1),
-            shutter=ShutterConfig(open_time=20, close_time=12, automatic=True),
+            shutter=CS45_SHUTTER.model_copy(),
             temperature=NewtonTemperatureConfig(regular_set_point=-10, science_set_point=-85),
         )
 
@@ -993,17 +1026,17 @@ class NewtonEMCCD(Component, SwitchedOutlet):
             # light frame's does -- a light frame with a misleading name, and the name was the
             # only place the request was recorded at all.
             #
-            # Applied even when `shutter` is None. The close/open transfer times come from the
-            # config and are only needed for the SDK's timing arithmetic, but the MODE is not
-            # a timing detail: skipping the call left the camera on whatever the previous
-            # exposure set, which is how an unconfigured shutter would silently produce a lit
-            # "dark". 0 ms transfer times are what the SDK documents for cameras without a
-            # shutter, and are harmless where one is configured but absent from this call.
-            closing_time = shutter.close_time if shutter is not None else 0
-            opening_time = shutter.open_time if shutter is not None else 0
+            # Applied even when `shutter` is None: skipping the call left the camera on
+            # whatever the previous exposure set, which is how an unconfigured shutter would
+            # silently produce a lit "dark". Without a configured shutter the transfer times
+            # are the CS45's, not 0 ms: these are not just the SDK's timing arithmetic, they
+            # are how long it waits for the shutter before exposing and before reading out.
+            # 0 ms -- documented for cameras with no shutter, which this is not -- read the
+            # sensor out with the shutter still open.
+            shutter = shutter if shutter is not None else CS45_SHUTTER
             self._apply_setting(
                 self.sdk.SetShutter,
-                (0, _shutter_mode_for(frame_type), closing_time, opening_time),
+                (_SHUTTER_TTL_LOW_OPENS, _shutter_mode_for(frame_type), shutter.close_time, shutter.open_time),
             )
 
             # Last, deliberately: the SDK quantises the requested time against the readout
