@@ -27,6 +27,7 @@ from common.models.greateyes import (
     Gain,
     GreateyesSettingsModel,
     ReadoutSpeed,
+    ShutterModel,
 )
 from common.models.latest import LatestSpecExposure
 from common.models.statuses import GreateyesStatus
@@ -125,6 +126,18 @@ def sdk_status() -> str:
 
 FITS_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
+#: Each band's shutter: a Uniblitz CS25 on a VMM-D4 channel, its input active-high -- which is
+#: what OpenShutter's automatic mode drives. Worst case from the CS25 datasheet (v6.6, "T"
+#: blades): fully open 15 ms after the line goes high (delay 5 + transfer 10), fully closed
+#: 39 ms after it goes low (delay 11 + transfer 28). SetShutterTimings waits `open_time`
+#: before the exposure and `close_time` after it, before the readout -- so a shorter
+#: `close_time` reads the sensor out while light still reaches it.
+CS25_OPENS_MS = 15
+CS25_CLOSES_MS = 39
+#: The worst case, rounded up: what applies where neither the exposure nor the configuration
+#: gives a shutter. The config DB's deepspec settings hold the same values.
+CS25_SHUTTER = ShutterModel(automatic=True, open_time=20, close_time=45)
+
 
 class CropSettingsModel(BaseModel):
     col: int
@@ -221,6 +234,8 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         # Whether the last exposure left the shutter to the camera. False until one runs, so
         # a stray close is a no-op rather than an attribute error.
         self.latest_shutter_automatic: bool = False
+        # The shutter timings already warned about, so a series says it once.
+        self._shutter_timings_warned: set[tuple[int, int]] = set()
 
         self.ge_device = self.conf.device
         self._name = f"Deepspec-{self.band}"
@@ -746,6 +761,20 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             self.append_error(f"camera is active ({self.activities=})")
             return
 
+        # The shutter, from the exposure's settings or the configuration, decided before
+        # anything is started. A light frame needs the camera to drive it: in manual mode
+        # the shutter is opened just before the measurement, without waiting for it, and
+        # closed only once GetMeasurementData has the frame -- after the camera has read the
+        # sensor out, with the shutter open the whole time.
+        shutter = greateyes_exposure_settings.shutter or self.settings.shutter or CS25_SHUTTER
+        if greateyes_exposure_settings.frame_type not in CLOSED_SHUTTER_FRAMES and not shutter.automatic:
+            self.append_error(
+                f"refused: a {greateyes_exposure_settings.frame_type.value} frame with a manual shutter would be "
+                "read out with the shutter open; set the shutter to automatic"
+            )
+            return
+        self._warn_if_shutter_too_quick(shutter)
+
         self.latest_exposure.settings = greateyes_exposure_settings
         assert isinstance(greateyes_exposure_settings.exposure_duration, (int, float))
         assert greateyes_exposure_settings.binning is not None
@@ -855,8 +884,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         else:
             self._apply_setting(ge.ActivateCropMode, False)
 
-        shutter = greateyes_exposure_settings.shutter if greateyes_exposure_settings.shutter is not None else conf.shutter
-        if shutter is not None and shutter.automatic:
+        if shutter.automatic:
             self._apply_setting(ge.SetShutterTimings, (shutter.open_time, shutter.close_time))
 
         # "low"/"high" everywhere the humans are -- database, endpoint, /docs -- and the
@@ -923,7 +951,7 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
         frame_type = self.latest_exposure.settings.frame_type
         closed = frame_type in CLOSED_SHUTTER_FRAMES
 
-        automatic = not closed and shutter is not None and shutter.automatic
+        automatic = not closed and shutter.automatic
         # Remembered for _close_shutter_if_manual, which has to close whatever this opened.
         # It used to re-derive the answer from the settings model alone, so an exposure that
         # ran in manual mode because the CONFIG said so was never closed: the model had no
@@ -952,6 +980,19 @@ class GreatEyes(SwitchedOutlet, NetworkedDevice, Component):
             # -- Deepspec.expose_one_camera does -- waits for ever. The SetExposure failure
             # above already ends it for the same reason.
             self.end_activity(GreatEyesActivities.Acquiring, label=self.name)
+
+    def _warn_if_shutter_too_quick(self, shutter) -> None:
+        """Say so, once per value, when the shutter is given less time than the CS25 needs."""
+        timings = (shutter.open_time, shutter.close_time)
+        if timings in self._shutter_timings_warned:
+            return
+        if shutter.open_time < CS25_OPENS_MS or shutter.close_time < CS25_CLOSES_MS:
+            self._shutter_timings_warned.add(timings)
+            self.warning(
+                f"shutter open_time={shutter.open_time} ms, close_time={shutter.close_time} ms: the CS25 needs up to "
+                f"{CS25_OPENS_MS} ms to open and {CS25_CLOSES_MS} ms to close, so frames are read out while it closes "
+                f"(use {CS25_SHUTTER.open_time}/{CS25_SHUTTER.close_time})"
+            )
 
     def _close_shutter_if_manual(self):
         """Close the shutter, unless the camera is driving it automatically."""
