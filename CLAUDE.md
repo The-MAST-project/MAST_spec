@@ -35,6 +35,11 @@ listed, with their reasons, in `tests/test_config_is_live.py`, which enforces th
 the source level (AST, so it runs off the spectrograph machine). The same rule, and test,
 exist in MAST_unit.
 
+The properties are only live while something is **watching**: the watcher is opt-in, and
+`app.py`'s `lifespan` starts it (`Config().start_watching()`) and stops it on the way down.
+Take that call out and every `conf` quietly reads the configuration loaded at startup, which
+is exactly how this service shipped #128 -- the same test guards it.
+
 ## Project-wide LLM guidance
 
 Cross-repo LLM guidance for MAST lives in the **`mast-claude-config`** repo (`github.com/The-MAST-project/mast-claude-config`) — the overarching home for project-wide instructions (shared coding standards, team working-style, global environment facts), deployed into `~/.claude/` by its `setup.sh`. Keep repo-specific guidance in this file; put genuinely cross-repo guidance there. See `mast-claude-config/CLAUDE.md` for what belongs where.

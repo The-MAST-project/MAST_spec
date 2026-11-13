@@ -205,3 +205,26 @@ def test_nothing_writes_into_the_configuration():
         if "conf" in chain and chain[-1] != "conf"
     ]
     assert not offenders, "never write into the configuration:\n  " + "\n  ".join(offenders)
+
+
+def test_the_service_starts_and_stops_the_watcher():
+    """Live properties are inert unless something advances the generation, and the watcher
+    is opt-in. MAST_spec#128 made every `conf` a property and shipped without this call, so
+    an edit made elsewhere still waited for a restart. `lifespan` must start the watcher
+    before it yields and stop it after, as MAST_control and MAST_unit do."""
+    lifespan = next(
+        node
+        for node in ast.walk(parse(SRC / "app.py"))
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
+    )
+    yields = next(n.lineno for n in ast.walk(lifespan) if isinstance(n, ast.Yield))
+
+    def call_lines(method: str) -> list[int]:
+        # `Config().start_watching()`: the receiver is a call, so the chain is just the method.
+        return [n.lineno for n in ast.walk(lifespan) if isinstance(n, ast.Call) and attribute_chain(n.func) == [method]]
+
+    started, stopped = call_lines("start_watching"), call_lines("stop_watching")
+    assert started, "app.lifespan never calls Config().start_watching(): the configuration is read once"
+    assert all(line < yields for line in started), "start_watching must run before the service starts serving"
+    assert stopped, "app.lifespan never calls Config().stop_watching()"
+    assert all(line > yields for line in stopped), "stop_watching must run on the way down, after the yield"

@@ -33,6 +33,17 @@ spec = Spec()
 
 @asynccontextmanager
 async def lifespan(fast_app: FastAPI):
+    # Track the configuration database from here on, so an edit reaches this service within
+    # seconds instead of at the next restart. Every component's `conf` is a property over
+    # Config().get_specs() (#128), but a property only helps once something advances the
+    # generation, and the watcher is opt-in: it starts a thread holding a change-stream
+    # cursor, so it wants an owner with a lifetime, which is this. Without it get_specs()
+    # returns the same snapshot for the life of the process, and an edit made elsewhere
+    # reaches a running spec only at the next restart -- with nothing to say so, since the
+    # lookup still looks live. First, so an edit made during bring-up is not missed. Never
+    # fatal: a spec that cannot watch still runs on what it loaded.
+    Config().start_watching()
+
     # Before anything is operational, so everything left on D: is by definition a leftover
     # from a previous run -- no live folder to race. Note this must sit here rather than
     # inside spec.startup(): that same method is exposed as an HTTP endpoint, and a later
@@ -46,6 +57,11 @@ async def lifespan(fast_app: FastAPI):
     # and `operational` say where it has got to.
     spec.startup()
     yield
+    # Paired with start_watching above: the watcher thread is a daemon, but stopping it
+    # explicitly closes the change stream rather than leaving the cursor to the server's
+    # timeout. The snapshot outlives it, so the shutdown below still reads configuration.
+    Config().stop_watching()
+
     # Joins an in-flight startup first, bounded by Spec.startup_join_timeout_seconds.
     spec.shutdown()
 
